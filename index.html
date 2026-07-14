@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="午月咖啡廳・咖啡豆介紹與銷售筆記 —— 吧台夥伴推薦話術手冊。">
+<meta name="theme-color" content="#2E3A4F">
+<meta property="og:title" content="午月咖啡廳・咖啡豆介紹與銷售筆記">
+<meta property="og:description" content="冰釀咖啡・花季濃縮・通用推薦與加購話術。">
+<meta property="og:type" content="website">
+<title>午月咖啡廳・咖啡豆介紹與銷售筆記</title>
+<style>
+  :root{
+    /* --- 光線：白日 --- */
+    --ink:#2E3A4F;          /* 夕暮紺・主字 */
+    --ink-soft:#4a556b;
+    --paper:#F4ECDD;        /* 沙紙 */
+    --paper-raise:#FBF6EC;  /* 卡片 */
+    --line:#D8CDBB;         /* 沙色罫線 */
+    --line-soft:#e5ddcd;
+    --text:#3a352c;         /* 本文暖墨 */
+    --text-mute:#7a7161;
+    --terra:#C46A3F;        /* 落日・主色調 */
+    --terra-deep:#a9552e;
+    --spec-head:#2E3A4F;    /* 規格表標籤・恆為深色 */
+    --spec-head-tx:#f3ede0;
+    /* 果實語彙（紅・紫・黃） */
+    --berry:#C0453B;
+    --plum:#7A4A6B;
+    --peach:#D68A3C;
+    --oolong:#8a7a4a;
+    /* 每章可覆寫的重點色 */
+    --accent:var(--terra);
+    --accent-tint:rgba(196,106,63,.10);
+
+    --serif:"Noto Serif CJK TC","Source Han Serif TC","Songti TC","STSong","SimSun",Georgia,serif;
+    --sans:"Noto Sans CJK TC","Source Han Sans TC","PingFang TC","Microsoft JhengHei","Heiti TC",system-ui,sans-serif;
+    --lat:Georgia,"Times New Roman",serif;
+
+    --measure:44rem;
+    --r:14px;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --ink:#EAE3D4;
+      --ink-soft:#c3bcaa;
+      --paper:#1b2129;      /* 靜謐夜 */
+      --paper-raise:#232b35;
+      --line:#39424e;
+      --line-soft:#2c343d;
+      --text:#e4ddce;
+      --text-mute:#9aa0a8;
+      --terra:#E0895C;
+      --terra-deep:#f0a074;
+      --berry:#E0685E;
+      --plum:#B888A6;
+      --peach:#E6AC68;
+      --oolong:#c1b177;
+      --accent:var(--terra);
+      --accent-tint:rgba(224,137,92,.14);
+      --spec-head:#333e4c;
+      --spec-head-tx:#efe8da;
+    }
+  }
+  :root[data-theme="light"]{
+    --ink:#2E3A4F;--ink-soft:#4a556b;--paper:#F4ECDD;--paper-raise:#FBF6EC;--line:#D8CDBB;--line-soft:#e5ddcd;
+    --text:#3a352c;--text-mute:#7a7161;--terra:#C46A3F;--terra-deep:#a9552e;--berry:#C0453B;--plum:#7A4A6B;--peach:#D68A3C;--oolong:#8a7a4a;--accent-tint:rgba(196,106,63,.10);--spec-head:#2E3A4F;--spec-head-tx:#f3ede0;
+  }
+  :root[data-theme="dark"]{
+    --ink:#EAE3D4;--ink-soft:#c3bcaa;--paper:#1b2129;--paper-raise:#232b35;--line:#39424e;--line-soft:#2c343d;
+    --text:#e4ddce;--text-mute:#9aa0a8;--terra:#E0895C;--terra-deep:#f0a074;--berry:#E0685E;--plum:#B888A6;--peach:#E6AC68;--oolong:#c1b177;--accent-tint:rgba(224,137,92,.14);--spec-head:#333e4c;--spec-head-tx:#efe8da;
+  }
+
+  *{box-sizing:border-box}
+  body{margin:0}
+  .page{
+    background:var(--paper);
+    color:var(--text);
+    font-family:var(--sans);
+    font-size:17px;
+    line-height:1.85;
+    -webkit-font-smoothing:antialiased;
+    letter-spacing:.01em;
+    overflow-x:hidden;
+  }
+  .wrap{max-width:var(--measure);margin:0 auto;padding:0 24px}
+
+  /* ---------- 表紙 ---------- */
+  .cover{
+    position:relative;
+    padding:88px 24px 56px;
+    text-align:center;
+    overflow:hidden;
+    isolation:isolate;
+  }
+  .cover .sky{
+    position:absolute;inset:0;z-index:-1;
+    background:
+      radial-gradient(120% 78% at 50% 118%,
+        var(--terra) 0%, transparent 52%),
+      linear-gradient(180deg, var(--ink) 0%, color-mix(in srgb,var(--ink) 78%, var(--terra)) 100%);
+    opacity:1;
+  }
+  .cover .sun{
+    position:absolute;left:50%;bottom:6px;transform:translateX(-50%);
+    width:min(78%,520px);z-index:-1;
+  }
+  .eyebrow{
+    font-family:var(--lat);
+    letter-spacing:.42em;
+    text-transform:uppercase;
+    font-size:12px;
+    color:rgba(255,255,255,.72);
+    margin:0 0 26px;
+    padding-left:.42em;
+  }
+  .cover h1{
+    font-family:var(--serif);
+    font-weight:700;
+    color:#fff;
+    font-size:clamp(2.9rem,10vw,4.4rem);
+    letter-spacing:.28em;
+    margin:0;
+    padding-left:.28em;
+    text-wrap:balance;
+    text-shadow:0 2px 30px rgba(0,0,0,.25);
+  }
+  .cover .sub{
+    font-family:var(--serif);
+    color:rgba(255,255,255,.94);
+    font-size:clamp(1.05rem,4vw,1.4rem);
+    letter-spacing:.14em;
+    margin:22px 0 0;
+  }
+  .cover .drinks{
+    display:flex;gap:14px;justify-content:center;flex-wrap:wrap;
+    margin-top:30px;
+  }
+  .cover .drinks span{
+    font-size:13px;letter-spacing:.16em;color:rgba(255,255,255,.9);
+    border:1px solid rgba(255,255,255,.4);
+    border-radius:999px;padding:6px 16px;
+    backdrop-filter:blur(2px);
+  }
+
+  /* ---------- 通用區塊 ---------- */
+  section{padding:60px 0}
+  .kicker{
+    display:flex;align-items:center;gap:14px;
+    margin:0 0 8px;
+  }
+  .kicker .en{
+    font-family:var(--lat);font-style:italic;
+    color:var(--accent);font-size:15px;letter-spacing:.06em;
+  }
+  .kicker .rule{flex:1;height:1px;background:var(--line)}
+  h2{
+    font-family:var(--serif);
+    font-weight:700;
+    color:var(--ink);
+    font-size:clamp(1.7rem,5.5vw,2.3rem);
+    letter-spacing:.1em;
+    margin:0 0 26px;
+    text-wrap:balance;
+  }
+  p{margin:0 0 1.1em}
+  strong{color:var(--ink);font-weight:700}
+
+  /* ---------- 使用說明 ---------- */
+  .intro-lead{
+    font-family:var(--serif);
+    font-size:1.22rem;line-height:1.95;
+    color:var(--ink);
+    letter-spacing:.02em;
+    margin-bottom:30px;
+    text-wrap:pretty;
+  }
+  .guides{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+  .guides li{
+    display:grid;grid-template-columns:auto 1fr;gap:16px;
+    align-items:start;
+    padding:16px 2px;
+    border-top:1px solid var(--line-soft);
+  }
+  .guides li:first-child{border-top:none}
+  .guides .no{
+    font-family:var(--lat);
+    font-size:.95rem;color:var(--accent);font-weight:700;
+    border:1.5px solid var(--accent);border-radius:50%;
+    width:30px;height:30px;display:grid;place-items:center;
+    margin-top:3px;flex:none;font-style:italic;
+  }
+  .guides .g-body{margin:0}
+  .mark{
+    background:linear-gradient(180deg,transparent 58%,var(--accent-tint) 58%);
+    padding:0 .1em;font-weight:700;color:var(--ink);
+    box-decoration-break:clone;-webkit-box-decoration-break:clone;
+  }
+
+  /* 選豆方向 spectrum */
+  .spectrum{
+    margin-top:34px;
+    background:var(--paper-raise);
+    border:1px solid var(--line);
+    border-radius:var(--r);
+    padding:24px 24px 20px;
+  }
+  .spectrum h3{
+    font-family:var(--serif);font-size:1.05rem;letter-spacing:.1em;
+    color:var(--ink);margin:0 0 4px;
+  }
+  .spectrum .hint{font-size:13px;color:var(--text-mute);margin:0 0 18px}
+  .swatches{display:flex;flex-wrap:wrap;gap:10px}
+  .sw{
+    display:inline-flex;align-items:center;gap:9px;
+    font-size:14px;font-weight:700;color:var(--ink);
+    background:var(--paper);
+    border:1px solid var(--line);
+    border-radius:999px;padding:7px 15px 7px 12px;
+    letter-spacing:.04em;
+  }
+  .sw .dot{width:11px;height:11px;border-radius:50%;flex:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--sw-c) 22%,transparent)}
+  .avoid{
+    margin-top:18px;display:flex;gap:12px;align-items:flex-start;
+    font-size:14.5px;color:var(--text);
+    border-top:1px dashed var(--line);padding-top:16px;
+  }
+  .avoid .tag{
+    flex:none;font-size:12px;font-weight:700;letter-spacing:.1em;
+    color:#fff;background:var(--ink-soft);border-radius:6px;padding:3px 9px;margin-top:2px;
+  }
+  .avoid s{color:var(--berry);text-decoration-thickness:2px;font-weight:700}
+
+  /* ---------- 銘柄章節 ---------- */
+  .bean{position:relative;padding-top:34px}
+  .bean-head{margin-bottom:26px}
+  .bean-spectrum{display:flex;gap:7px;margin-bottom:16px}
+  .bean-spectrum i{width:22px;height:6px;border-radius:3px;display:block}
+  .bean-name{
+    font-family:var(--serif);font-weight:700;color:var(--ink);
+    font-size:clamp(1.9rem,6vw,2.5rem);letter-spacing:.12em;margin:0;
+    display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;
+  }
+  .bean-name .en{
+    font-family:var(--lat);font-style:italic;font-weight:400;
+    font-size:1.05rem;color:var(--accent);letter-spacing:.04em;
+  }
+
+  /* 規格表 */
+  .spec{
+    border:1px solid var(--line);border-radius:var(--r);overflow:hidden;
+    margin:8px 0 30px;background:var(--paper-raise);
+  }
+  .spec .row{display:grid;grid-template-columns:118px 1fr;border-top:1px solid var(--line-soft)}
+  .spec .row:first-child{border-top:none}
+  .spec dt{
+    margin:0;padding:14px 16px;
+    background:var(--spec-head);color:var(--spec-head-tx);
+    font-size:13.5px;font-weight:700;letter-spacing:.06em;line-height:1.55;
+    display:flex;align-items:center;word-break:keep-all;
+  }
+  .spec dd{margin:0;padding:14px 18px;color:var(--text);font-size:15.5px;line-height:1.7}
+  .spec dd .muted{color:var(--text-mute);font-size:13.5px}
+  .price{color:var(--accent);font-weight:700;font-family:var(--lat)}
+
+  /* 風味印象 lead */
+  .flavour{
+    position:relative;
+    border-left:4px solid var(--accent);
+    padding:6px 0 6px 22px;margin:0 0 30px;
+  }
+  .flavour .lab{
+    font-family:var(--serif);font-size:14px;letter-spacing:.14em;
+    color:var(--accent);font-weight:700;margin:0 0 8px;
+  }
+  .flavour p{
+    font-family:var(--serif);font-size:1.16rem;line-height:1.95;
+    color:var(--ink);margin:0;letter-spacing:.02em;text-wrap:pretty;
+  }
+
+  /* 小節標籤 */
+  .block{margin:0 0 26px}
+  .block .lab{
+    display:inline-flex;align-items:center;gap:8px;
+    font-size:13px;font-weight:700;letter-spacing:.12em;color:var(--text-mute);
+    margin:0 0 12px;
+  }
+  .block .lab::before{content:"";width:16px;height:2px;background:var(--accent);border-radius:2px}
+
+  /* 推薦客人 chips */
+  .who{display:flex;flex-wrap:wrap;gap:10px}
+  .who span{
+    font-size:14.5px;font-weight:600;color:var(--ink);
+    background:var(--accent-tint);
+    border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);
+    border-radius:10px;padding:9px 15px;
+  }
+
+  /* 一句話推薦 pull-quote */
+  .oneliner{
+    position:relative;
+    margin:6px 0 8px;
+    padding:26px 26px 26px 30px;
+    background:
+      linear-gradient(180deg,var(--accent-tint),transparent),
+      var(--paper-raise);
+    border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line));
+    border-radius:var(--r);
+  }
+  .oneliner::before{
+    content:"\201C";
+    position:absolute;top:-6px;left:14px;
+    font-family:var(--lat);font-size:4.4rem;line-height:1;
+    color:var(--accent);opacity:.32;
+  }
+  .oneliner p{
+    font-family:var(--serif);font-size:1.28rem;line-height:1.85;
+    color:var(--ink);margin:0;font-weight:700;letter-spacing:.02em;
+    text-wrap:pretty;
+  }
+  .oneliner .tip{font-size:12px;letter-spacing:.16em;color:var(--accent);font-weight:700;font-family:var(--lat);text-transform:uppercase;display:block;margin-bottom:10px}
+
+  /* 完整介紹 speech card */
+  .speech{
+    background:var(--ink);
+    color:#f3ede0;
+    border-radius:var(--r);
+    padding:24px 26px;
+    line-height:2;
+    font-size:15.5px;
+    box-shadow:0 12px 34px -22px rgba(0,0,0,.5);
+  }
+  :root[data-theme="dark"] .speech{background:#10151b}
+  @media (prefers-color-scheme:dark){.speech{background:#10151b}}
+  .speech .lab{color:var(--terra-deep);opacity:.95}
+  .speech p{margin:0;color:#f3ede0}
+
+  /* 加購 / 搭配 小卡 */
+  .notes{display:grid;gap:14px;grid-template-columns:1fr}
+  @media(min-width:560px){.notes.two{grid-template-columns:1fr 1fr}}
+  .note{
+    background:var(--paper-raise);border:1px solid var(--line);
+    border-radius:12px;padding:16px 18px;
+  }
+  .note .lab{font-size:12.5px;letter-spacing:.1em;color:var(--accent);font-weight:700;margin:0 0 7px}
+  .note p{margin:0;font-size:14.5px;line-height:1.75}
+
+  .divider{height:1px;background:var(--line);border:none;margin:8px 0}
+  .bean + .bean{border-top:1px dashed var(--line);margin-top:12px}
+
+  /* ---------- 通用話術 ---------- */
+  .scripts{display:flex;flex-direction:column;gap:16px}
+  .script{
+    background:var(--paper-raise);border:1px solid var(--line);
+    border-left:4px solid var(--accent);
+    border-radius:12px;padding:20px 22px;
+  }
+  .script h3{
+    font-family:var(--serif);font-size:1.12rem;letter-spacing:.06em;
+    color:var(--ink);margin:0 0 12px;display:flex;align-items:center;gap:10px;
+  }
+  .script h3 .ic{width:20px;height:20px;flex:none;color:var(--accent)}
+  .script p{margin:0 0 .7em;font-size:15px;line-height:1.85}
+  .script p:last-child{margin-bottom:0}
+  .script .say{color:var(--ink);font-weight:600}
+  .script .push{
+    display:inline-block;margin:6px 0;font-family:var(--serif);font-weight:700;
+    color:var(--berry);letter-spacing:.04em;
+  }
+
+  /* ---------- 頁尾 ---------- */
+  .foot{
+    text-align:center;padding:56px 24px 70px;
+    border-top:1px solid var(--line);margin-top:20px;
+  }
+  .foot .horizon{width:60px;height:1px;background:var(--terra);margin:0 auto 22px}
+  .foot .en{font-family:var(--lat);font-style:italic;letter-spacing:.2em;color:var(--terra);font-size:15px}
+  .foot .name{font-family:var(--serif);letter-spacing:.3em;color:var(--ink);margin-top:10px;font-size:14px}
+
+  /* reveal */
+  .rv{opacity:0;transform:translateY(16px);transition:opacity .7s ease,transform .7s ease}
+  .rv.in{opacity:1;transform:none}
+  @media (prefers-reduced-motion:reduce){.rv{opacity:1;transform:none;transition:none}}
+
+  a:focus-visible,span:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ============ 表紙 ============ -->
+  <header class="cover">
+    <div class="sky"></div>
+    <svg class="sun" viewBox="0 0 520 120" fill="none" aria-hidden="true">
+      <path d="M0 118 Q130 96 260 100 T520 112" stroke="rgba(255,255,255,.5)" stroke-width="1"/>
+      <path d="M0 108 Q130 82 260 88 T520 104" stroke="rgba(255,255,255,.28)" stroke-width="1"/>
+    </svg>
+    <p class="eyebrow">coffee · select · quiet hours</p>
+    <h1>午月咖啡廳</h1>
+    <p class="sub">咖啡豆介紹 與 銷售筆記</p>
+    <div class="drinks">
+      <span>手沖精品豆</span><span>冰釀咖啡</span><span>花季濃縮</span>
+    </div>
+  </header>
+
+  <main class="wrap">
+
+    <!-- ============ 使用說明 ============ -->
+    <section class="rv">
+      <div class="kicker"><span class="en">How to use</span><span class="rule"></span></div>
+      <h2>使用說明</h2>
+      <p class="intro-lead">這份話術給吧台夥伴推薦咖啡時參考。用字以<span class="mark">「客人聽得懂」</span>為原則，多講豆種的<strong>香氣、口感、甜感與尾韻</strong>，讓客人有畫面。</p>
+
+      <ol class="guides">
+        <li>
+          <span class="no">1</span>
+          <p class="g-body">每支豆子分成<strong>「風味印象／推薦給誰／一句話推薦／完整介紹／搭配建議」</strong>。開場可以用 <span class="mark">心情、星座 或是氛圍</span> 來推薦豆種。</p>
+        </li>
+        <li>
+          <span class="no">2</span>
+          <p class="g-body">在上班前，可以先瀏覽今天會提供的手沖豆種，上面都有風味的提供，於開店可先沖煮品嘗，與當班同事分享風味的介紹方式。</p>
+        </li>
+        <li>
+          <span class="no">3</span>
+          <p class="g-body">午月在挑豆上有明確的方向 —— 紅色、紫色、黃色的水果香氣（草莓／莓果／橙香／甜桃）或是 烏龍茶。</p>
+        </li>
+        <li>
+          <span class="no">4</span>
+          <p class="g-body">避免以 <s>「酸」「果酸」</s> 來描述風味，而可以藉由表現更多水果<strong>明亮、清爽</strong>的風味，更想帶出不同於日常杏仁、核桃、棕色系那種溫和的風味取向。</p>
+        </li>
+      </ol>
+
+      <div class="spectrum">
+        <h3>午月的選豆方向</h3>
+        <p class="hint">紅・紫・黃的水果光譜，或一縷烏龍</p>
+        <div class="swatches">
+          <span class="sw" style="--sw-c:var(--berry)"><span class="dot" style="background:var(--berry)"></span>草莓</span>
+          <span class="sw" style="--sw-c:var(--plum)"><span class="dot" style="background:var(--plum)"></span>莓果</span>
+          <span class="sw" style="--sw-c:var(--peach)"><span class="dot" style="background:var(--peach)"></span>橙香</span>
+          <span class="sw" style="--sw-c:var(--peach)"><span class="dot" style="background:var(--peach)"></span>甜桃</span>
+          <span class="sw" style="--sw-c:var(--oolong)"><span class="dot" style="background:var(--oolong)"></span>烏龍茶</span>
+        </div>
+        <div class="avoid">
+          <span class="tag">改口</span>
+          <p style="margin:0">不說 <s>「酸／果酸」</s>，改說水果的 <strong>明亮、清爽</strong> —— 帶客人離開杏仁、核桃那種棕色系的溫和取向。</p>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ============ 冰釀 ============ -->
+    <section class="bean rv" style="--accent:var(--plum);--accent-tint:color-mix(in srgb,var(--plum) 12%,transparent)">
+      <div class="bean-head">
+        <div class="bean-spectrum" aria-hidden="true">
+          <i style="background:var(--plum)"></i><i style="background:var(--ink)"></i><i style="background:var(--terra)"></i>
+        </div>
+        <h1 class="bean-name">冰釀咖啡 <span class="en">Cold Brew · 音樂家系列・巴哈</span></h1>
+      </div>
+
+      <dl class="spec">
+        <div class="row"><dt>製作方式</dt><dd>採用音樂家系列的巴哈，利用<strong>熱浸冷淬法</strong>置於罐中釀造一週</dd></div>
+        <div class="row"><dt>使用豆款</dt><dd>音樂家系列 - 巴哈</dd></div>
+        <div class="row"><dt>供應方式</dt><dd>瓶裝／杯裝，冰鎮供應</dd></div>
+        <div class="row"><dt>建議售價</dt><dd><span class="muted">— 現場點供，售價見菜單</span></dd></div>
+      </dl>
+
+      <div class="flavour">
+        <p class="lab">◆ 風味印象</p>
+        <p>無酒精的咖啡酒絕對會是這支冰釀的特色，深色水果例如紫葡萄、黑莓的風味被強制濃縮，反而讓巴哈獨有的<strong>萊姆酒與威士忌的酒香</strong>爆發出來，尾韻帶一點蘋果蜜，是會讓人牢牢記憶的存在，如果搭配氣泡水，則能讓氣泡酒感的那種豐富又暢快的感覺在加倍。</p>
+      </div>
+
+      <div class="block">
+        <p class="lab">推薦給這樣的客人</p>
+        <div class="who">
+          <span>嘗鮮，大人味</span>
+          <span>甘苦大人，只能憋在心裡卻渴望酒精</span>
+          <span>好奇</span>
+        </div>
+      </div>
+
+      <div class="oneliner">
+        <span class="tip">一句話推薦</span>
+        <p>要不要嘗試看看帶著豐富酒香的冰釀，別於美式或是冰手沖，他的難忘指數真的很高</p>
+      </div>
+
+      <div class="block" style="margin-top:26px">
+        <p class="lab">完整介紹</p>
+        <div class="speech">
+          <p>「這杯是我們的冰釀，採用音樂家系列的巴哈，利用熱浸冷淬法置於罐中釀造一週，像在釀酒一樣 XD，特色在他透過發酵表現出巴哈獨有的<strong style="color:#fff">萊姆酒還有威士忌的酒香</strong>，帶著葡萄乾的中調、蜜蘋果的尾韻，很療育，推薦給你們。」</p>
+        </div>
+      </div>
+
+      <div class="notes">
+        <div class="note">
+          <p class="lab">◆ 搭配建議</p>
+          <p>加鮮奶調成冰釀拿鐵，或著碰上氣泡，都是更加分的存在。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 花季濃縮 ============ -->
+    <section class="bean rv" style="--accent:var(--berry);--accent-tint:color-mix(in srgb,var(--berry) 11%,transparent)">
+      <div class="bean-head">
+        <div class="bean-spectrum" aria-hidden="true">
+          <i style="background:var(--berry)"></i><i style="background:var(--peach)"></i><i style="background:var(--terra)"></i>
+        </div>
+        <h1 class="bean-name">花季濃縮 <span class="en">Espresso 基底・本店義式配方豆</span></h1>
+      </div>
+
+      <dl class="spec">
+        <div class="row"><dt>定位</dt><dd>本店義式基底配方豆</dd></div>
+        <div class="row"><dt>來源</dt><dd>花季 —— 來自知名桃園的烘豆師的義式配方</dd></div>
+        <div class="row"><dt>應用</dt><dd>espresso、拿鐵、卡布、美式等所有義式飲品</dd></div>
+        <div class="row"><dt>建議售價<span class="muted" style="font-weight:400">（購豆）</span></dt><dd><span class="price">550 元／磅</span>　可以選購 100G 的小包裝回家喝喝看</dd></div>
+      </dl>
+
+      <div class="flavour">
+        <p class="lab">◆ 風味印象</p>
+        <p><strong>草莓、莓果、花香、君度橙酒</strong>的風味，豐富卻輕盈。</p>
+      </div>
+
+      <div class="block">
+        <p class="lab">推薦給這樣的客人</p>
+        <div class="who"><span>每一個客人</span></div>
+      </div>
+
+      <div class="oneliner">
+        <span class="tip">一句話推薦</span>
+        <p>我們的拿鐵用的是花季配方，香氣飽滿、帶堅果可可的暖甜香，配上牛奶特別濃郁順口。</p>
+      </div>
+
+      <div class="block" style="margin-top:26px">
+        <p class="lab">完整介紹</p>
+        <div class="speech">
+          <p>「這個夏天，我們想提供的美式別於常見的柑橘／檸檬／堅果／可可香味，老闆獨愛像是<strong style="color:#fff">草莓、莓果、花香</strong>的風味，希望整個夏季的飲品呈現，給人的感受式像花季一樣，哇～很豐富輕盈的風味，搭配無論是氣泡、牛奶、冰熱飲，都很爽口舒服。」</p>
+        </div>
+      </div>
+
+      <div class="notes two">
+        <div class="note">
+          <p class="lab">◆ 加購／延伸話術</p>
+          <p>「如果您平常在家也會喝，這支花季有單獨賣豆喔，回家用義式機或摩卡壺都很適合。」</p>
+        </div>
+        <div class="note">
+          <p class="lab">◆ 搭配建議</p>
+          <p>點拿鐵的話可以配配看我們的流星巴斯克，如果是氣泡可以參考看看我們另一部份的甜點。</p>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ============ 通用話術 ============ -->
+    <section class="rv">
+      <div class="kicker"><span class="en">Anytime scripts</span><span class="rule"></span></div>
+      <h2>通用推薦與加購話術</h2>
+
+      <div class="scripts">
+        <div class="script">
+          <h3><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7a8.5 8.5 0 1 1 16.1-3.8z"/></svg>客人猶豫、不知道點什麼</h3>
+          <p class="say">「聊聊天氣（今天真的很⋯⋯喔！）、想喝熱的還是冷的呢，需要的話我可以幫您推薦，或是聊聊心情（我們今天在手沖上選了一支很有趣的豆子，他很適合想紓壓好好放假的感覺⋯帶有類似⋯）」</p>
+          <span class="push">— ！首打冰釀！</span>
+          <p class="say">「有沒有興趣來杯沒有酒精但卻酒香爆炸的冰釀咖啡，這是我們目前夏天的招牌呦，有興趣的話我幫您介紹⋯他是選用音樂家⋯⋯」</p>
+        </div>
+
+        <div class="script">
+          <h3><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h9l3 3v15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>推薦購豆（帶走延伸）</h3>
+          <p class="say">「今天有沒有覺得哪杯特別有印象？（微笑）如果喝得喜歡，我們的豆子有單獨賣，小包裝的品嘗包我們也有，都買來喝喝看。」</p>
+        </div>
+
+        <div class="script">
+          <h3><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>推薦看展（午月特色）</h3>
+          <p class="say">「我們樓下有個小展覽，展的是《24 Hours Sunset》，可以邊喝咖啡邊逛，喜歡的相關周邊作品都可以看看。」</p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="foot">
+    <div class="horizon"></div>
+    <p class="en">coffee · select · quiet hours</p>
+    <p class="name">午 月 咖 啡 廳</p>
+  </footer>
+
+</div>
+
+<script>
+  (function(){
+    var els=document.querySelectorAll('.rv');
+    if(!('IntersectionObserver' in window)||matchMedia('(prefers-reduced-motion:reduce)').matches){
+      els.forEach(function(e){e.classList.add('in')});return;
+    }
+    var io=new IntersectionObserver(function(en){
+      en.forEach(function(x){if(x.isIntersecting){x.target.classList.add('in');io.unobserve(x.target)}})
+    },{threshold:.12});
+    els.forEach(function(e){io.observe(e)});
+  })();
+</script>
+
+</body>
+</html>
