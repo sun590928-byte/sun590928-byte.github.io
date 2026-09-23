@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#2E3A4F">
+<title>午月營運帳務</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232E3A4F'/%3E%3Ccircle cx='32' cy='38' r='14' fill='%23C46A3F'/%3E%3Crect x='10' y='38' width='44' height='16' fill='%232E3A4F'/%3E%3Cpath d='M12 40h40' stroke='%23F4ECDD' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+<script>
+  // 主題：跟隨系統，可手動切換（記在本機）
+  try { var t = localStorage.getItem('wuyue-erp:theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="nav" id="nav" aria-label="主選單">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="var(--brand-ink)"/><circle cx="32" cy="38" r="14" fill="var(--terra)"/><rect x="10" y="38" width="44" height="16" fill="var(--brand-ink)"/><path d="M12 40h40" stroke="#F4ECDD" stroke-width="2"/></svg>
+      <div>
+        <div class="brand-name">午月</div>
+        <div class="brand-sub">營運・帳務系統</div>
+      </div>
+    </div>
+    <nav id="nav-links"></nav>
+    <div class="nav-foot">
+      <div id="mode-pill" class="mode-pill"></div>
+      <button class="btn ghost sm" id="theme-toggle" type="button">切換深淺色</button>
+    </div>
+  </aside>
+  <div class="nav-scrim" id="nav-scrim"></div>
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn menu-btn" id="menu-btn" type="button" aria-label="開啟選單">☰</button>
+      <div class="topbar-title">
+        <div class="crumb" id="crumb"></div>
+        <h1 id="page-title">載入中</h1>
+      </div>
+      <div class="topbar-actions" id="topbar-actions"></div>
+    </header>
+    <main id="view" class="view" tabindex="-1"></main>
+  </div>
+</div>
+<noscript><p style="padding:24px">本系統需要啟用 JavaScript。</p></noscript>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

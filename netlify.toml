@@ -1,0 +1,13 @@
+# 選用：若改用 Netlify 部署（純靜態，無建置）
+[build]
+  publish = "."
+  command = ""
+
+[[headers]]
+  for = "/erp/*"
+  [headers.values]
+    X-Robots-Tag = "noindex, nofollow"
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "same-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
