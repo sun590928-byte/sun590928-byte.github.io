@@ -1,0 +1,27 @@
+// 每月結帳前檢查表：系統可自動判斷的項目會直接亮燈，其餘由人員勾選。
+
+export const CHECK_ITEMS = [
+  { key: 'pos_imported', group: '營收', title: 'POS 銷售明細已匯入至月底最後一天', auto: (c) => c.lastSaleDate && c.lastSaleDate >= c.monthEnd },
+  { key: 'products_mapped', group: '營收', title: '新品項已完成整併／歸類（無未歸類品項）', auto: (c) => c.unmappedProducts === 0 },
+  { key: 'voids_reviewed', group: '營收', title: '老闆招待／老闆測試／報廢 明細已確認（金額作廢）', auto: null },
+  { key: 'pos_journal', group: '營收', title: 'POS 營收分錄已產生（每營業日一張）', auto: (c) => c.salesDays > 0 && c.salesDays === c.posEntryDays },
+  { key: 'unknown_payment', group: '營收', title: '付款方式皆可辨識（無「未指定」）', auto: (c) => c.unknownPaymentLines === 0 },
+  { key: 'card_recon', group: '金流', title: 'POS 刷卡金額與綠界刷卡明細逐日核對無差異', auto: (c) => (c.cardDays > 0 ? c.cardDiffDays === 0 : null) },
+  { key: 'payouts_booked', group: '金流', title: '綠界／LINE Pay 撥款已入帳並對應存摺', auto: (c) => (c.payouts > 0 ? c.payoutsUnbooked === 0 : null) },
+  { key: 'cash_count', group: '金流', title: '收銀現金與零用金盤點相符', auto: null },
+  { key: 'einvoice', group: '憑證', title: '電子發票平台進項發票已下載匯入', auto: null },
+  { key: 'photos', group: '憑證', title: '實體憑證已拍照上傳，AI 辨識結果已覆核', auto: (c) => (c.docs > 0 ? c.docsPending === 0 : null) },
+  { key: 'docs_attached', group: '憑證', title: '手動分錄（費用、進貨、資產）皆已附原始憑證', auto: (c) => (c.docEntries > 0 ? c.docEntriesMissing === 0 : null) },
+  { key: 'bank_rec', group: '銀行', title: '銀行存摺對帳完成，調節表差異為 0', auto: (c) => (c.bankLines > 0 ? Math.abs(c.bankRecDiff) < 0.5 : null) },
+  { key: 'stocktake', group: '存貨', title: '咖啡豆、乳品、包材已盤點並輸入期末存貨', auto: (c) => c.stocktakeDone },
+  { key: 'cogs', group: '存貨', title: '已產生月底存貨成本分錄', auto: (c) => c.cogsEntry },
+  { key: 'depreciation', group: '調整', title: '固定資產本月折舊已提列', auto: (c) => (c.assets > 0 ? c.depEntry : null) },
+  { key: 'assets_documented', group: '調整', title: '本月新增固定資產已附購置發票並做購置分錄', auto: (c) => (c.newAssets > 0 ? c.newAssetsIncomplete === 0 : null) },
+  { key: 'payroll', group: '調整', title: '薪資、勞健保、勞退已入帳', auto: null },
+  { key: 'accruals', group: '調整', title: '應付／預付費用已調整（租金、水電、記帳費）', auto: null },
+  { key: 'prepaid_cups', group: '調整', title: '寄杯預收款餘額已核對（未兌換杯數 × 單價）', auto: null },
+  { key: 'vat_ready', group: '申報', title: '營業稅申報資料已備妥（雙月的第二個月；到「營業稅申報（401）」工作表核對）', auto: null },
+  { key: 'tb_balanced', group: '報表', title: '試算表借貸平衡', auto: (c) => c.tbBalanced },
+  { key: 'bs_balanced', group: '報表', title: '資產負債表：資產 = 負債 + 權益', auto: (c) => c.bsBalanced },
+  { key: 'backup', group: '報表', title: '當月報表已匯出並備份', auto: null },
+];

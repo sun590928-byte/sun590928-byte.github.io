@@ -1,0 +1,6 @@
+# 咖啡豆介紹手冊（/）可被搜尋；營運帳務系統與開發檔案不收錄
+User-agent: *
+Disallow: /erp/
+Disallow: /tests/
+Disallow: /tools/
+Disallow: /supabase/

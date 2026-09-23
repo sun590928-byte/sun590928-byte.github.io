@@ -1,0 +1,21 @@
+# 這是公開 repo：營業資料（銷售明細、發票、存摺、照片、備份）一律不進版控
+*.csv
+*.xlsx
+*.xls
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.pdf
+*.json
+!tests/fixtures/*
+!package.json
+午月ERP備份_*
+.e2e-shots/
+node_modules/
+.DS_Store
+Thumbs.db
+supabase/.temp/
+supabase/.branches/
+.env
+.env.*
