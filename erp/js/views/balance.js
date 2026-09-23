@@ -5,7 +5,8 @@ import { store } from '../store.js';
 import { getAccounts, getSettings } from '../state.js';
 import { balanceSheet } from '../lib/ledger.js';
 import { monthEnd } from '../lib/dates.js';
-import { latestMonth, reportHead } from './_shared.js';
+import { latestMonth, reportHead, downloadWorkbook } from './_shared.js';
+import { balanceSheetRows } from '../lib/reportbook.js';
 
 export async function render(root, ctx) {
   const settings = await getSettings();
@@ -25,7 +26,7 @@ export async function render(root, ctx) {
         <label class="field"><span>截至日期</span><input type="date" value="${asOf}" data-act="asof"></label>
         <span class="spacer"></span>
         ${bs.balanced ? status('good', '資產＝負債＋權益') : status('bad', `不平衡，差額 ${fmt(bs.diff)}`)}
-        <button class="btn" data-act="print">列印</button><button class="btn ghost" data-act="export">匯出 CSV</button>
+        <button class="btn" data-act="print">列印</button><button class="btn" data-act="xlsx">匯出 Excel</button><button class="btn ghost" data-act="export">匯出 CSV</button>
       </div>
       <div class="card report">${head}
         <table class="fin">
@@ -58,6 +59,7 @@ export async function render(root, ctx) {
       draw();
     },
     print: () => window.print(),
+    xlsx: () => downloadWorkbook(`資產負債表_${asOf}.xlsx`, (meta) => balanceSheetRows(entries, accounts, { asOf }, { ...meta, period: `民國 ${Number(asOf.slice(0, 4)) - 1911} 年 ${Number(asOf.slice(5, 7))} 月 ${Number(asOf.slice(8))} 日` })),
     export: () => {
       const bs = root._bs;
       const rows = [['區塊', '代號', '項目', '金額']];

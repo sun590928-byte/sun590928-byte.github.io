@@ -5,7 +5,8 @@ import { store } from '../store.js';
 import { getAccounts, getSettings } from '../state.js';
 import { generalLedger } from '../lib/ledger.js';
 import { TYPE_LABELS } from '../lib/coa.js';
-import { periodFields, periodState, periodHandlers, resolvePeriod, latestMonth, accountSelect, reportHead, SOURCE_LABEL } from './_shared.js';
+import { periodFields, periodState, periodHandlers, resolvePeriod, latestMonth, accountSelect, reportHead, SOURCE_LABEL, downloadWorkbook } from './_shared.js';
+import { ledgerSheet } from '../lib/reportbook.js';
 
 export async function render(root, ctx) {
   const settings = await getSettings();
@@ -25,6 +26,7 @@ export async function render(root, ctx) {
         <label class="field"><span>會計項目</span>${accountSelect(accounts, f.acc, 'data-act="acc"')}</label>
         <span class="spacer"></span>
         <button class="btn" data-act="print">列印</button>
+        <button class="btn" data-act="xlsx">匯出 Excel</button>
         <button class="btn ghost" data-act="export">匯出 CSV</button>
       </div>
       <div class="card">${head}
@@ -57,6 +59,11 @@ export async function render(root, ctx) {
       draw();
     },
     print: () => window.print(),
+    xlsx: () => {
+      const per = resolvePeriod(p);
+      const list = f.acc ? entries.filter((e) => (e.lines || []).some((l) => l.account === f.acc)) : entries;
+      downloadWorkbook(`分類帳_${per.from}_${per.to}.xlsx`, (meta) => ledgerSheet(f.acc ? list.map((e) => ({ ...e, lines: e.lines.filter((l) => l.account === f.acc) })) : list, accounts, per, { ...meta, period: per.label }));
+    },
     export: () => {
       const rows = [['科目代號', '科目名稱', '日期', '傳票號碼', '摘要', '借方', '貸方', '餘額']];
       for (const g of root._gl.values()) {

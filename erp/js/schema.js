@@ -28,10 +28,11 @@ export const SCHEMA = {
   journal_entries: { label: '日記簿分錄', cols: { id: T, date: D, voucher_no: T, description: T, source: T, source_ref: T, status: T, lines: J, attachments: J, created_at: TS, updated_at: TS }, index: ['date', 'source'] },
   documents: {
     label: '原始憑證',
-    cols: { id: T, kind: T, status: T, storage_path: T, original_name: T, archived_name: T, mime: T, doc_date: D, vendor_name: T, vendor_tax_id: T, invoice_no: T, amount_total: N, tax_amount: N, summary: T, items: J, account: T, pay_account: T, confidence: N, ai: J, entry_id: T, einvoice_id: T, created_at: TS, updated_at: TS },
+    cols: { id: T, kind: T, status: T, storage_path: T, original_name: T, archived_name: T, mime: T, file_ext: T, doc_date: D, vendor_name: T, vendor_tax_id: T, buyer_tax_id: T, invoice_type: T, invoice_no: T, amount_total: N, tax_amount: N, deductible: B, summary: T, items: J, account: T, pay_account: T, confidence: N, ai: J, entry_id: T, einvoice_id: T, asset_id: T, created_at: TS, updated_at: TS },
+    index: ['doc_date', 'entry_id'],
   },
   einvoices: { label: '電子發票', cols: { id: T, batch_id: T, invoice_no: T, date: D, seller_tax_id: T, seller_name: T, buyer_tax_id: T, total: N, tax: N, status: T, voided: B, deductible: B, items: J, suggested_account: T, account: T, document_id: T, entry_id: T } },
-  fixed_assets: { label: '固定資產', cols: { id: T, name: T, category: T, acquired_on: D, cost: N, life_years: N, residual: N, disposed_on: D, supplier: T, note: T } },
+  fixed_assets: { label: '固定資產', cols: { id: T, name: T, category: T, acquired_on: D, cost: N, life_years: N, residual: N, disposed_on: D, supplier: T, invoice_no: T, tax_amount: N, pay_account: T, doc_ids: J, purchase_entry_id: T, note: T } },
   inventory_items: { label: '原物料品項', cols: { id: T, sku: T, name: T, category: T, unit: T, gl_account: T, safety_stock: N, reorder_qty: N, supplier_id: T, std_cost: N, active: B } },
   inventory_moves: { label: '進銷存異動', cols: { id: T, item_id: T, date: D, type: T, qty: N, amount: N, supplier_id: T, order_date: D, yield_score: N, invoice_no: T, note: T }, index: ['date'] },
   recipes: { label: '配方（BOM）', cols: { id: T, product_id: T, item_id: T, qty: N } },
@@ -41,7 +42,10 @@ export const SCHEMA = {
   campaigns: { label: '行銷活動', cols: { id: T, name: T, type: T, start_date: D, end_date: D, keywords: T, issued_qty: N, redeemed_qty: N, marketing_cost: N, note: T } },
   checklist: { label: '月結檢查', cols: { id: T, month: T, key: T, done: B, note: T, done_at: TS } },
   tax_tasks: { label: '申報事項', cols: { id: T, done: B, note: T, done_at: TS } },
-  files: { label: '憑證影像（本機）', cols: { id: T, name: T, type: T, size: N, blob: T }, localOnly: true },
+  tax_filings: {
+    label: '營業稅申報紀錄',
+    cols: { id: T, period_from: T, period_to: T, status: T, sales_ex: N, output_tax: N, input_tax: N, input_asset_tax: N, prev_cf: N, payable: N, refund: N, cf: N, platform_sales_ex: N, platform_output_tax: N, claimed: J, filed_on: D, paid_on: D, receipt_no: T, entry_id: T, pay_entry_id: T, note: T, updated_at: TS },
+  },
 };
 
 export const COLLECTIONS = Object.keys(SCHEMA);

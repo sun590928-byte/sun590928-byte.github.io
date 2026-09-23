@@ -8,7 +8,9 @@ import { trialBalance, balanceSheet } from '../lib/ledger.js';
 import { dailyCardRecon } from '../lib/payments.js';
 import { bookLines, autoMatch, reconciliation } from '../lib/bank.js';
 import { monthEnd } from '../lib/dates.js';
-import { latestMonth } from './_shared.js';
+import { latestMonth, needsDocument, downloadWorkbook } from './_shared.js';
+import { journalSheet, ledgerSheet, trialSheet, incomeSheet, balanceSheetRows, assetsSheet, documentsSheet } from '../lib/reportbook.js';
+import { accountMap } from '../lib/coa.js';
 
 export async function render(root, ctx) {
   const settings = await getSettings();
@@ -38,6 +40,9 @@ export async function render(root, ctx) {
       bankRecDiff = reconciliation({ bankLines: bLines, books, matches: autoMatch(bLines, books), asOf: to }).diff;
     }
     const lastSale = mLines.reduce((m, l) => (l.date > m ? l.date : m), '');
+    const accMap = accountMap(accounts);
+    const docEntries = entries.filter((e) => e.date >= from && e.date <= to && needsDocument(e, accMap));
+    const newAssets = assets.filter((a) => a.acquired_on >= from && a.acquired_on <= to && a.acquired_on >= settings.revenue_start);
     return {
       monthEnd: to,
       lastSaleDate: lastSale,
@@ -57,6 +62,10 @@ export async function render(root, ctx) {
       cogsEntry: entries.some((e) => e.source === 'cogs' && e.source_ref === ym),
       assets: assets.filter((a) => a.acquired_on && a.acquired_on <= to).length,
       depEntry: entries.some((e) => e.source === 'depreciation' && e.source_ref === ym),
+      docEntries: docEntries.length,
+      docEntriesMissing: docEntries.filter((e) => !(e.attachments || []).length).length,
+      newAssets: newAssets.length,
+      newAssetsIncomplete: newAssets.filter((a) => !(a.doc_ids || []).length || !a.purchase_entry_id).length,
       tbBalanced: trialBalance(entries, accounts, { to }).balanced,
       bsBalanced: balanceSheet(entries, accounts, { asOf: to }).balanced,
     };
@@ -80,6 +89,7 @@ export async function render(root, ctx) {
         <label class="field"><span>結帳月份</span><input type="month" value="${f.ym}" data-act="ym"></label>
         <span class="spacer"></span>
         <span>${status(doneN === rows.length ? 'good' : 'warn', `完成 ${doneN} / ${rows.length}`)}</span>
+        <button class="btn" data-act="book">下載本月帳冊（Excel）</button>
         ${locked ? h`<span class="badge high">已鎖定</span>` : h`<button class="btn primary" data-act="lock">結帳並鎖定 ${f.ym}</button>`}
       </div>
       <div class="callout" style="margin-bottom:14px"><p>「系統判斷」欄由資料自動檢查（✓ 通過、✕ 未通過、– 本月無此資料）；其餘項目完成後請勾選。建議每月 5 日前完成上月結帳，再到「申報行事曆」確認當月申報事項。</p></div>
@@ -112,6 +122,10 @@ export async function render(root, ctx) {
         return `${c.payoutsUnbooked} 筆撥款未入帳`;
       case 'photos':
         return `${c.docsPending} 張憑證待覆核`;
+      case 'docs_attached':
+        return `${c.docEntriesMissing} 張分錄缺原始憑證（日記簿「來源」選「缺原始憑證」可篩出）`;
+      case 'assets_documented':
+        return `${c.newAssetsIncomplete} 項資產缺發票或購置分錄`;
       case 'bank_rec':
         return `調節差異 ${fmt(c.bankRecDiff)}`;
       case 'stocktake':
@@ -149,6 +163,25 @@ export async function render(root, ctx) {
     },
     note: async (el) => {
       await save(el.dataset.k, { note: el.value });
+    },
+    book: async () => {
+      const ym = f.ym;
+      const roc = `民國 ${Number(ym.slice(0, 4)) - 1911} 年 ${Number(ym.slice(5))} 月`;
+      const month = { from: `${ym}-01`, to: monthEnd(ym) };
+      const ytd = { from: `${ym.slice(0, 4)}-01-01`, to: monthEnd(ym) };
+      await downloadWorkbook(`午月帳冊_${ym}.xlsx`, (meta) => [
+        journalSheet(entries, accounts, month, { ...meta, period: roc }),
+        ledgerSheet(entries, accounts, month, { ...meta, period: roc }),
+        trialSheet(entries, accounts, month, { ...meta, period: roc }),
+        trialSheet(entries, accounts, ytd, { ...meta, period: `民國 ${Number(ym.slice(0, 4)) - 1911} 年 1 月至 ${Number(ym.slice(5))} 月` }, '試算表（累計）'),
+        incomeSheet(entries, accounts, month, { ...meta, period: roc }),
+        incomeSheet(entries, accounts, ytd, { ...meta, period: `民國 ${Number(ym.slice(0, 4)) - 1911} 年 1 月至 ${Number(ym.slice(5))} 月` }, '損益表（累計）'),
+        balanceSheetRows(entries, accounts, { asOf: month.to }, { ...meta, period: `${roc}底` }),
+        assetsSheet(assets, ym, { ...meta, period: `截至${roc}` }),
+        documentsSheet(docs, month, { ...meta, period: roc }),
+      ]);
+      await save('backup', { done: true, note: `已下載帳冊 ${new Date().toLocaleDateString('zh-TW')}` });
+      draw();
     },
     lock: async () => {
       const c = context();

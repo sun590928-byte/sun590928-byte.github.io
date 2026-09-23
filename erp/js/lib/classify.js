@@ -48,8 +48,8 @@ export function classifyExpense({ vendor = '', items = [], text = '' } = {}) {
   return { account: acc, confidence: Math.max(0.2, confidence), label: RULES.find((r) => r.account === acc).label, alternatives: ranked.slice(1, 3).map((x) => x[0]) };
 }
 
-// 統一發票號碼：2 碼英文 + 8 碼數字
-export const INVOICE_RE = /\b([A-Z]{2})[-\s]?(\d{8})\b/;
+// 統一發票號碼：2 碼英文 + 8 碼數字（前後不能緊接英數字；底線、連字號等分隔符號可以）
+export const INVOICE_RE = /(?<![A-Za-z0-9])([A-Z]{2})[-\s]?(\d{8})(?!\d)/;
 
 export function isValidTaxId(id) {
   // 營利事業統一編號檢查碼（2023 起除數改為 5，並相容舊制 10）

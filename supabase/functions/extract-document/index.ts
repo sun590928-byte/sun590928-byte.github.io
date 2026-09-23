@@ -9,14 +9,20 @@ const MODEL = Deno.env.get("CLAUDE_MODEL") ?? "claude-opus-5";
 const MAX_BYTES = 12 * 1024 * 1024;
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
+// 允許呼叫的網站來源（逗號分隔）；未設定時不限制來源（仍須登入且在白名單）
+// 例：supabase secrets set ALLOWED_ORIGINS=https://sun590928-byte.github.io
+const ALLOWED = (Deno.env.get("ALLOWED_ORIGINS") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json; charset=utf-8" } });
+function corsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get("Origin") ?? "";
+  const allow = !ALLOWED.length ? "*" : ALLOWED.includes(origin) ? origin : ALLOWED[0];
+  return {
+    "Access-Control-Allow-Origin": allow,
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    Vary: "Origin",
+  };
+}
 
 const nullable = (type: string) => ({ anyOf: [{ type }, { type: "null" }] });
 
@@ -24,12 +30,14 @@ const nullable = (type: string) => ({ anyOf: [{ type }, { type: "null" }] });
 const SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["kind", "doc_date", "vendor_name", "vendor_tax_id", "invoice_no", "amount_total", "tax_amount", "items", "summary", "suggested_account", "confidence", "notes", "payouts"],
+  required: ["kind", "invoice_type", "doc_date", "vendor_name", "vendor_tax_id", "buyer_tax_id", "invoice_no", "amount_total", "tax_amount", "items", "summary", "suggested_account", "confidence", "notes", "payouts"],
   properties: {
     kind: { type: "string", enum: ["invoice", "receipt", "payout_statement", "other"] },
+    invoice_type: { type: "string", enum: ["電子發票", "三聯式發票", "收銀機發票", "二聯式發票", "收據", "其他"], description: "憑證種類" },
     doc_date: { ...nullable("string"), description: "西元日期 YYYY-MM-DD（民國年請 +1911 換算）" },
     vendor_name: nullable("string"),
     vendor_tax_id: { ...nullable("string"), description: "賣方統一編號 8 碼" },
+    buyer_tax_id: { ...nullable("string"), description: "買方（買受人）統一編號 8 碼；發票上沒有載明則為 null" },
     invoice_no: { ...nullable("string"), description: "統一發票號碼：2 碼英文 + 8 碼數字，不含連字號" },
     amount_total: { ...nullable("number"), description: "含稅總金額（新台幣元）" },
     tax_amount: { ...nullable("number"), description: "營業稅額；二聯式或收據未載明則為 null" },
@@ -70,7 +78,7 @@ const SCHEMA = {
 
 const SYSTEM = `你是台灣咖啡廳的記帳助理，負責讀取支出憑證影像並擷取資料。
 憑證類型：
-- 統一發票（電子發票證明聯、三聯式、收銀機發票）：發票號碼為 2 碼英文字軌 + 8 碼數字；日期常為民國年（例 115-09-01 = 2026-09-01）；三聯式或載明買方統編者通常分列銷售額與稅額。
+- 統一發票（電子發票證明聯、三聯式、收銀機發票）：發票號碼為 2 碼英文字軌 + 8 碼數字；日期常為民國年（例 115-09-01 = 2026-09-01）；三聯式或載明買方統編者通常分列銷售額與稅額。電子發票證明聯上的「買方」欄即買方統編，只有載明買方統編的發票，進項稅額才能扣抵。
 - 收據（免用統一發票收據、手寫收據、網購明細）：可能沒有發票號碼與稅額。
 - 撥款明細（LINE Pay、綠界、街口等金流的撥款/入帳截圖）：kind 設為 payout_statement，逐筆填入 payouts（撥款日、交易總額、手續費、實撥金額、交易期間）。
 規則：
@@ -85,8 +93,12 @@ function toBase64(bytes: Uint8Array): string {
 }
 
 Deno.serve(async (req) => {
+  const CORS = corsHeaders(req);
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json; charset=utf-8" } });
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json({ error: "只接受 POST" }, 405);
+  if (ALLOWED.length && !ALLOWED.includes(req.headers.get("Origin") ?? "")) return json({ error: "來源網站不在允許清單" }, 403);
   try {
     const auth = req.headers.get("Authorization") ?? "";
     const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!, { global: { headers: { Authorization: auth } } });

@@ -4,7 +4,8 @@ import { h, mount, bindActions, fmt, downloadCSV } from '../ui.js';
 import { store } from '../store.js';
 import { getAccounts, getSettings } from '../state.js';
 import { incomeStatement } from '../lib/ledger.js';
-import { periodFields, periodState, periodHandlers, resolvePeriod, latestMonth, reportHead } from './_shared.js';
+import { periodFields, periodState, periodHandlers, resolvePeriod, latestMonth, reportHead, downloadWorkbook } from './_shared.js';
+import { incomeSheet } from '../lib/reportbook.js';
 
 export async function render(root, ctx) {
   const settings = await getSettings();
@@ -26,7 +27,7 @@ export async function render(root, ctx) {
     const neg = (rows) => rows.map((r) => h`<tr class="i"><td>減：${r.name}</td><td class="amt">(${fmt(r.amount)})</td><td class="pct">${pc(-r.amount)}</td></tr>`);
     mount(
       root,
-      h`<div class="toolbar no-print">${periodFields(p)}<span class="spacer"></span><button class="btn" data-act="print">列印</button><button class="btn ghost" data-act="export">匯出 CSV</button></div>
+      h`<div class="toolbar no-print">${periodFields(p)}<span class="spacer"></span><button class="btn" data-act="print">列印</button><button class="btn" data-act="xlsx">匯出 Excel</button><button class="btn ghost" data-act="export">匯出 CSV</button></div>
       <div class="card report">${head}
         <table class="fin">
           <tr class="h"><td>營業收入</td><td class="amt"></td><td class="pct">%</td></tr>
@@ -54,6 +55,10 @@ export async function render(root, ctx) {
   const unbind = bindActions(root, {
     ...periodHandlers(p, ctx, draw),
     print: () => window.print(),
+    xlsx: () => {
+      const per = resolvePeriod(p);
+      downloadWorkbook(`綜合損益表_${per.from}_${per.to}.xlsx`, (meta) => incomeSheet(entries, accounts, per, { ...meta, period: per.label }));
+    },
     export: () => {
       const is = root._is;
       const rows = [['項目', '金額']];

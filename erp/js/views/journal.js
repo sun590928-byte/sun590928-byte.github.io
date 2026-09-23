@@ -5,10 +5,11 @@ import { store } from '../store.js';
 import { getSettings, getAccounts, saveSettings, isLocked } from '../state.js';
 import { accountMap } from '../lib/coa.js';
 import { entryTotals, voucherKind, nextVoucherNo, renumberMonth, closingEntry } from '../lib/ledger.js';
-import { addDays, monthEnd } from '../lib/dates.js';
+import { addDays, monthEnd, today } from '../lib/dates.js';
 import { uid } from '../lib/text.js';
 import { syncAll, describeSync } from '../sync.js';
-import { editEntry, SOURCE_LABEL, AUTO_SOURCES, latestMonth, accountSelect } from './_shared.js';
+import { editEntry, SOURCE_LABEL, AUTO_SOURCES, latestMonth, accountSelect, needsDocument, downloadWorkbook } from './_shared.js';
+import { journalSheet } from '../lib/reportbook.js';
 
 export async function render(root, ctx) {
   const settings = await getSettings();
@@ -16,11 +17,12 @@ export async function render(root, ctx) {
   const accMap = accountMap(accounts);
   let entries = await store.all('journal_entries');
   const f = { ym: ctx.params.ym || latestMonth(entries, settings.revenue_start), src: ctx.params.src || '', q: ctx.params.q || '' };
+  const missingDoc = (e) => needsDocument(e, accMap) && !(e.attachments || []).length;
 
   function list() {
     const q = f.q.trim().toLowerCase();
     return entries
-      .filter((e) => (f.ym === 'all' || e.date.startsWith(f.ym)) && (!f.src || e.source === f.src) && (!q || `${e.voucher_no} ${e.description} ${(e.lines || []).map((l) => `${l.account} ${accMap.get(l.account)?.name || ''} ${l.memo}`).join(' ')}`.toLowerCase().includes(q)))
+      .filter((e) => (f.ym === 'all' || e.date.startsWith(f.ym)) && (!f.src || (f.src === 'nodoc' ? missingDoc(e) : e.source === f.src)) && (!q || `${e.voucher_no} ${e.description} ${(e.lines || []).map((l) => `${l.account} ${accMap.get(l.account)?.name || ''} ${l.memo}`).join(' ')}`.toLowerCase().includes(q)))
       .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : (a.voucher_no || '') < (b.voucher_no || '') ? -1 : 1));
   }
 
@@ -40,7 +42,7 @@ export async function render(root, ctx) {
       root,
       h`<div class="toolbar">
         <label class="field"><span>月份</span><select data-act="ym">${options([['all', '全部'], ...months.map((m) => [m, `${Number(m.slice(0, 4)) - 1911} 年 ${Number(m.slice(5))} 月`])], f.ym)}</select></label>
-        <label class="field"><span>來源</span><select data-act="src">${options([['', '全部'], ...Object.entries(SOURCE_LABEL)], f.src)}</select></label>
+        <label class="field"><span>來源</span><select data-act="src">${options([['', '全部'], ['nodoc', '⚠ 缺原始憑證'], ...Object.entries(SOURCE_LABEL)], f.src)}</select></label>
         <label class="field"><span>搜尋</span><input type="search" value="${f.q}" data-act="q" placeholder="傳票號、摘要、科目"></label>
         <span class="spacer"></span>
         <button class="btn primary" data-act="add" ${locked ? raw('disabled') : ''}>＋ 新增分錄</button>
@@ -54,6 +56,7 @@ export async function render(root, ctx) {
           <span class="spacer"></span>
           ${f.ym !== 'all' && !locked ? h`<button class="btn sm" data-act="renumber">依日期重新編號</button><button class="btn sm" data-act="lock">結帳並鎖定本月</button>` : ''}
           ${f.ym !== 'all' && f.ym.endsWith('-12') ? h`<button class="btn sm" data-act="closing">產生年底結帳分錄</button>` : ''}
+          <button class="btn sm" data-act="xlsx">匯出 Excel</button>
           <button class="btn sm ghost" data-act="export">匯出 CSV</button>
           ${f.ym !== 'all' ? h`<a class="btn sm ghost" href="#/vouchers?ym=${f.ym}">列印本月傳票</a>` : ''}
         </div>
@@ -65,7 +68,7 @@ export async function render(root, ctx) {
               const n = e.lines.length;
               return e.lines.map(
                 (l, i) => h`<tr class="${i === 0 ? '' : 'sub'}">
-                ${i === 0 ? h`<td rowspan="${n}">${e.date}</td><td rowspan="${n}"><b>${e.voucher_no}</b><div class="muted" style="font-size:12px">${voucherKind(e)}</div>${badge(SOURCE_LABEL[e.source] || e.source, AUTO_SOURCES.has(e.source) ? 'accent' : '')}</td>` : ''}
+                ${i === 0 ? h`<td rowspan="${n}">${e.date}</td><td rowspan="${n}"><b>${e.voucher_no}</b><div class="muted" style="font-size:12px">${voucherKind(e)}</div>${badge(SOURCE_LABEL[e.source] || e.source, AUTO_SOURCES.has(e.source) ? 'accent' : '')}${(e.attachments || []).length ? h`<div class="muted" style="font-size:12px" title="附件憑證">📎 ${e.attachments.length} 張</div>` : missingDoc(e) ? h`<div class="status status-warn" style="font-size:12px"><span class="status-ic" aria-hidden="true">!</span>缺憑證</div>` : ''}</td>` : ''}
                 <td>${l.credit ? raw('<span class="indent"></span>') : ''}${l.account} ${accMap.get(l.account)?.name || '（未知科目）'}</td>
                 <td>${i === 0 ? h`<b>${e.description}</b>${l.memo ? h`<div class="muted">${l.memo}</div>` : ''}` : l.memo}</td>
                 <td class="num">${l.debit ? fmt(l.debit) : ''}</td><td class="num">${l.credit ? fmt(l.credit) : ''}</td>
@@ -100,7 +103,7 @@ export async function render(root, ctx) {
       draw();
     },
     add: async () => {
-      const d = f.ym !== 'all' ? (f.ym === new Date().toISOString().slice(0, 7) ? new Date().toISOString().slice(0, 10) : monthEnd(f.ym)) : undefined;
+      const d = f.ym !== 'all' ? (f.ym === today().slice(0, 7) ? today() : monthEnd(f.ym)) : undefined;
       if (await editEntry(null, { defaults: { date: d } })) reload();
     },
     edit: async (el) => {
@@ -111,10 +114,10 @@ export async function render(root, ctx) {
       const e = entries.find((x) => x.id === el.dataset.id);
       if (!(await confirmBox(`刪除傳票 ${e.voucher_no}「${e.description}」？`, { ok: '刪除', danger: true }))) return;
       await store.remove('journal_entries', e.id);
-      if (e.source === 'document' && e.source_ref) {
-        const doc = await store.get('documents', e.source_ref);
-        if (doc) await store.put('documents', { ...doc, entry_id: null, status: 'reviewed' });
-      }
+      const linked = (await store.all('documents')).filter((d) => d.entry_id === e.id);
+      if (linked.length) await store.put('documents', linked.map((d) => ({ ...d, entry_id: null, status: 'reviewed' })));
+      const asset = (await store.all('fixed_assets')).find((a) => a.purchase_entry_id === e.id);
+      if (asset) await store.put('fixed_assets', { ...asset, purchase_entry_id: null });
       toast('已刪除', 'good');
       reload();
     },
@@ -157,8 +160,8 @@ export async function render(root, ctx) {
     opening: async () => {
       const date = addDays(settings.revenue_start, -1);
       const existing = entries.find((e) => e.source === 'opening');
-      const assetsLike = accounts.filter((a) => ['1101', '1102', '1103', '1111', '1112', '1211', '1212', '1213', '1214', '1215', '1216', '1252', '1511', '1521', '1531', '1541', '1811'].includes(a.code));
-      const credits = accounts.filter((a) => ['1512', '1522', '1532', '1542', '2111', '2191', '2501'].includes(a.code));
+      const assetsLike = accounts.filter((a) => ['1101', '1102', '1103', '1111', '1112', '1211', '1212', '1213', '1214', '1215', '1216', '1252', '1261', '1262', '1511', '1521', '1531', '1541', '1811'].includes(a.code));
+      const credits = accounts.filter((a) => ['1512', '1522', '1532', '1542', '2111', '2122', '2131', '2132', '2191', '2501'].includes(a.code));
       const val = (code) => {
         const l = existing?.lines.find((x) => x.account === code);
         return l ? l.debit || l.credit : '';
@@ -170,7 +173,7 @@ export async function render(root, ctx) {
           <div class="grid-2">
             <div><h3 style="font-size:14px;margin:8px 0">資產（借方）</h3>${assetsLike.map((a) => h`<label class="field" style="margin-bottom:6px"><span>${a.code} ${a.name}</span><input type="number" step="1" data-code="${a.code}" data-side="d" value="${val(a.code)}"></label>`)}</div>
             <div><h3 style="font-size:14px;margin:8px 0">累計折舊、負債（貸方）</h3>${credits.map((a) => h`<label class="field" style="margin-bottom:6px"><span>${a.code} ${a.name}</span><input type="number" step="1" data-code="${a.code}" data-side="c" value="${val(a.code)}"></label>`)}
-            <p class="muted" style="font-size:12.5px">固定資產的取得成本與累計折舊可參考「固定資產與折舊」頁的期初數字。</p></div>
+            <p class="muted" style="font-size:12.5px">固定資產的取得成本與累計折舊可參考「固定資產與折舊」頁的期初數字。起算日所在的營業稅期別（例如 7–8 月）中，起算日前的銷項稅額列 2131、可扣抵進項稅額列 1261，營業稅工作表才能與申報數字一致。</p></div>
           </div>`,
         actions: [
           { label: '取消', value: null },
@@ -192,6 +195,12 @@ export async function render(root, ctx) {
       toast('期初開帳已儲存', 'good');
       f.ym = date.slice(0, 7);
       reload();
+    },
+    xlsx: () => {
+      const from = f.ym === 'all' ? '0000-01-01' : `${f.ym}-01`;
+      const to = f.ym === 'all' ? '9999-12-31' : monthEnd(f.ym);
+      const shown = new Set(list().map((e) => e.id));
+      downloadWorkbook(`日記簿_${f.ym}.xlsx`, (meta) => journalSheet(entries.filter((e) => shown.has(e.id)), accounts, { from, to }, { ...meta, period: f.ym === 'all' ? '全部期間' : `民國 ${Number(f.ym.slice(0, 4)) - 1911} 年 ${Number(f.ym.slice(5))} 月` }));
     },
     export: () => {
       const rows = [['日期', '傳票號碼', '傳票種類', '來源', '摘要', '科目代號', '科目名稱', '借方', '貸方', '說明']];

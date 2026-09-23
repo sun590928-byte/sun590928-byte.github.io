@@ -7,6 +7,7 @@ import { columnChart, barList, heatmap } from '../charts.js';
 import { CATEGORIES, PAYMENT_TYPES, VOID_REASONS } from '../lib/pos.js';
 import { eachDay, addDays, weekdayIndex, WEEKDAYS, today, daysBetween } from '../lib/dates.js';
 import { round2 } from '../lib/money.js';
+import { upcomingFilings, filingReminder } from './tax.js';
 
 const CAT_ORDER = ['coffee', 'non_coffee', 'food', 'retail', 'other'];
 const CAT_COLOR = { coffee: 'var(--series-1)', non_coffee: 'var(--series-2)', food: 'var(--series-3)', retail: 'var(--series-4)', other: 'var(--series-5)' };
@@ -14,8 +15,9 @@ const CAT_COLOR = { coffee: 'var(--series-1)', non_coffee: 'var(--series-2)', fo
 export async function render(root, ctx) {
   const settings = await getSettings();
   const all = await store.all('sales_lines');
+  const reminder = filingReminder(await upcomingFilings(settings), settings);
   if (!all.length) {
-    mount(root, h`<div class="card">${emptyState('歡迎使用午月營運帳務系統', '第一步：到「匯入中心」拖入 POS 銷售明細 CSV。系統會自動辨識欄位、把老闆測試／招待／報廢的金額作廢，並從 ' + settings.revenue_start + ' 起計算營收。', h`<a class="btn primary" href="#/import">前往匯入</a>`)}</div>`);
+    mount(root, h`${reminder}<div class="card">${emptyState('歡迎使用午月營運帳務系統', '第一步：到「匯入中心」拖入 POS 銷售明細 CSV。系統會自動辨識欄位、把老闆測試／招待／報廢的金額作廢，並從 ' + settings.revenue_start + ' 起計算營收。', h`<a class="btn primary" href="#/import">前往匯入</a>`)}</div>`);
     return;
   }
   const maxDate = all.reduce((m, l) => (l.date > m ? l.date : m), '');
@@ -104,6 +106,7 @@ export async function render(root, ctx) {
         )}</select></label>
         <span class="muted" style="padding-bottom:6px">${days[0]} ～ ${to}（資料最後一天）</span>
       </div>
+      ${reminder}
       ${!settings.vat_confirmed ? h`<div class="callout warn" style="margin-bottom:14px"><p>尚未確認營業稅類型（目前以「一般稅額 5% 內含」計算會計收入）。請到 <a href="#/settings">設定</a> 確認是否為小規模營業人。</p></div>` : ''}
       <div class="stats">
         ${stat('營業收入（含稅）', '$' + fmt(revenue), delta === null ? `營業 ${openDays} 天` : `較前 ${span} 天 ${delta >= 0 ? '▲' : '▼'} ${pct(Math.abs(delta))}`, delta === null ? 'hero' : delta >= 0 ? 'hero good' : 'hero bad')}

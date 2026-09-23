@@ -33,17 +33,21 @@ export async function unzip(buffer) {
     files.set(name, { method, csize, local });
     p += 46 + nlen + elen + clen;
   }
+  const readBytes = async (name) => {
+    const f = files.get(name);
+    if (!f) return null;
+    const lnl = dv.getUint16(f.local + 26, true);
+    const lel = dv.getUint16(f.local + 28, true);
+    const start = f.local + 30 + lnl + lel;
+    const data = u8.subarray(start, start + f.csize);
+    return f.method === 0 ? data : inflateRaw(data);
+  };
   return {
     names: [...files.keys()],
+    readBytes,
     async read(name) {
-      const f = files.get(name);
-      if (!f) return null;
-      const lnl = dv.getUint16(f.local + 26, true);
-      const lel = dv.getUint16(f.local + 28, true);
-      const start = f.local + 30 + lnl + lel;
-      const data = u8.subarray(start, start + f.csize);
-      const raw = f.method === 0 ? data : await inflateRaw(data);
-      return dec.decode(raw);
+      const raw = await readBytes(name);
+      return raw === null ? null : dec.decode(raw);
     },
   };
 }

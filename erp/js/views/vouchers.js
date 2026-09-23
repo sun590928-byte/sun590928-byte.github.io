@@ -6,11 +6,13 @@ import { getAccounts, getSettings } from '../state.js';
 import { accountMap } from '../lib/coa.js';
 import { voucherKind, entryTotals } from '../lib/ledger.js';
 import { latestMonth, SOURCE_LABEL } from './_shared.js';
+import { docLabel } from '../attach.js';
 
 export async function render(root, ctx) {
   const settings = await getSettings();
   const accMap = accountMap(await getAccounts());
   const entries = await store.all('journal_entries');
+  const docs = new Map((await store.all('documents')).map((d) => [d.id, d]));
   const f = { id: ctx.params.id || '', ym: ctx.params.ym || latestMonth(entries, settings.revenue_start), kind: ctx.params.kind || '', src: ctx.params.src || '' };
 
   function draw() {
@@ -44,6 +46,7 @@ export async function render(root, ctx) {
         <tbody>${e.lines.map((l) => h`<tr><td>${l.account}</td><td>${accMap.get(l.account)?.name || ''}</td><td>${l.memo || ''}</td><td class="amt">${l.debit ? fmt(l.debit) : ''}</td><td class="amt">${l.credit ? fmt(l.credit) : ''}</td></tr>`)}</tbody>
         <tfoot><tr><td colspan="3" style="text-align:right">合計</td><td class="amt">${fmt(t.debit)}</td><td class="amt">${fmt(t.credit)}</td></tr></tfoot>
       </table>
+      <div class="vatt">附件：${(e.attachments || []).length} 張${(e.attachments || []).length ? `（${e.attachments.map((id) => { const d = docs.get(id); return d?.archived_name || docLabel(d); }).join('；')}）` : ''}</div>
       <div class="sign"><div>負責人</div><div>主辦會計</div><div>覆核</div><div>製單</div></div>
     </div>`;
   }

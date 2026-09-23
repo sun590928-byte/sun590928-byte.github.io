@@ -139,3 +139,9 @@ export function today() {
   const d = new Date();
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
+
+// 本地時間戳記 YYYYMMDDHHmm（檔名用）
+export function nowStamp() {
+  const d = new Date();
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}`;
+}

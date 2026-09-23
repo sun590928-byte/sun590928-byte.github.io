@@ -5,7 +5,8 @@ import { store } from '../store.js';
 import { getAccounts, getSettings } from '../state.js';
 import { trialBalance } from '../lib/ledger.js';
 import { TYPE_LABELS } from '../lib/coa.js';
-import { periodFields, periodState, periodHandlers, resolvePeriod, latestMonth, reportHead } from './_shared.js';
+import { periodFields, periodState, periodHandlers, resolvePeriod, latestMonth, reportHead, downloadWorkbook } from './_shared.js';
+import { trialSheet } from '../lib/reportbook.js';
 
 export async function render(root, ctx) {
   const settings = await getSettings();
@@ -21,7 +22,7 @@ export async function render(root, ctx) {
     let lastType = null;
     mount(
       root,
-      h`<div class="toolbar no-print">${periodFields(p)}<span class="spacer"></span>${tb.balanced ? status('good', '借貸平衡') : status('bad', '借貸不平衡，請檢查分錄')}<button class="btn" data-act="print">列印</button><button class="btn ghost" data-act="export">匯出 CSV</button></div>
+      h`<div class="toolbar no-print">${periodFields(p)}<span class="spacer"></span>${tb.balanced ? status('good', '借貸平衡') : status('bad', '借貸不平衡，請檢查分錄')}<button class="btn" data-act="print">列印</button><button class="btn" data-act="xlsx">匯出 Excel</button><button class="btn ghost" data-act="export">匯出 CSV</button></div>
       <div class="card report" style="max-width:none">${head}
         <div class="table-wrap"><table class="grid">
           <thead>
@@ -43,6 +44,10 @@ export async function render(root, ctx) {
   const unbind = bindActions(root, {
     ...periodHandlers(p, ctx, draw),
     print: () => window.print(),
+    xlsx: () => {
+      const per = resolvePeriod(p);
+      downloadWorkbook(`試算表_${per.from}_${per.to}.xlsx`, (meta) => trialSheet(entries, accounts, per, { ...meta, period: per.label }));
+    },
     export: () => {
       const tb = root._tb;
       downloadCSV(`試算表_${resolvePeriod(p).to}.csv`, [['代號', '會計項目', '期初借方', '期初貸方', '本期借方', '本期貸方', '期末借方', '期末貸方'], ...tb.rows.map((r) => [r.code, r.name, r.openDr, r.openCr, r.periodDr, r.periodCr, r.closeDr, r.closeCr]), ['', '合計', tb.totals.openDr, tb.totals.openCr, tb.totals.periodDr, tb.totals.periodCr, tb.totals.closeDr, tb.totals.closeCr]]);

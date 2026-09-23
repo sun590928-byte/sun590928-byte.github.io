@@ -6,6 +6,7 @@ import { readFile, mkdir } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { readXlsx } from '../erp/js/lib/xlsx.js';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -30,7 +31,8 @@ const server = createServer(async (req, res) => {
 await new Promise((r) => server.listen(8123, '127.0.0.1', r));
 await mkdir(OUT, { recursive: true });
 
-const browser = await chromium.launch();
+// 瀏覽器需要 UTF-8 語系，下載的中文檔名才不會變成 download
+const browser = await chromium.launch({ env: { ...process.env, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' } });
 const ctx = await browser.newContext({ viewport: { width: 1360, height: 900 }, locale: 'zh-TW', timezoneId: 'Asia/Taipei' });
 const page = await ctx.newPage();
 const errors = [];
@@ -65,9 +67,51 @@ const commit = async () => {
 const assert = (cond, msg) => {
   if (!cond) throw new Error('檢查失敗：' + msg);
 };
+const PASS = '午月咖啡2026';
+const unlock = async (pass = PASS) => {
+  await page.waitForSelector('#g-unlock');
+  await page.fill('#g-unlock [name=p]', pass);
+  await page.click('#g-unlock [type=submit]');
+};
+// 讀取 IndexedDB 裡實際存放的內容，確認沒有明文
+const rawDb = () =>
+  page.evaluate(async () => {
+    const db = await new Promise((r, j) => {
+      const q = indexedDB.open('wuyue-erp');
+      q.onsuccess = () => r(q.result);
+      q.onerror = () => j(q.error);
+    });
+    const all = (s) => new Promise((r) => (db.transaction(s).objectStore(s).getAll().onsuccess = (e) => r(e.target.result)));
+    const td = new TextDecoder();
+    const enc = await all('_enc');
+    const files = await all('_files');
+    const meta = await all('_meta');
+    const text = [...enc, ...files].map((x) => td.decode(x.data)).join('') + JSON.stringify(meta);
+    db.close();
+    return { tables: enc.map((x) => x.id), files: files.length, plain: /拿鐵|美式|咖啡|全聯|午月咖啡2026/.test(text) };
+  });
 
 try {
-  await go('dashboard');
+  // 第一次開啟：設定開啟密碼 → 復原碼 → 進入
+  await page.goto(BASE + '#/dashboard');
+  await page.waitForSelector('#g-setup');
+  await shot('gate-setup', false);
+  await page.fill('#g-setup [name=p1]', '1234');
+  await page.fill('#g-setup [name=p2]', '1234');
+  await page.click('#g-setup [type=submit]');
+  await page.waitForTimeout(300);
+  assert(await page.isVisible('#g-setup'), '太短的密碼不能建立');
+  await page.fill('#g-setup [name=p1]', PASS);
+  await page.fill('#g-setup [name=p2]', PASS);
+  await page.click('#g-setup [type=submit]');
+  await page.waitForSelector('#g-code');
+  const recovery = (await page.textContent('#g-code')).trim();
+  assert(/^[0-9A-Z]{5}(-[0-9A-Z]{5}){4}$/.test(recovery), '復原碼格式 ' + recovery);
+  await shot('gate-recovery', false);
+  await page.check('#g-ok');
+  await page.click('#g-next');
+  await page.waitForSelector('#nav-links a');
+  await page.waitForFunction(() => !document.querySelector('#view')?.textContent.includes('載入中'));
   assert(await page.isVisible('text=歡迎使用午月營運帳務系統'), '首頁空狀態');
   await shot('dashboard-empty', false);
 
@@ -147,6 +191,34 @@ try {
   await page.fill('dialog [name=cost]', '180000');
   await page.click('dialog .btn.primary');
   await page.waitForSelector('text=2,500');
+  assert(await page.isVisible('text=期初開帳'), '起算日前購置的資產列入期初');
+  // 新購製冰機：上傳發票 → 儲存 → 建立購置分錄（預填、可修改）
+  await page.click('[data-act="add"]');
+  await page.fill('dialog [name=name]', '製冰機');
+  await page.selectOption('dialog [name=category]', 'equipment');
+  {
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('dialog [data-att="upload"]')]);
+    await chooser.setFiles([{ name: '20260905_冷凍設備行_製冰機_CD12345678_31500.png', mimeType: 'image/png', buffer: await readFile(FX('20260902_全聯_鮮乳2瓶_356.png')) }]);
+  }
+  await page.waitForSelector('dialog .attach-chip');
+  const prefilled = await page.$$eval('dialog [name=acquired_on], dialog [name=cost], dialog [name=tax_amount], dialog [name=invoice_no], dialog [name=supplier]', (els) => els.map((el) => el.value));
+  console.log('發票帶入：', prefilled);
+  assert(JSON.stringify(prefilled) === JSON.stringify(['2026-09-05', '30000', '1500', 'CD12345678', '冷凍設備行']), '從發票檔名帶入日期、成本、稅額、發票號、廠商');
+  await shot('asset-dialog', false);
+  await page.click('dialog .modal-foot .btn.primary');
+  await page.waitForSelector('dialog >> text=要現在建立「製冰機」的購置分錄嗎');
+  await page.click('dialog .modal-foot .btn.primary');
+  await page.waitForSelector('dialog >> text=建立購置分錄：製冰機');
+  const lines = await page.$$eval('dialog #je-lines tr', (trs) => trs.map((tr) => [tr.querySelector('[name=acc]').value, tr.querySelector('[name=dr]').value, tr.querySelector('[name=cr]').value]));
+  console.log('購置分錄預填：', lines);
+  assert(JSON.stringify(lines) === JSON.stringify([['1521', '30000', ''], ['1261', '1500', ''], ['1103', '', '31500']]), '購置分錄預填借資產、進項稅額，貸銀行');
+  assert((await page.textContent('dialog #je-bal')).includes('平衡'), '購置分錄借貸平衡');
+  assert(await page.isVisible('dialog .attach-chip'), '購置分錄帶入發票附件');
+  await shot('asset-purchase-entry', false);
+  await page.click('dialog .modal-foot .btn.primary');
+  await page.waitForFunction(() => [...document.querySelectorAll('table.grid tbody tr')].some((tr) => tr.textContent.includes('製冰機') && /11509-\d{4}/.test(tr.textContent)), null, { timeout: 10000 }).catch(() => {});
+  const assetRow = await page.$$eval('table.grid tbody tr', (trs) => trs.map((tr) => tr.textContent).find((t) => t.includes('製冰機')));
+  assert(/11509-\d{4}/.test(assetRow), '資產列顯示購置分錄傳票號 ' + assetRow);
   await shot('assets');
 
   // 金流、成本、月結、行事曆、損益、設定
@@ -183,6 +255,37 @@ try {
     await page.click('[data-act="tab"][data-t="posted"]');
     await shot('documents-posted', false);
   }
+
+  // 營業稅 401 工作表：固定資產進項稅額、產生結轉分錄、標記申報
+  await go('vat?p=2026-09');
+  const vatText = await page.textContent('#view');
+  assert(vatText.includes('CD12345678') && vatText.includes('固定資產'), '401 進項清單列出資產發票');
+  assert(vatText.includes('1,500'), '固定資產進項稅額 1,500');
+  await shot('vat');
+  assert(!(await page.textContent('#view')).includes('帳上本期進項稅額'), '資產發票稅額與帳上進項稅額一致');
+  await page.click('[data-act="settle"]');
+  await page.waitForSelector('text=結轉分錄：');
+  await page.click('[data-act="file"]');
+  if (await page.isVisible('dialog >> text=仍要標記已申報')) await page.click('dialog .modal-foot .btn.primary');
+  await page.waitForSelector('text=已申報（');
+  await go('tax?year=2026');
+  assert(await page.isVisible('text=目標 11/12（四）'), '行事曆顯示 9–10 月營業稅目標日 11/12');
+  await go('journal?ym=2026-10');
+  assert((await page.textContent('table.grid')).includes('營業稅結轉（115 年 9–10 月）'), '日記簿有營業稅結轉分錄');
+  // 月結：下載本月帳冊（Excel）
+  await go('closing?ym=2026-09');
+  {
+    const [dl] = await Promise.all([page.waitForEvent('download'), page.click('[data-act="book"]')]);
+    assert(dl.suggestedFilename() === '午月帳冊_2026-09.xlsx', '帳冊檔名 ' + dl.suggestedFilename());
+    const file = join(OUT, dl.suggestedFilename());
+    await dl.saveAs(file);
+    const wb = await readXlsx(new Uint8Array(await readFile(file)));
+    console.log('帳冊工作表：', wb.map((w) => `${w.name}(${w.rows.length})`).join('、'));
+    assert(wb.length === 9 && wb[0].name === '日記簿' && wb.some((w) => w.name === '資產負債表'), '帳冊包含 9 張工作表');
+  }
+  // 日記簿篩選「缺原始憑證」
+  await go('journal?ym=2026-08&src=nodoc');
+  await shot('journal-nodoc', false);
 
   // 營運：新增原料 → 進貨 → 配方 → 庫存水位扣除 POS 耗用
   await go('inventory');
@@ -228,6 +331,75 @@ try {
   console.log('活動成效：', cp);
   assert(Number(cp[3].replace(/,/g, '')) > 0, '活動有符合訂單');
   await shot('campaigns', false);
+
+  // 安全性：IndexedDB 只有密文；上鎖 → 錯誤密碼 → 正確密碼 → 復原碼重設
+  const raw1 = await rawDb();
+  console.log('加密儲存：', raw1);
+  assert(raw1.tables.includes('sales_lines') && raw1.tables.includes('journal_entries') && !raw1.plain, 'IndexedDB 沒有明文');
+  assert(raw1.files >= 2, '憑證照片已加密保存');
+  await page.click('#lock-btn');
+  await page.waitForSelector('#g-unlock');
+  await shot('gate-locked', false);
+  await unlock('wrong-password-1');
+  await page.waitForSelector('text=密碼錯誤');
+  await unlock();
+  await page.waitForSelector('#nav-links a');
+  await page.click('#lock-btn');
+  await page.waitForSelector('#g-forgot');
+  await page.click('#g-forgot');
+  await page.fill('#g-rec [name=code]', recovery.toLowerCase().replace(/-/g, ' '));
+  await page.fill('#g-rec [name=p1]', 'NewPass-2026');
+  await page.fill('#g-rec [name=p2]', 'NewPass-2026');
+  await page.click('#g-rec [type=submit]');
+  await page.waitForSelector('#g-code');
+  const recovery2 = (await page.textContent('#g-code')).trim();
+  assert(recovery2 !== recovery, '重設後換新復原碼');
+  await page.check('#g-ok');
+  await page.click('#g-next');
+  await page.waitForSelector('#nav-links a');
+  await page.click('#lock-btn');
+  await unlock('NewPass-2026');
+  await page.waitForSelector('#nav-links a');
+  await go('journal?ym=2026-09');
+  assert((await page.textContent('table.grid')).includes('POS 營收 2026-09'), '解鎖後資料仍在');
+
+  // 加密備份 → 還原
+  await go('settings');
+  let backupFile;
+  {
+    const clicked = page.click('[data-act="backup"]');
+    await page.waitForSelector('dialog [name=p1]');
+    await page.fill('dialog [name=p1]', 'Backup-2026');
+    await page.fill('dialog [name=p2]', 'Backup-2026');
+    const [dl] = await Promise.all([page.waitForEvent('download'), page.click('dialog .modal-foot .btn.primary')]);
+    await clicked;
+    backupFile = join(OUT, dl.suggestedFilename());
+    await dl.saveAs(backupFile);
+    const head = (await readFile(backupFile)).subarray(0, 8).toString();
+    const body = (await readFile(backupFile)).toString('latin1');
+    console.log('備份檔：', dl.suggestedFilename(), head);
+    assert(/^午月ERP備份_\d{12}\.wyb$/.test(dl.suggestedFilename()), '備份檔名 ' + dl.suggestedFilename());
+    assert(head === 'WUYUEBK1' && !/POS|journal_entries/.test(body), '備份檔已加密');
+  }
+  {
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="restore"]')]);
+    await chooser.setFiles(backupFile);
+    await page.waitForSelector('dialog [name=p]');
+    await page.fill('dialog [name=p]', 'wrong-backup');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('text=備份密碼錯誤');
+    const [chooser2] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="restore"]')]);
+    await chooser2.setFiles(backupFile);
+    await page.waitForSelector('dialog [name=p]');
+    await page.fill('dialog [name=p]', 'Backup-2026');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('dialog >> text=覆蓋還原');
+    await page.click('dialog .modal-foot .btn.danger');
+    await unlock('NewPass-2026');
+    await page.waitForSelector('#nav-links a');
+    await go('journal?ym=2026-10');
+    assert((await page.textContent('table.grid')).includes('營業稅結轉'), '還原後資料完整');
+  }
 
   // 手機版
   await page.setViewportSize({ width: 390, height: 844 });

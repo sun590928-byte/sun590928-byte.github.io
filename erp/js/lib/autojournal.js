@@ -14,18 +14,23 @@ function add(map, key, v) {
  * @param lines 已篩選營收期間的銷售明細
  * @param categoryOf (line) => 品類（依品項整併後的主檔）
  * @param vatMode 'general'（一般稅額 5% 內含）| 'small'（小規模，營業稅另計費用）| 'none'
+ * @param prepaidVat 寄杯／預購：'sale' 收款時開立發票（售出當天認列銷項稅額，兌換時不再計稅）| 'redeem' 兌換時開立
  */
-export function salesJournal(lines, { categoryOf, vatMode = 'general', paymentAccounts = DEBIT_ACCOUNT_BY_PAYMENT } = {}) {
+export function salesJournal(lines, { categoryOf, vatMode = 'general', paymentAccounts = DEBIT_ACCOUNT_BY_PAYMENT, prepaidVat = 'sale' } = {}) {
+  const taxable = vatMode === 'general';
+  const vatAtSale = taxable && prepaidVat !== 'redeem';
   const byDate = new Map();
   for (const l of lines) {
     if (l.void_reason) continue;
     let d = byDate.get(l.date);
-    if (!d) byDate.set(l.date, (d = { debits: new Map(), gross: new Map(), discount: 0, count: 0, orders: new Set(), unknownPay: 0 }));
+    if (!d) byDate.set(l.date, (d = { debits: new Map(), gross: new Map(), discount: 0, count: 0, orders: new Set(), unknownPay: 0, redeem: 0 }));
     d.count++;
     if (l.order_no) d.orders.add(l.order_no);
     const payAcc = paymentAccounts[l.payment] || paymentAccounts.unknown;
     if (l.payment === 'unknown') d.unknownPay += l.amount;
-    add(d.debits, payAcc, l.amount);
+    // 寄杯兌換：售出時已開發票、已計銷項稅額，兌換時只把預收款（未稅）轉為收入
+    if (vatAtSale && l.payment === 'prepaid') d.redeem = round2(d.redeem + l.amount);
+    else add(d.debits, payAcc, l.amount);
     if (l.amount < 0 || l.is_adjustment) {
       d.discount = round2(d.discount - l.amount);
       continue;
@@ -43,20 +48,25 @@ export function salesJournal(lines, { categoryOf, vatMode = 'general', paymentAc
   const entries = [];
   for (const [date, d] of [...byDate.entries()].sort()) {
     const lines = [];
-    const receipts = round2([...d.debits.values()].reduce((a, b) => a + b, 0));
+    const div = taxable ? 1.05 : 1;
+    const redeemEx = d.redeem ? Math.round(d.redeem / div) : 0;
+    const receipts = round2([...d.debits.values()].reduce((a, b) => a + b, 0) + redeemEx);
     for (const [acc, amt] of d.debits) {
       if (Math.abs(amt) < 0.005) continue;
       const memo = acc === paymentAccounts.unknown && d.unknownPay ? '含付款方式未標示者（暫列）' : '';
       if (amt > 0) lines.push({ account: acc, debit: amt, credit: 0, memo });
       else lines.push({ account: acc, debit: 0, credit: -amt, memo });
     }
-    const taxable = vatMode === 'general';
-    const div = taxable ? 1.05 : 1;
+    if (redeemEx) {
+      const acc = paymentAccounts.prepaid || '2151';
+      lines.push({ account: acc, debit: redeemEx > 0 ? redeemEx : 0, credit: redeemEx < 0 ? -redeemEx : 0, memo: '寄杯兌換（售出時已開發票，轉列收入）' });
+    }
     let revenueEx = 0;
-    const prepaid = d.gross.get('2151') || 0;
+    const prepaidGross = d.gross.get('2151') || 0;
+    const prepaid = vatAtSale ? Math.round(prepaidGross / div) : prepaidGross;
     for (const [acc, amt] of d.gross) {
       if (acc === '2151') {
-        lines.push({ account: acc, debit: 0, credit: amt, memo: '寄杯／儲值售出（預收）' });
+        lines.push({ account: acc, debit: 0, credit: prepaid, memo: vatAtSale ? '寄杯／儲值售出（預收，未稅）' : '寄杯／儲值售出（預收）' });
         continue;
       }
       const ex = Math.round(amt / div);

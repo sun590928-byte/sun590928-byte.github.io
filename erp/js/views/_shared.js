@@ -8,6 +8,16 @@ import { validateEntry, entryTotals, nextVoucherNo, voucherKind } from '../lib/l
 import { accountMap } from '../lib/coa.js';
 import { uid } from '../lib/text.js';
 import { monthEnd, addMonths, eachMonth, today } from '../lib/dates.js';
+import { attachmentEditor, linkDocumentsToEntry } from '../attach.js';
+import { makeXlsx } from '../lib/xlsxw.js';
+import { download } from '../ui.js';
+
+// 匯出 Excel（.xlsx）：sheets 由 lib/reportbook.js 產生
+export async function downloadWorkbook(fileName, build) {
+  const s = await getSettings();
+  const sheets = build({ business: s.business_name });
+  download(fileName, makeXlsx(Array.isArray(sheets) ? sheets : [sheets]));
+}
 
 export function accountSelect(accounts, selected, attrs = '') {
   const groups = {};
@@ -20,8 +30,8 @@ export function accountSelect(accounts, selected, attrs = '') {
   )}</select>`;
 }
 
-export const SOURCE_LABEL = { manual: '手動', pos: 'POS 營收', payout: '撥款入帳', depreciation: '折舊', cogs: '存貨成本', document: '憑證', import: '舊帳匯入', opening: '期初開帳', closing: '年底結帳', bank: '存摺補登' };
-export const AUTO_SOURCES = new Set(['pos', 'payout', 'depreciation', 'cogs', 'closing']);
+export const SOURCE_LABEL = { manual: '手動', pos: 'POS 營收', payout: '撥款入帳', depreciation: '折舊', cogs: '存貨成本', document: '憑證', asset: '資產購置', import: '舊帳匯入', opening: '期初開帳', closing: '年底結帳', bank: '存摺補登', vat: '營業稅結轉', vat_pay: '營業稅繳納' };
+export const AUTO_SOURCES = new Set(['pos', 'payout', 'depreciation', 'cogs', 'closing', 'vat']);
 
 export function monthsSince(start) {
   return eachMonth(start.slice(0, 7), today().slice(0, 7)).reverse();
@@ -86,17 +96,20 @@ export function latestMonth(lines, fallback) {
 }
 
 /**
- * 分錄編輯器（新增或修改）。回傳儲存後的分錄或 null。
+ * 分錄編輯器（新增或修改），含附件憑證（拍照、上傳、從憑證匣選擇）。回傳儲存後的分錄或 null。
+ * defaults: { date, description, source, source_ref, lines, attachments, docExtra }
  */
-export async function editEntry(entry = null, { defaults = {} } = {}) {
+export async function editEntry(entry = null, { defaults = {}, title = null } = {}) {
   const accounts = await getAccounts();
   const settings = await getSettings();
-  const e = entry ? JSON.parse(JSON.stringify(entry)) : { date: defaults.date || today(), description: defaults.description || '', source: defaults.source || 'manual', source_ref: defaults.source_ref || null, lines: defaults.lines || [{ account: '', debit: '', credit: '', memo: '' }, { account: '', debit: '', credit: '', memo: '' }] };
+  const e = entry ? JSON.parse(JSON.stringify(entry)) : { date: defaults.date || today(), description: defaults.description || '', source: defaults.source || 'manual', source_ref: defaults.source_ref || null, lines: defaults.lines || [{ account: '', debit: '', credit: '', memo: '' }, { account: '', debit: '', credit: '', memo: '' }], attachments: defaults.attachments || [] };
   if (entry && isLocked(settings, entry.date)) {
     toast('這個月份已結帳鎖定，無法修改', 'error');
     return null;
   }
   const readonly = entry && AUTO_SOURCES.has(entry.source);
+  const prevAtt = [...(e.attachments || [])];
+  const att = { ids: [...prevAtt] };
   const lineRow = (l, i) => h`<tr data-i="${i}">
     <td>${accountSelect(accounts, l.account, `name="acc" ${readonly ? 'disabled' : ''}`)}</td>
     <td><input class="cell num" name="dr" inputmode="decimal" value="${l.debit || ''}" ${readonly ? raw('disabled') : ''}></td>
@@ -113,7 +126,8 @@ export async function editEntry(entry = null, { defaults = {} } = {}) {
     <div class="table-wrap"><table class="grid"><thead><tr><th style="width:38%">會計項目</th><th class="num">借方</th><th class="num">貸方</th><th>說明</th><th></th></tr></thead>
     <tbody id="je-lines">${e.lines.map(lineRow)}</tbody>
     <tfoot><tr><td>${readonly ? '' : h`<button type="button" class="btn sm" data-add>＋ 新增一行</button>`}</td><td class="num" id="je-dr"></td><td class="num" id="je-cr"></td><td colspan="2" id="je-bal"></td></tr></tfoot></table></div>
-    <p class="muted" style="font-size:12.5px;margin-top:8px">傳票號碼儲存時自動編列（民國年月－流水號）；借貸必須平衡才能儲存。</p>`;
+    <div id="je-att" style="margin-top:12px"></div>
+    <p class="muted" style="font-size:12.5px;margin-top:8px">傳票號碼儲存時自動編列（民國年月－流水號）；借貸必須平衡才能儲存。附上的發票、收據會自動命名歸檔，也會出現在「憑證歸檔」。</p>`;
   const collect = (dlg) => {
     const rows = [...dlg.querySelectorAll('#je-lines tr')].map((tr) => ({
       account: tr.querySelector('[name=acc]').value,
@@ -131,11 +145,14 @@ export async function editEntry(entry = null, { defaults = {} } = {}) {
     dlg.querySelector('#je-bal').textContent = diff ? `差額 ${fmt(diff)}` : '借貸平衡 ✓';
   };
   const result = await modal({
-    title: entry ? `分錄 ${entry.voucher_no || ''}｜${voucherKind(entry)}` : '新增分錄',
+    title: title || (entry ? `分錄 ${entry.voucher_no || ''}｜${voucherKind(entry)}` : '新增分錄'),
     wide: true,
     body,
     actions: readonly
-      ? [{ label: '關閉', value: null }]
+      ? [
+          { label: '關閉', value: null },
+          { label: '儲存附件', primary: true, value: () => ({ ...e, attachmentsOnly: true }) },
+        ]
       : [
           { label: '取消', value: null },
           {
@@ -154,6 +171,7 @@ export async function editEntry(entry = null, { defaults = {} } = {}) {
           },
         ],
     onMount: (dlg) => {
+      attachmentEditor(dlg.querySelector('#je-att'), att, { newDocExtra: () => ({ ...(defaults.docExtra || {}) }), newDocFallback: () => ({ doc_date: dlg.querySelector('[name=date]').value || undefined }) });
       refresh(dlg);
       dlg.addEventListener('input', () => refresh(dlg));
       dlg.addEventListener('change', () => refresh(dlg));
@@ -171,8 +189,15 @@ export async function editEntry(entry = null, { defaults = {} } = {}) {
     },
   });
   if (!result) return null;
+  if (result.attachmentsOnly) {
+    const saved = { ...entry, attachments: att.ids, updated_at: new Date().toISOString() };
+    await store.put('journal_entries', saved);
+    await linkDocumentsToEntry(saved, att.ids, prevAtt);
+    toast('附件已儲存', 'good');
+    return saved;
+  }
   const all = await store.all('journal_entries');
-  const saved = { ...result, lines: result.lines.map((l) => ({ ...l, debit: Math.round(l.debit * 100) / 100, credit: Math.round(l.credit * 100) / 100 })) };
+  const saved = { ...result, attachments: att.ids, lines: result.lines.map((l) => ({ ...l, debit: Math.round(l.debit * 100) / 100, credit: Math.round(l.credit * 100) / 100 })) };
   if (!saved.id) {
     saved.id = uid('je_');
     saved.status = 'posted';
@@ -181,8 +206,19 @@ export async function editEntry(entry = null, { defaults = {} } = {}) {
   if (!saved.voucher_no || saved.voucher_no.slice(0, 5) !== nextVoucherNo([], saved.date).slice(0, 5)) saved.voucher_no = nextVoucherNo(all.filter((x) => x.id !== saved.id), saved.date);
   saved.updated_at = new Date().toISOString();
   await store.put('journal_entries', saved);
-  toast(`已儲存 ${saved.voucher_no}`, 'good');
+  await linkDocumentsToEntry(saved, att.ids, prevAtt);
+  toast(`已儲存 ${saved.voucher_no}${att.ids.length ? `（附件 ${att.ids.length} 張）` : ''}`, 'good');
   return saved;
+}
+
+// 需要附原始憑證的分錄：手動、資產購置、存摺補登，且借方有費用、成本、存貨或固定資產科目
+// （折舊、銀行手續費、利息以存摺為憑，不需另附）
+const DOC_TYPES = new Set(['expense', 'cogs', 'nonop_expense']);
+const DOC_ASSETS = /^(121[1-6]|1511|1521|1531|1541)$/;
+const NO_DOC = new Set(['6124', '6131', '7501']);
+export function needsDocument(e, accMap) {
+  if (!['manual', 'asset', 'bank'].includes(e.source)) return false;
+  return (e.lines || []).some((l) => l.debit > 0 && !NO_DOC.has(l.account) && (DOC_TYPES.has(accMap.get(l.account)?.type) || DOC_ASSETS.test(l.account)));
 }
 
 export { addMonths };

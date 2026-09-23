@@ -342,12 +342,16 @@ create table if not exists public."documents" (
   "original_name" text,
   "archived_name" text,
   "mime" text,
+  "file_ext" text,
   "doc_date" date,
   "vendor_name" text,
   "vendor_tax_id" text,
+  "buyer_tax_id" text,
+  "invoice_type" text,
   "invoice_no" text,
   "amount_total" numeric,
   "tax_amount" numeric,
+  "deductible" boolean,
   "summary" text,
   "items" jsonb,
   "account" text,
@@ -356,12 +360,15 @@ create table if not exists public."documents" (
   "ai" jsonb,
   "entry_id" text,
   "einvoice_id" text,
+  "asset_id" text,
   "created_at" timestamptz,
   "updated_at" timestamptz,
   "extra" jsonb not null default '{}'::jsonb,
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+create index if not exists documents_doc_date_idx on public."documents" ("doc_date");
+create index if not exists documents_entry_id_idx on public."documents" ("entry_id");
 alter table public."documents" enable row level security;
 drop policy if exists "members full access" on public."documents";
 create policy "members full access" on public."documents" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -408,6 +415,11 @@ create table if not exists public."fixed_assets" (
   "residual" numeric,
   "disposed_on" date,
   "supplier" text,
+  "invoice_no" text,
+  "tax_amount" numeric,
+  "pay_account" text,
+  "doc_ids" jsonb,
+  "purchase_entry_id" text,
   "note" text,
   "extra" jsonb not null default '{}'::jsonb,
   "inserted_at" timestamptz not null default now(),
@@ -593,6 +605,40 @@ drop policy if exists "members full access" on public."tax_tasks";
 create policy "members full access" on public."tax_tasks" for all to authenticated using (public.is_member()) with check (public.is_member());
 drop trigger if exists touch_row on public."tax_tasks";
 create trigger touch_row before insert or update on public."tax_tasks" for each row execute function public.touch_row();
+
+-- ───────── 營業稅申報紀錄
+create table if not exists public."tax_filings" (
+  "id" text primary key,
+  "period_from" text,
+  "period_to" text,
+  "status" text,
+  "sales_ex" numeric,
+  "output_tax" numeric,
+  "input_tax" numeric,
+  "input_asset_tax" numeric,
+  "prev_cf" numeric,
+  "payable" numeric,
+  "refund" numeric,
+  "cf" numeric,
+  "platform_sales_ex" numeric,
+  "platform_output_tax" numeric,
+  "claimed" jsonb,
+  "filed_on" date,
+  "paid_on" date,
+  "receipt_no" text,
+  "entry_id" text,
+  "pay_entry_id" text,
+  "note" text,
+  "updated_at" timestamptz,
+  "extra" jsonb not null default '{}'::jsonb,
+  "inserted_at" timestamptz not null default now(),
+  "updated_by" uuid default auth.uid()
+);
+alter table public."tax_filings" enable row level security;
+drop policy if exists "members full access" on public."tax_filings";
+create policy "members full access" on public."tax_filings" for all to authenticated using (public.is_member()) with check (public.is_member());
+drop trigger if exists touch_row on public."tax_filings";
+create trigger touch_row before insert or update on public."tax_filings" for each row execute function public.touch_row();
 
 -- ───────── 分錄借貸平衡檢查（網頁端已檢查，資料庫再把關一次）
 create or replace function public.check_entry_balanced()

@@ -109,6 +109,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; }
 body {
   background: var(--paper);
@@ -421,11 +422,48 @@ svg .cross.on { opacity: 1; }
 .voucher th { background: #f1f1f1; font-weight: 600; }
 .voucher td.amt { text-align: right; font-variant-numeric: tabular-nums; width: 110px; }
 .voucher tfoot td { font-weight: 700; }
+.voucher .vatt { font-size: 12px; margin-top: 6px; word-break: break-all; }
 .voucher .sign { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 12px; gap: 8px; font-size: 12.5px; }
 .voucher .sign div { border-top: 1px solid #555; padding-top: 4px; text-align: center; min-height: 34px; }
 
-/* 登入 */
-.login { max-width: 420px; margin: 8vh auto; }
+/* 開啟畫面（密碼、登入） */
+.gate { display: none; }
+body.gated .app { display: none; }
+body.gated .gate { display: grid; place-items: start center; min-height: 100vh; padding: 8vh 16px 40px; background: radial-gradient(120% 70% at 50% 0%, var(--card) 0%, var(--paper) 70%); }
+.gate-card { width: 100%; max-width: 440px; background: var(--card); border: 1px solid var(--line-soft); border-radius: 16px; box-shadow: var(--shadow); padding: 26px 24px 22px; display: grid; gap: 14px; }
+.gate-card h1 { font-family: var(--serif); font-size: 21px; letter-spacing: 0.06em; }
+.gate-card p { margin: 0; }
+.gate-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+.gate-brand .brand-mark { width: 40px; height: 40px; }
+.gate-name { font-family: var(--serif); font-size: 20px; letter-spacing: 0.3em; color: var(--ink); }
+.gate-sub { font-size: 12px; letter-spacing: 0.2em; color: var(--mute); }
+.gate-choice { border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px 12px 10px; margin: 0; display: grid; gap: 6px; }
+.gate-choice legend { font-size: 12.5px; color: var(--mute); padding: 0 4px; }
+.gate-choice .check { align-items: flex-start; font-size: 13.5px; }
+.gate-choice .check input { margin-top: 5px; }
+.gate-hint { font-size: 12.5px; min-height: 1.2em; }
+.gate-foot { font-size: 13px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
+.gate .btn.primary { justify-content: center; }
+.recovery-code { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 18px; letter-spacing: 0.04em; text-align: center; padding: 14px 10px; border: 1px dashed var(--terra); border-radius: 10px; background: var(--accent-tint); color: var(--ink); user-select: all; line-height: 1.7; }
+.recovery-code span { white-space: nowrap; }
+.danger-link { color: var(--bad-text); }
+tr.muted-row td { color: var(--mute); }
+/* 附件憑證 */
+.attach { border: 1px dashed var(--line); border-radius: 10px; padding: 10px 12px; background: var(--card-2); display: grid; gap: 8px; font-size: 13.5px; }
+.attach-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.attach-list:empty { display: none; }
+.attach-chip { display: inline-flex; align-items: center; gap: 2px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 4px 2px 10px; background: var(--card); max-width: 100%; }
+.attach-chip .linkish { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-chip .icon-btn { width: 24px; height: 24px; font-size: 12px; padding: 0; }
+.linkish { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-align: left; }
+.pick-list { display: grid; gap: 4px; max-height: 55vh; overflow: auto; }
+.pick-row { padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line-soft); align-items: flex-start !important; font-size: 13.5px; }
+.pick-row input { margin-top: 4px; }
+.doc-preview { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; border-radius: 8px; }
+.doc-preview.pdf { width: 100%; height: 70vh; border: 1px solid var(--line); }
+.plain-list { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 13.5px; color: var(--text-2); }
+.nav-btns { gap: 8px; }
+.nav-btns .btn { flex: 1; justify-content: center; }
 
 @media print {
   body { background: #fff; color: #000; font-size: 12px; }

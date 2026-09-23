@@ -4,15 +4,17 @@
 import { h, raw, mount, bindActions, fmt, toast, confirmBox, modal, pickFiles, options, badge, status, setBusy, download, emptyState, stat, dataTable } from '../ui.js';
 import { store } from '../store.js';
 import { getSettings, getAccounts, isLocked } from '../state.js';
-import { parseDocName, archiveName, archiveFolder } from '../lib/docname.js';
-import { classifyExpense } from '../lib/classify.js';
+import { archiveFolder } from '../lib/docname.js';
 import { documentJournal } from '../lib/autojournal.js';
 import { nextVoucherNo } from '../lib/ledger.js';
 import { uid } from '../lib/text.js';
 import { makeZip } from '../lib/zip.js';
 import { fnv1a } from '../lib/text.js';
+import { deductibility } from '../lib/vat.js';
+import { today } from '../lib/dates.js';
 import { accountSelect } from './_shared.js';
 import { syncPayouts } from '../sync.js';
+import { createDocuments, archivePatch, pickDocFiles, isDocFile, previewDocument } from '../attach.js';
 
 const PAY_ACCOUNTS = [
   ['1101', '現金（收銀機）'],
@@ -27,42 +29,19 @@ export function queueFiles(files) {
   pending.push(...files);
 }
 
-// 照片縮到長邊 2400px 並轉 JPEG：上傳較快、AI 辨識較省，也順便把 iPhone HEIC 轉成通用格式（瀏覽器支援時）
-async function prepareImage(file) {
-  const isImg = /^image\//i.test(file.type) || /\.(jpe?g|png|webp|heic|heif)$/i.test(file.name);
-  if (!isImg || /gif/i.test(file.type)) return file;
-  try {
-    const bmp = await createImageBitmap(file);
-    const scale = Math.min(1, 2400 / Math.max(bmp.width, bmp.height));
-    if (scale === 1 && /jpe?g/i.test(file.type) && file.size < 3e6) return file;
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.round(bmp.width * scale);
-    canvas.height = Math.round(bmp.height * scale);
-    canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.88));
-    return blob ? new File([blob], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' }) : file;
-  } catch {
-    return file;
-  }
-}
-
 export async function render(root, ctx) {
   const settings = await getSettings();
   const accounts = await getAccounts();
   let docs = await store.all('documents');
   let invoices = await store.all('einvoices');
-  const f = { tab: ctx.params.tab || 'inbox' };
+  const f = { tab: ctx.params.tab || 'inbox', zipYm: '' };
   const urls = new Map();
 
   async function thumbUrl(d) {
     if (urls.has(d.id)) return urls.get(d.id);
     let u = '';
     try {
-      if (d.storage_path && store.mode === 'cloud') u = await store.backend.fileUrl(d.storage_path);
-      else {
-        const file = await store.get('files', d.id);
-        if (file?.blob) u = URL.createObjectURL(file.blob);
-      }
+      u = await store.fileUrl(d);
     } catch (e) {
       console.warn(e);
     }
@@ -72,48 +51,10 @@ export async function render(root, ctx) {
 
   async function addFiles(files) {
     if (!files.length) return;
-    setBusy(true, `加入 ${files.length} 個檔案…`);
-    try {
-      const rows = [];
-      for (const file of files) {
-        const parsed = parseDocName(file.name);
-        const cls = classifyExpense({ vendor: parsed.vendor, text: parsed.summary });
-        const id = uid('doc_');
-        const ready = await prepareImage(file);
-        const ext = (/\.[a-z0-9]+$/i.exec(ready.name) || [parsed.ext || '.jpg'])[0].toLowerCase();
-        const d = {
-          id,
-          kind: 'receipt',
-          status: 'inbox',
-          original_name: file.name,
-          mime: ready.type || file.type || '',
-          doc_date: parsed.date,
-          vendor_name: parsed.vendor,
-          invoice_no: parsed.invoice_no,
-          amount_total: parsed.amount,
-          tax_amount: null,
-          summary: parsed.summary,
-          account: cls.account,
-          pay_account: '1101',
-          confidence: parsed.date && parsed.amount ? 0.5 : 0.2,
-          ai: null,
-          created_at: new Date().toISOString(),
-        };
-        d.file_ext = ext;
-        if (store.mode === 'cloud') {
-          d.storage_path = await store.backend.upload(`inbox/${id}${ext}`, ready);
-        } else {
-          await store.put('files', { id, name: file.name, type: ready.type, size: ready.size, blob: ready });
-        }
-        rows.push(d);
-      }
-      await store.put('documents', rows);
-      docs = await store.all('documents');
-      toast(`已加入 ${rows.length} 張憑證${store.mode === 'cloud' ? '，可按「AI 辨識」自動讀取內容' : '（已從檔名帶入日期、廠商、金額）'}`, 'good', 6000);
-      f.tab = 'inbox';
-    } finally {
-      setBusy(false);
-    }
+    const rows = await createDocuments(files);
+    docs = await store.all('documents');
+    toast(`已加入 ${rows.length} 張憑證${store.mode === 'cloud' ? '，可按「AI 辨識」自動讀取內容' : '（已從檔名帶入日期、廠商、金額）'}`, 'good', 6000);
+    f.tab = 'inbox';
     draw();
   }
 
@@ -139,6 +80,9 @@ export async function render(root, ctx) {
           doc_date: r.doc_date || d.doc_date,
           vendor_name: r.vendor_name || d.vendor_name,
           vendor_tax_id: r.vendor_tax_id || d.vendor_tax_id || '',
+          buyer_tax_id: r.buyer_tax_id || d.buyer_tax_id || '',
+          invoice_type: r.invoice_type || d.invoice_type || '',
+          deductible: r.buyer_tax_id ? !settings.tax_id || r.buyer_tax_id === settings.tax_id : /二聯|收據/.test(r.invoice_type || '') ? false : d.deductible,
           invoice_no: r.invoice_no || d.invoice_no,
           amount_total: r.amount_total ?? d.amount_total,
           tax_amount: r.tax_amount ?? d.tax_amount,
@@ -189,27 +133,19 @@ export async function render(root, ctx) {
       toast('此發票已由電子發票入帳，照片已連結，不重複入帳', 'info', 6000);
       return;
     }
+    // 進項稅額可否扣抵：勾選「載明本店統編」且符合條件（統一發票、有稅額、非交際／職工福利）
+    const ded = deductibility({ ...d, tax: d.tax_amount }, { taxId: settings.tax_id, vatMode: settings.vat_mode });
+    const deductible = d.deductible !== false && ded.ok;
+    if (d.deductible !== false && Number(d.tax_amount) > 0 && !ded.ok) toast(`稅額不扣抵，併入成本：${ded.reason}`, 'info', 6000);
     const entries = await store.all('journal_entries');
-    const je = documentJournal(d, { deductible: d.deductible !== false && settings.vat_mode === 'general' });
+    const je = documentJournal(d, { deductible });
     const e = { ...je, id: uid('je_'), voucher_no: nextVoucherNo(entries, d.doc_date), status: 'posted', attachments: [d.id], created_at: new Date().toISOString() };
     await store.put('journal_entries', e);
-    const ext = d.file_ext || (/\.[a-z0-9]+$/i.exec(d.original_name || '') || ['.jpg'])[0].toLowerCase();
-    const archived = archiveName(d, ext);
-    const folder = archiveFolder(d.doc_date);
-    let storage_path = d.storage_path;
-    if (store.mode === 'cloud' && d.storage_path) {
-      // 雲端物件路徑只用英數（Storage 對中文路徑支援不一），中文歸檔名存於資料庫、下載 ZIP 時套用
-      const target = `archive/${d.doc_date.slice(0, 4)}/${d.doc_date.slice(5, 7)}/${d.id}${ext}`;
-      try {
-        await store.backend.moveFile(d.storage_path, target);
-        storage_path = target;
-      } catch (err) {
-        toast(err.message, 'error');
-      }
-    }
-    await store.put('documents', { ...d, status: 'posted', entry_id: e.id, archived_name: archived, storage_path, einvoice_id: inv?.id || null });
+    // 雲端物件路徑只用英數（Storage 對中文路徑支援不一），中文歸檔名存於資料庫、下載 ZIP 時套用
+    const { archived_name, storage_path, folder } = await archivePatch(d);
+    await store.put('documents', { ...d, deductible, status: 'posted', entry_id: e.id, archived_name, storage_path, einvoice_id: inv?.id || null });
     if (inv) await store.put('einvoices', { ...inv, entry_id: e.id, document_id: d.id, account: d.account });
-    toast(`已入帳 ${e.voucher_no}，歸檔名稱：${folder}/${archived}`, 'good', 6000);
+    toast(`已入帳 ${e.voucher_no}，歸檔名稱：${folder}/${archived_name}`, 'good', 6000);
   }
 
   function docCard(d) {
@@ -232,7 +168,8 @@ export async function render(root, ctx) {
           <label class="full">摘要（品項）<input type="text" name="summary" value="${d.summary || ''}" ${dis}></label>
           <label class="full">會計項目${accountSelect(accounts.filter((a) => ['asset', 'expense', 'cogs', 'nonop_expense', 'liability'].includes(a.type)), d.account, `name="account" ${ro ? 'disabled' : ''}`)}</label>
           <label class="full">付款方式<select name="pay_account" ${dis}>${options(PAY_ACCOUNTS, d.pay_account || '1101')}</select></label>
-          <label class="full check" style="display:flex"><input type="checkbox" name="deductible" ${d.deductible === false ? '' : raw('checked')} ${dis}> 三聯式／載明本店統編（進項稅額可扣抵）</label>
+          <label class="full check" style="display:flex"><input type="checkbox" name="deductible" ${(d.deductible ?? Number(d.tax_amount) > 0) ? raw('checked') : ''} ${dis}> 三聯式／載明本店統編（進項稅額可扣抵）</label>
+          ${d.buyer_tax_id && settings.tax_id && d.buyer_tax_id !== settings.tax_id ? h`<div class="full status status-warn"><span class="status-ic" aria-hidden="true">!</span>發票上的買方統編 ${d.buyer_tax_id} 不是本店</div>` : ''}
         </div>
         ${d.kind === 'payout_statement' && d.ai?.payouts?.length ? h`<div class="callout"><p>AI 讀到 ${d.ai.payouts.length} 筆撥款：${d.ai.payouts.map((p) => `${p.payout_date} ${fmt(p.net)}`).join('、')}</p><button class="btn sm" data-act="importPayouts" data-id="${d.id}">匯入為撥款紀錄</button></div>` : ''}
         <div class="row">
@@ -254,7 +191,7 @@ export async function render(root, ctx) {
       h`<div class="drop no-print" id="drop" style="margin-bottom:16px">
         <h3>把發票、收據照片拖到這裡</h3>
         <p class="muted">可一次選整個「原始憑證圖檔資料_已命名」資料夾：檔名中的日期、廠商、金額、發票號碼會自動帶入。${store.mode === 'cloud' ? '照片存到 Supabase 私有空間，可用 AI 辨識內容。' : '目前為本機模式，照片存在這台電腦的瀏覽器；連線雲端後可用 AI 辨識。'}</p>
-        <div class="row" style="justify-content:center"><button class="btn primary" data-act="pick">選擇照片</button><button class="btn" data-act="pickDir">選擇資料夾</button>${store.mode === 'cloud' && counts.inbox ? h`<button class="btn" data-act="aiAll">AI 辨識全部待覆核（${counts.inbox}）</button>` : ''}</div>
+        <div class="row" style="justify-content:center"><button class="btn primary" data-act="camera">拍照上傳</button><button class="btn" data-act="pick">選擇照片／PDF</button><button class="btn" data-act="pickDir">選擇資料夾</button>${store.mode === 'cloud' && counts.inbox ? h`<button class="btn" data-act="aiAll">AI 辨識全部待覆核（${counts.inbox}）</button>` : ''}</div>
       </div>
       <div class="stats">
         ${stat('待覆核', fmt(counts.inbox + counts.reviewed))}
@@ -269,7 +206,7 @@ export async function render(root, ctx) {
           ['all', '全部'],
           ['einvoice', `電子發票（${invoices.length}）`],
         ].map(([k, l]) => h`<button class="${f.tab === k ? 'on' : ''}" data-act="tab" data-t="${k}">${l}</button>`)}
-        <span class="spacer"></span>${f.tab === 'posted' && counts.posted ? h`<button class="btn sm" data-act="zip">下載已命名歸檔（ZIP）</button>` : ''}</div>
+        <span class="spacer"></span>${f.tab === 'posted' && counts.posted ? h`<select data-act="zipYm" aria-label="下載月份">${options([['', '全部月份'], ...[...new Set(docs.filter((d) => d.status === 'posted' && d.doc_date).map((d) => d.doc_date.slice(0, 7)))].sort().reverse().map((m) => [m, `${Number(m.slice(0, 4)) - 1911} 年 ${Number(m.slice(5))} 月`])], f.zipYm)}</select><button class="btn sm" data-act="zip">下載已命名歸檔（ZIP）</button>` : ''}</div>
         <div id="body"></div>
       </div>`,
     );
@@ -295,7 +232,7 @@ export async function render(root, ctx) {
     drop.addEventListener('drop', (e) => {
       e.preventDefault();
       drop.classList.remove('over');
-      addFiles([...e.dataTransfer.files].filter((x) => /image|pdf/.test(x.type) || /\.(jpe?g|png|heic|webp|pdf)$/i.test(x.name)));
+      addFiles([...e.dataTransfer.files].filter(isDocFile));
     });
   }
 
@@ -333,7 +270,8 @@ export async function render(root, ctx) {
       return true;
     }
     const entries = await store.all('journal_entries');
-    const je = documentJournal({ id: inv.id, doc_date: inv.date, vendor_name: inv.seller_name, invoice_no: inv.invoice_no, amount_total: inv.total, tax_amount: inv.tax, summary: (inv.items || []).map((i) => i.name).slice(0, 3).join('、'), account, pay_account: '1101' }, { deductible: inv.deductible && settings.vat_mode === 'general' });
+    const ded = deductibility({ invoice_no: inv.invoice_no, tax: inv.tax, account, buyer_tax_id: inv.buyer_tax_id, deductible: inv.deductible }, { taxId: settings.tax_id, vatMode: settings.vat_mode });
+    const je = documentJournal({ id: inv.id, doc_date: inv.date, vendor_name: inv.seller_name, invoice_no: inv.invoice_no, amount_total: inv.total, tax_amount: inv.tax, summary: (inv.items || []).map((i) => i.name).slice(0, 3).join('、'), account, pay_account: '1101' }, { deductible: !!inv.deductible && ded.ok });
     const e = { ...je, source: 'document', source_ref: inv.id, id: uid('je_'), voucher_no: nextVoucherNo(entries, inv.date), status: 'posted', created_at: new Date().toISOString() };
     await store.put('journal_entries', e);
     await store.put('einvoices', { ...inv, account, entry_id: e.id });
@@ -346,8 +284,9 @@ export async function render(root, ctx) {
       ctx.setParams({ tab: f.tab });
       draw();
     },
-    pick: async () => addFiles(await pickFiles({ accept: 'image/*,.pdf,.heic' })),
-    pickDir: async () => addFiles((await pickFiles({ directory: true })).filter((x) => /\.(jpe?g|png|heic|webp|pdf)$/i.test(x.name))),
+    camera: async () => addFiles(await pickDocFiles({ camera: true })),
+    pick: async () => addFiles(await pickDocFiles()),
+    pickDir: async () => addFiles((await pickFiles({ directory: true })).filter(isDocFile)),
     aiAll: () => aiExtract(docs.filter((d) => d.status === 'inbox' && d.storage_path)),
     ai: (el) => aiExtract(docs.filter((d) => d.id === el.dataset.id)),
     save: async (el) => {
@@ -374,15 +313,11 @@ export async function render(root, ctx) {
       const d = docs.find((x) => x.id === el.dataset.id);
       if (!(await confirmBox(`刪除「${d.original_name}」？${d.entry_id ? '對應分錄不會自動刪除，請到日記簿處理。' : ''}`, { danger: true, ok: '刪除' }))) return;
       await store.remove('documents', d.id);
-      if (store.mode !== 'cloud') await store.remove('files', d.id);
+      await store.deleteFile(d);
       docs = await store.all('documents');
       draw();
     },
-    zoom: async (el) => {
-      const d = docs.find((x) => x.id === el.dataset.id);
-      const u = await thumbUrl(d);
-      if (u) window.open(u, '_blank', 'noopener');
-    },
+    zoom: async (el) => previewDocument(docs.find((x) => x.id === el.dataset.id)),
     importPayouts: async (el) => {
       const d = docs.find((x) => x.id === el.dataset.id);
       const rows = (d.ai?.payouts || []).filter((p) => p.payout_date && (p.net || p.gross)).map((p) => {
@@ -422,23 +357,20 @@ export async function render(root, ctx) {
       toast(`已入帳 ${n} 張`, 'good');
       draw();
     },
+    zipYm: (el) => {
+      f.zipYm = el.value;
+    },
     zip: async () => {
-      const posted = docs.filter((d) => d.status === 'posted' && d.archived_name);
+      const posted = docs.filter((d) => d.status === 'posted' && d.archived_name && (!f.zipYm || (d.doc_date || '').startsWith(f.zipYm)));
       setBusy(true, '打包中…');
       try {
         const files = [];
         for (const d of posted) {
-          let data = null;
-          if (store.mode === 'cloud' && d.storage_path) {
-            const u = await store.backend.fileUrl(d.storage_path);
-            data = new Uint8Array(await (await fetch(u)).arrayBuffer());
-          } else {
-            const file = await store.get('files', d.id);
-            if (file?.blob) data = new Uint8Array(await file.blob.arrayBuffer());
-          }
-          if (data) files.push({ name: `${archiveFolder(d.doc_date)}/${d.archived_name}`, data });
+          const blob = await store.readFile(d);
+          if (blob) files.push({ name: `${archiveFolder(d.doc_date)}/${d.archived_name}`, data: new Uint8Array(await blob.arrayBuffer()) });
         }
-        download(`午月憑證歸檔_${new Date().toISOString().slice(0, 10)}.zip`, makeZip(files));
+        if (!files.length) return toast('這個月份沒有可下載的檔案', 'info');
+        download(`午月憑證歸檔_${f.zipYm || today()}.zip`, makeZip(files));
       } finally {
         setBusy(false);
       }

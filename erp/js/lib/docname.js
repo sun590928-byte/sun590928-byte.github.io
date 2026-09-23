@@ -8,6 +8,7 @@ import { slug } from './text.js';
 export function parseDocName(fileName) {
   const ext = (/\.[a-z0-9]+$/i.exec(fileName) || [''])[0];
   let s = fileName.slice(0, fileName.length - ext.length).normalize('NFKC');
+  const cameraLike = /^(img|dsc|dcim|pxl|mvimg|photo|screenshot|scan|螢幕截圖|截圖|line_album|line_)/i.test(s);
   const out = { date: null, invoice_no: null, amount: null, vendor: '', summary: '', ext: ext.toLowerCase() };
   const inv = INVOICE_RE.exec(s.toUpperCase());
   if (inv) {
@@ -29,8 +30,9 @@ export function parseDocName(fileName) {
   if (money) {
     out.amount = Number((money[1] || money[2]).replace(/,/g, ''));
     s = s.replace(money[0], ' ');
-  } else {
-    const nums = [...s.matchAll(/(?<![\d.])(\d{1,3}(?:,\d{3})+|\d+)(?![\d.])/g)];
+  } else if (!cameraLike) {
+    // 沒有 $ 或「元」時取最後一個數字（最多 7 位數；相機流水號檔名不猜金額）
+    const nums = [...s.matchAll(/(?<![\d.])(\d{1,3}(?:,\d{3})+|\d{1,7})(?![\d.])/g)];
     if (nums.length) {
       const last = nums[nums.length - 1];
       out.amount = Number(last[1].replace(/,/g, ''));
@@ -38,8 +40,9 @@ export function parseDocName(fileName) {
     }
   }
   const tokens = s.split(/[\s_\-－—–·・|｜,，]+/).map((t) => t.trim()).filter((t) => t && !/^(發票|收據|憑證|單據|img|dsc|photo|scan|掃描)$/i.test(t));
-  out.vendor = tokens[0] || '';
-  out.summary = tokens.slice(1).join(' ');
+  const vi = tokens.findIndex((t) => !/^\d+$/.test(t));
+  out.vendor = vi >= 0 ? tokens[vi] : '';
+  out.summary = tokens.filter((t, i) => i !== vi && !(cameraLike && /^\d+$/.test(t))).join(' ');
   return out;
 }
 

@@ -2,6 +2,7 @@
 
 import { h, raw, mount, bindActions, dataTable, toast, modal, options, fmt, stat, badge, downloadCSV, emptyState, confirmBox } from '../ui.js';
 import { store } from '../store.js';
+import { today } from '../lib/dates.js';
 import { getProductIndex, mergeProducts, unmapAlias, getSettings } from '../state.js';
 import { analyzeDuplicates, pairKey, aliasKey } from '../lib/dedupe.js';
 import { CATEGORIES, guessCategory } from '../lib/pos.js';
@@ -341,7 +342,7 @@ export async function render(root, ctx) {
           rows.push([i + 1, CONF[c.confidence][0], Math.round(p.score * 100), p.type === 'variant' ? '變體' : '疑似重複', a.name, `${a.first}~${a.last}`, a.avgPrice ? Math.round(a.avgPrice) : '', b.name, `${b.first}~${b.last}`, b.avgPrice ? Math.round(b.avgPrice) : '', p.reasons.join('；')]);
         }
       });
-      downloadCSV(`疑似同品項清單_${new Date().toISOString().slice(0, 10)}.csv`, rows);
+      downloadCSV(`疑似同品項清單_${today()}.csv`, rows);
     },
     exportMap: () => {
       const rows = [['POS 品名', '標準品項', '品類', '首次販售', '最後販售', '數量', '金額']];
@@ -349,7 +350,7 @@ export async function render(root, ctx) {
         const p = productOfKey(n.key);
         for (const s of n.spellings) rows.push([s, p?.name || '', CATEGORIES[p?.category || n.guessCat], n.first, n.last, n.qty, n.amount]);
       }
-      downloadCSV(`品項對照表_${new Date().toISOString().slice(0, 10)}.csv`, rows);
+      downloadCSV(`品項對照表_${today()}.csv`, rows);
     },
   });
 

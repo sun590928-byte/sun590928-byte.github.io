@@ -10,9 +10,13 @@ import { uid } from './lib/text.js';
 export const DEFAULT_SETTINGS = {
   business_name: '午月咖啡廳',
   tax_id: '',
-  org_type: 'sole', // sole 獨資／合夥 | company 公司
-  vat_mode: 'general', // general 一般稅額（5% 內含） | small 小規模（查定 1%） | none
-  vat_confirmed: false,
+  org_type: 'sole', // sole 獨資／合夥（商號） | company 公司
+  vat_mode: 'general', // general 一般稅額（開立統一發票，5% 內含） | small 小規模（查定 1%） | none
+  vat_confirmed: true, // 已確認：商號、開立統一發票、營業稅 5%
+  prepaid_vat: 'sale', // 寄杯／預購：sale 收款時開立發票（依法規） | redeem 兌換時開立
+  filing_self: true, // 自行申報
+  filing_prep_day: 10, // 申報期限當月幾日開始準備
+  filing_target_day: 12, // 申報目標完成日（法定期限前）
   revenue_start: '2026-08-21',
   cutoff_hour: 0,
   void_rules: DEFAULT_VOID_RULES,

@@ -25,6 +25,7 @@ export async function syncSales() {
   const gen = salesJournal(lines, {
     categoryOf: (l) => idx.of(l).category,
     vatMode: s.vat_mode,
+    prepaidVat: s.prepaid_vat || 'sale',
     paymentAccounts: { ...DEBIT_ACCOUNT_BY_PAYMENT, unknown: s.unknown_payment_account || '1101' },
   });
   return apply('pos', gen);
