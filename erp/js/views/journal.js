@@ -114,8 +114,11 @@ export async function render(root, ctx) {
       const e = entries.find((x) => x.id === el.dataset.id);
       if (!(await confirmBox(`刪除傳票 ${e.voucher_no}「${e.description}」？`, { ok: '刪除', danger: true }))) return;
       await store.remove('journal_entries', e.id);
+      // 解除連結：照片、電子發票回到「待入帳」，固定資產改回「未建立購置分錄」
       const linked = (await store.all('documents')).filter((d) => d.entry_id === e.id);
       if (linked.length) await store.put('documents', linked.map((d) => ({ ...d, entry_id: null, status: 'reviewed' })));
+      const invs = (await store.all('einvoices')).filter((i) => i.entry_id === e.id);
+      if (invs.length) await store.put('einvoices', invs.map((i) => ({ ...i, entry_id: null })));
       const asset = (await store.all('fixed_assets')).find((a) => a.purchase_entry_id === e.id);
       if (asset) await store.put('fixed_assets', { ...asset, purchase_entry_id: null });
       toast('已刪除', 'good');

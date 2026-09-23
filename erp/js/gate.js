@@ -1,7 +1,7 @@
 // 開啟畫面：第一次設定開啟密碼（本機加密／雲端同步）、解鎖、復原碼重設、雲端登入。
 // 解鎖前不讀取任何帳務資料；閒置自動上鎖、同時只允許一個分頁使用。
 
-import { h, raw, mount, toast, download, confirmBox } from './ui.js';
+import { h, raw, mount, toast, download, confirmBox, isBusy } from './ui.js';
 import { store, cloudConfig, saveCloudConfig } from './store.js';
 import { passcodeProblems, WrongPasscodeError, MIN_PASSCODE } from './lib/vault.js';
 import { today } from './lib/dates.js';
@@ -35,8 +35,13 @@ function takeLockMessage() {
   }
 }
 
-// 上鎖：等候寫入完成、清除記憶體中的金鑰與資料，重新載入回到開啟畫面
-export async function lockNow(reason = '') {
+const waitIdle = async () => {
+  while (isBusy()) await new Promise((r) => setTimeout(r, 400));
+};
+
+// 上鎖：等處理中的作業完成、寫入完成，清除記憶體中的金鑰與資料，重新載入回到開啟畫面
+export async function lockNow(reason = '', { force = false } = {}) {
+  if (!force) await waitIdle();
   try {
     if (reason) sessionStorage.setItem(LOCK_MSG, reason);
   } catch {}
@@ -47,34 +52,74 @@ export async function lockNow(reason = '') {
   }
 }
 
-// ─────────── 閒置上鎖與分頁互斥
+// ─────────── 分頁互斥：新分頁解鎖時先請舊分頁寫完並上鎖，再開始讀資料
 
 const TAB = Math.random().toString(36).slice(2);
-let channel = null;
+const channel = 'BroadcastChannel' in window ? new BroadcastChannel('wuyue-erp') : null;
+const waiters = new Set();
+let active = false; // 這個分頁已進入系統
+
+channel?.addEventListener('message', async (e) => {
+  const m = e.data || {};
+  if (m.tab === TAB) return;
+  if (m.type === 'ping' && active) channel.postMessage({ type: 'pong', tab: TAB, to: m.tab });
+  else if (m.type === 'claim' && active) {
+    active = false;
+    await waitIdle();
+    try {
+      sessionStorage.setItem(LOCK_MSG, '系統已在另一個分頁開啟，這個分頁已自動上鎖（避免兩邊同時修改資料）。');
+    } catch {}
+    try {
+      await store.lock();
+    } finally {
+      channel.postMessage({ type: 'released', tab: TAB, to: m.tab });
+      location.reload();
+    }
+  } else if ((m.type === 'pong' || m.type === 'released') && m.to === TAB) for (const w of waiters) w(m);
+});
+
+function waitFor(type, ms) {
+  return new Promise((resolve) => {
+    const done = (m) => {
+      if (m && m.type !== type) return;
+      waiters.delete(done);
+      clearTimeout(timer);
+      resolve(!!m);
+    };
+    const timer = setTimeout(() => done(null), ms);
+    waiters.add(done);
+  });
+}
+
+export async function claimTab() {
+  if (!channel) return;
+  channel.postMessage({ type: 'ping', tab: TAB });
+  if (!(await waitFor('pong', 350))) return;
+  channel.postMessage({ type: 'claim', tab: TAB });
+  await waitFor('released', 15000);
+}
+
+// ─────────── 閒置上鎖
+
 let watching = false;
 
 export function startGuards() {
   if (watching) return;
   watching = true;
+  active = true;
   let last = Date.now();
   const bump = () => (last = Date.now());
   for (const ev of ['pointerdown', 'keydown', 'wheel', 'touchstart', 'scroll']) addEventListener(ev, bump, { passive: true, capture: true });
   const check = () => {
+    if (isBusy()) return bump(); // 處理中不算閒置
     const mins = autoLockMinutes();
     if (Date.now() - last > mins * 60000) lockNow(`閒置超過 ${mins} 分鐘，已自動上鎖。`);
   };
   setInterval(check, 15000);
   document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && check());
-  if ('BroadcastChannel' in window) {
-    channel = new BroadcastChannel('wuyue-erp');
-    channel.onmessage = (e) => {
-      if (e.data?.type === 'active' && e.data.tab !== TAB && store.gate === 'ready') lockNow('系統已在另一個分頁開啟，這個分頁已自動上鎖（避免兩邊同時修改資料）。');
-    };
-    channel.postMessage({ type: 'active', tab: TAB });
-  }
   store.local.onFatal = (msg) => {
     toast(msg, 'error', 8000);
-    setTimeout(() => lockNow(msg), 1200);
+    setTimeout(() => lockNow(msg, { force: true }), 1200);
   };
 }
 
@@ -113,6 +158,8 @@ function locationLabel() {
 export async function showGate(root, onReady) {
   const next = async () => {
     if (!store.local.unlocked) return;
+    await claimTab();
+    if (store.local.migrationError) toast('舊資料搬移未完成，下次解鎖會再試一次：' + store.local.migrationError, 'error', 8000);
     try {
       await store.connect();
     } catch (e) {
@@ -165,7 +212,7 @@ export async function showGate(root, onReady) {
       if (where === 'cloud') {
         const url = form.url.value.trim().replace(/\/$/, '');
         const anonKey = form.key.value.trim();
-        if (!/^https:\/\/[\w.-]+$/.test(url) || anonKey.length < 20) return toast('請填入正確的 Supabase Project URL 與 anon key', 'error');
+        if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url) || anonKey.length < 20) return toast('請填入 Supabase 的 Project URL（https://xxxx.supabase.co）與 anon key', 'error');
         cloudCfg = { url, anonKey, enabled: true };
       }
       const btn = form.querySelector('[type=submit]');

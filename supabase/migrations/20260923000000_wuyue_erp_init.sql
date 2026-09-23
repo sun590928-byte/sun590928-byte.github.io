@@ -1,5 +1,6 @@
--- 午月營運帳務系統：Supabase 初始結構（由 tools/gen-schema.mjs 產生，請勿手改表格欄位）
+-- 午月營運帳務系統：Supabase 資料庫結構（由 tools/gen-schema.mjs 產生，請勿手改表格欄位）
 -- 套用：Supabase Dashboard → SQL Editor 貼上執行，或 supabase db push
+-- 可重複執行：系統更新後再執行一次同一份檔案，會補上新增的資料表與欄位，既有資料不受影響。
 -- 安全模型：所有資料表啟用 RLS，只有 app_users 白名單中的 Email 登入者可讀寫。
 
 -- ───────── 使用者白名單
@@ -50,6 +51,7 @@ create table if not exists public."settings" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."settings" add column if not exists "value" jsonb;
 alter table public."settings" enable row level security;
 drop policy if exists "members full access" on public."settings";
 create policy "members full access" on public."settings" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -74,6 +76,17 @@ create table if not exists public."import_batches" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."import_batches" add column if not exists "target" text;
+alter table public."import_batches" add column if not exists "file_name" text;
+alter table public."import_batches" add column if not exists "file_hash" text;
+alter table public."import_batches" add column if not exists "encoding" text;
+alter table public."import_batches" add column if not exists "row_count" numeric;
+alter table public."import_batches" add column if not exists "added" numeric;
+alter table public."import_batches" add column if not exists "skipped" numeric;
+alter table public."import_batches" add column if not exists "date_from" date;
+alter table public."import_batches" add column if not exists "date_to" date;
+alter table public."import_batches" add column if not exists "mapping" jsonb;
+alter table public."import_batches" add column if not exists "imported_at" timestamptz;
 alter table public."import_batches" enable row level security;
 drop policy if exists "members full access" on public."import_batches";
 create policy "members full access" on public."import_batches" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -94,6 +107,13 @@ create table if not exists public."import_profiles" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."import_profiles" add column if not exists "target" text;
+alter table public."import_profiles" add column if not exists "signature" text;
+alter table public."import_profiles" add column if not exists "header_index" numeric;
+alter table public."import_profiles" add column if not exists "mapping" jsonb;
+alter table public."import_profiles" add column if not exists "headers" jsonb;
+alter table public."import_profiles" add column if not exists "name" text;
+alter table public."import_profiles" add column if not exists "updated_at" timestamptz;
 alter table public."import_profiles" enable row level security;
 drop policy if exists "members full access" on public."import_profiles";
 create policy "members full access" on public."import_profiles" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -130,6 +150,29 @@ create table if not exists public."sales_lines" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."sales_lines" add column if not exists "batch_id" text;
+alter table public."sales_lines" add column if not exists "date" date;
+alter table public."sales_lines" add column if not exists "time" text;
+alter table public."sales_lines" add column if not exists "order_no" text;
+alter table public."sales_lines" add column if not exists "item_raw" text;
+alter table public."sales_lines" add column if not exists "option_raw" text;
+alter table public."sales_lines" add column if not exists "category_raw" text;
+alter table public."sales_lines" add column if not exists "qty" numeric;
+alter table public."sales_lines" add column if not exists "unit_price" numeric;
+alter table public."sales_lines" add column if not exists "gross" numeric;
+alter table public."sales_lines" add column if not exists "discount" numeric;
+alter table public."sales_lines" add column if not exists "amount" numeric;
+alter table public."sales_lines" add column if not exists "revenue" numeric;
+alter table public."sales_lines" add column if not exists "payment_raw" text;
+alter table public."sales_lines" add column if not exists "payment" text;
+alter table public."sales_lines" add column if not exists "status_raw" text;
+alter table public."sales_lines" add column if not exists "note" text;
+alter table public."sales_lines" add column if not exists "member" text;
+alter table public."sales_lines" add column if not exists "staff" text;
+alter table public."sales_lines" add column if not exists "channel" text;
+alter table public."sales_lines" add column if not exists "is_adjustment" boolean;
+alter table public."sales_lines" add column if not exists "void_reason" text;
+alter table public."sales_lines" add column if not exists "void_keyword" text;
 create index if not exists sales_lines_date_idx on public."sales_lines" ("date");
 create index if not exists sales_lines_batch_id_idx on public."sales_lines" ("batch_id");
 alter table public."sales_lines" enable row level security;
@@ -151,6 +194,12 @@ create table if not exists public."products" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."products" add column if not exists "name" text;
+alter table public."products" add column if not exists "category" text;
+alter table public."products" add column if not exists "price" numeric;
+alter table public."products" add column if not exists "active" boolean;
+alter table public."products" add column if not exists "note" text;
+alter table public."products" add column if not exists "updated_at" timestamptz;
 alter table public."products" enable row level security;
 drop policy if exists "members full access" on public."products";
 create policy "members full access" on public."products" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -167,6 +216,9 @@ create table if not exists public."product_aliases" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."product_aliases" add column if not exists "raw_name" text;
+alter table public."product_aliases" add column if not exists "product_id" text;
+alter table public."product_aliases" add column if not exists "updated_at" timestamptz;
 alter table public."product_aliases" enable row level security;
 drop policy if exists "members full access" on public."product_aliases";
 create policy "members full access" on public."product_aliases" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -183,6 +235,9 @@ create table if not exists public."product_not_same" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."product_not_same" add column if not exists "a" text;
+alter table public."product_not_same" add column if not exists "b" text;
+alter table public."product_not_same" add column if not exists "updated_at" timestamptz;
 alter table public."product_not_same" enable row level security;
 drop policy if exists "members full access" on public."product_not_same";
 create policy "members full access" on public."product_not_same" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -211,6 +266,21 @@ create table if not exists public."payment_tx" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."payment_tx" add column if not exists "batch_id" text;
+alter table public."payment_tx" add column if not exists "provider" text;
+alter table public."payment_tx" add column if not exists "date" date;
+alter table public."payment_tx" add column if not exists "time" text;
+alter table public."payment_tx" add column if not exists "order_no" text;
+alter table public."payment_tx" add column if not exists "provider_no" text;
+alter table public."payment_tx" add column if not exists "amount" numeric;
+alter table public."payment_tx" add column if not exists "fee" numeric;
+alter table public."payment_tx" add column if not exists "net" numeric;
+alter table public."payment_tx" add column if not exists "status" text;
+alter table public."payment_tx" add column if not exists "ok" boolean;
+alter table public."payment_tx" add column if not exists "payout_date" date;
+alter table public."payment_tx" add column if not exists "method" text;
+alter table public."payment_tx" add column if not exists "card_last4" text;
+alter table public."payment_tx" add column if not exists "note" text;
 create index if not exists payment_tx_date_idx on public."payment_tx" ("date");
 alter table public."payment_tx" enable row level security;
 drop policy if exists "members full access" on public."payment_tx";
@@ -237,6 +307,18 @@ create table if not exists public."payouts" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."payouts" add column if not exists "batch_id" text;
+alter table public."payouts" add column if not exists "provider" text;
+alter table public."payouts" add column if not exists "payout_date" date;
+alter table public."payouts" add column if not exists "gross" numeric;
+alter table public."payouts" add column if not exists "fee" numeric;
+alter table public."payouts" add column if not exists "net" numeric;
+alter table public."payouts" add column if not exists "period_from" date;
+alter table public."payouts" add column if not exists "period_to" date;
+alter table public."payouts" add column if not exists "tx_count" numeric;
+alter table public."payouts" add column if not exists "ref" text;
+alter table public."payouts" add column if not exists "note" text;
+alter table public."payouts" add column if not exists "document_id" text;
 alter table public."payouts" enable row level security;
 drop policy if exists "members full access" on public."payouts";
 create policy "members full access" on public."payouts" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -256,6 +338,12 @@ create table if not exists public."bank_accounts" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."bank_accounts" add column if not exists "name" text;
+alter table public."bank_accounts" add column if not exists "bank" text;
+alter table public."bank_accounts" add column if not exists "last4" text;
+alter table public."bank_accounts" add column if not exists "gl_account" text;
+alter table public."bank_accounts" add column if not exists "opening_date" date;
+alter table public."bank_accounts" add column if not exists "opening_balance" numeric;
 alter table public."bank_accounts" enable row level security;
 drop policy if exists "members full access" on public."bank_accounts";
 create policy "members full access" on public."bank_accounts" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -279,6 +367,16 @@ create table if not exists public."bank_lines" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."bank_lines" add column if not exists "batch_id" text;
+alter table public."bank_lines" add column if not exists "bank_account_id" text;
+alter table public."bank_lines" add column if not exists "date" date;
+alter table public."bank_lines" add column if not exists "description" text;
+alter table public."bank_lines" add column if not exists "withdrawal" numeric;
+alter table public."bank_lines" add column if not exists "deposit" numeric;
+alter table public."bank_lines" add column if not exists "balance" numeric;
+alter table public."bank_lines" add column if not exists "note" text;
+alter table public."bank_lines" add column if not exists "counterparty" text;
+alter table public."bank_lines" add column if not exists "match_key" text;
 create index if not exists bank_lines_date_idx on public."bank_lines" ("date");
 alter table public."bank_lines" enable row level security;
 drop policy if exists "members full access" on public."bank_lines";
@@ -302,6 +400,15 @@ create table if not exists public."accounts" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."accounts" add column if not exists "name" text;
+alter table public."accounts" add column if not exists "type" text;
+alter table public."accounts" add column if not exists "side" text;
+alter table public."accounts" add column if not exists "grp" text;
+alter table public."accounts" add column if not exists "contra" boolean;
+alter table public."accounts" add column if not exists "behavior" text;
+alter table public."accounts" add column if not exists "tax_line" text;
+alter table public."accounts" add column if not exists "hint" text;
+alter table public."accounts" add column if not exists "active" boolean;
 alter table public."accounts" enable row level security;
 drop policy if exists "members full access" on public."accounts";
 create policy "members full access" on public."accounts" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -325,6 +432,16 @@ create table if not exists public."journal_entries" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."journal_entries" add column if not exists "date" date;
+alter table public."journal_entries" add column if not exists "voucher_no" text;
+alter table public."journal_entries" add column if not exists "description" text;
+alter table public."journal_entries" add column if not exists "source" text;
+alter table public."journal_entries" add column if not exists "source_ref" text;
+alter table public."journal_entries" add column if not exists "status" text;
+alter table public."journal_entries" add column if not exists "lines" jsonb;
+alter table public."journal_entries" add column if not exists "attachments" jsonb;
+alter table public."journal_entries" add column if not exists "created_at" timestamptz;
+alter table public."journal_entries" add column if not exists "updated_at" timestamptz;
 create index if not exists journal_entries_date_idx on public."journal_entries" ("date");
 create index if not exists journal_entries_source_idx on public."journal_entries" ("source");
 alter table public."journal_entries" enable row level security;
@@ -367,6 +484,33 @@ create table if not exists public."documents" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."documents" add column if not exists "kind" text;
+alter table public."documents" add column if not exists "status" text;
+alter table public."documents" add column if not exists "storage_path" text;
+alter table public."documents" add column if not exists "original_name" text;
+alter table public."documents" add column if not exists "archived_name" text;
+alter table public."documents" add column if not exists "mime" text;
+alter table public."documents" add column if not exists "file_ext" text;
+alter table public."documents" add column if not exists "doc_date" date;
+alter table public."documents" add column if not exists "vendor_name" text;
+alter table public."documents" add column if not exists "vendor_tax_id" text;
+alter table public."documents" add column if not exists "buyer_tax_id" text;
+alter table public."documents" add column if not exists "invoice_type" text;
+alter table public."documents" add column if not exists "invoice_no" text;
+alter table public."documents" add column if not exists "amount_total" numeric;
+alter table public."documents" add column if not exists "tax_amount" numeric;
+alter table public."documents" add column if not exists "deductible" boolean;
+alter table public."documents" add column if not exists "summary" text;
+alter table public."documents" add column if not exists "items" jsonb;
+alter table public."documents" add column if not exists "account" text;
+alter table public."documents" add column if not exists "pay_account" text;
+alter table public."documents" add column if not exists "confidence" numeric;
+alter table public."documents" add column if not exists "ai" jsonb;
+alter table public."documents" add column if not exists "entry_id" text;
+alter table public."documents" add column if not exists "einvoice_id" text;
+alter table public."documents" add column if not exists "asset_id" text;
+alter table public."documents" add column if not exists "created_at" timestamptz;
+alter table public."documents" add column if not exists "updated_at" timestamptz;
 create index if not exists documents_doc_date_idx on public."documents" ("doc_date");
 create index if not exists documents_entry_id_idx on public."documents" ("entry_id");
 alter table public."documents" enable row level security;
@@ -398,6 +542,22 @@ create table if not exists public."einvoices" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."einvoices" add column if not exists "batch_id" text;
+alter table public."einvoices" add column if not exists "invoice_no" text;
+alter table public."einvoices" add column if not exists "date" date;
+alter table public."einvoices" add column if not exists "seller_tax_id" text;
+alter table public."einvoices" add column if not exists "seller_name" text;
+alter table public."einvoices" add column if not exists "buyer_tax_id" text;
+alter table public."einvoices" add column if not exists "total" numeric;
+alter table public."einvoices" add column if not exists "tax" numeric;
+alter table public."einvoices" add column if not exists "status" text;
+alter table public."einvoices" add column if not exists "voided" boolean;
+alter table public."einvoices" add column if not exists "deductible" boolean;
+alter table public."einvoices" add column if not exists "items" jsonb;
+alter table public."einvoices" add column if not exists "suggested_account" text;
+alter table public."einvoices" add column if not exists "account" text;
+alter table public."einvoices" add column if not exists "document_id" text;
+alter table public."einvoices" add column if not exists "entry_id" text;
 alter table public."einvoices" enable row level security;
 drop policy if exists "members full access" on public."einvoices";
 create policy "members full access" on public."einvoices" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -425,6 +585,20 @@ create table if not exists public."fixed_assets" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."fixed_assets" add column if not exists "name" text;
+alter table public."fixed_assets" add column if not exists "category" text;
+alter table public."fixed_assets" add column if not exists "acquired_on" date;
+alter table public."fixed_assets" add column if not exists "cost" numeric;
+alter table public."fixed_assets" add column if not exists "life_years" numeric;
+alter table public."fixed_assets" add column if not exists "residual" numeric;
+alter table public."fixed_assets" add column if not exists "disposed_on" date;
+alter table public."fixed_assets" add column if not exists "supplier" text;
+alter table public."fixed_assets" add column if not exists "invoice_no" text;
+alter table public."fixed_assets" add column if not exists "tax_amount" numeric;
+alter table public."fixed_assets" add column if not exists "pay_account" text;
+alter table public."fixed_assets" add column if not exists "doc_ids" jsonb;
+alter table public."fixed_assets" add column if not exists "purchase_entry_id" text;
+alter table public."fixed_assets" add column if not exists "note" text;
 alter table public."fixed_assets" enable row level security;
 drop policy if exists "members full access" on public."fixed_assets";
 create policy "members full access" on public."fixed_assets" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -448,6 +622,16 @@ create table if not exists public."inventory_items" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."inventory_items" add column if not exists "sku" text;
+alter table public."inventory_items" add column if not exists "name" text;
+alter table public."inventory_items" add column if not exists "category" text;
+alter table public."inventory_items" add column if not exists "unit" text;
+alter table public."inventory_items" add column if not exists "gl_account" text;
+alter table public."inventory_items" add column if not exists "safety_stock" numeric;
+alter table public."inventory_items" add column if not exists "reorder_qty" numeric;
+alter table public."inventory_items" add column if not exists "supplier_id" text;
+alter table public."inventory_items" add column if not exists "std_cost" numeric;
+alter table public."inventory_items" add column if not exists "active" boolean;
 alter table public."inventory_items" enable row level security;
 drop policy if exists "members full access" on public."inventory_items";
 create policy "members full access" on public."inventory_items" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -471,6 +655,16 @@ create table if not exists public."inventory_moves" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."inventory_moves" add column if not exists "item_id" text;
+alter table public."inventory_moves" add column if not exists "date" date;
+alter table public."inventory_moves" add column if not exists "type" text;
+alter table public."inventory_moves" add column if not exists "qty" numeric;
+alter table public."inventory_moves" add column if not exists "amount" numeric;
+alter table public."inventory_moves" add column if not exists "supplier_id" text;
+alter table public."inventory_moves" add column if not exists "order_date" date;
+alter table public."inventory_moves" add column if not exists "yield_score" numeric;
+alter table public."inventory_moves" add column if not exists "invoice_no" text;
+alter table public."inventory_moves" add column if not exists "note" text;
 create index if not exists inventory_moves_date_idx on public."inventory_moves" ("date");
 alter table public."inventory_moves" enable row level security;
 drop policy if exists "members full access" on public."inventory_moves";
@@ -488,6 +682,9 @@ create table if not exists public."recipes" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."recipes" add column if not exists "product_id" text;
+alter table public."recipes" add column if not exists "item_id" text;
+alter table public."recipes" add column if not exists "qty" numeric;
 alter table public."recipes" enable row level security;
 drop policy if exists "members full access" on public."recipes";
 create policy "members full access" on public."recipes" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -505,6 +702,10 @@ create table if not exists public."stocktakes" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."stocktakes" add column if not exists "month" text;
+alter table public."stocktakes" add column if not exists "account" text;
+alter table public."stocktakes" add column if not exists "value" numeric;
+alter table public."stocktakes" add column if not exists "note" text;
 alter table public."stocktakes" enable row level security;
 drop policy if exists "members full access" on public."stocktakes";
 create policy "members full access" on public."stocktakes" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -524,6 +725,12 @@ create table if not exists public."suppliers" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."suppliers" add column if not exists "name" text;
+alter table public."suppliers" add column if not exists "tax_id" text;
+alter table public."suppliers" add column if not exists "contact" text;
+alter table public."suppliers" add column if not exists "phone" text;
+alter table public."suppliers" add column if not exists "terms" text;
+alter table public."suppliers" add column if not exists "note" text;
 alter table public."suppliers" enable row level security;
 drop policy if exists "members full access" on public."suppliers";
 create policy "members full access" on public."suppliers" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -544,6 +751,13 @@ create table if not exists public."customers" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."customers" add column if not exists "member_no" text;
+alter table public."customers" add column if not exists "name" text;
+alter table public."customers" add column if not exists "tier" text;
+alter table public."customers" add column if not exists "birthday" text;
+alter table public."customers" add column if not exists "preferences" text;
+alter table public."customers" add column if not exists "joined_on" date;
+alter table public."customers" add column if not exists "note" text;
 alter table public."customers" enable row level security;
 drop policy if exists "members full access" on public."customers";
 create policy "members full access" on public."customers" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -566,6 +780,15 @@ create table if not exists public."campaigns" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."campaigns" add column if not exists "name" text;
+alter table public."campaigns" add column if not exists "type" text;
+alter table public."campaigns" add column if not exists "start_date" date;
+alter table public."campaigns" add column if not exists "end_date" date;
+alter table public."campaigns" add column if not exists "keywords" text;
+alter table public."campaigns" add column if not exists "issued_qty" numeric;
+alter table public."campaigns" add column if not exists "redeemed_qty" numeric;
+alter table public."campaigns" add column if not exists "marketing_cost" numeric;
+alter table public."campaigns" add column if not exists "note" text;
 alter table public."campaigns" enable row level security;
 drop policy if exists "members full access" on public."campaigns";
 create policy "members full access" on public."campaigns" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -584,6 +807,11 @@ create table if not exists public."checklist" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."checklist" add column if not exists "month" text;
+alter table public."checklist" add column if not exists "key" text;
+alter table public."checklist" add column if not exists "done" boolean;
+alter table public."checklist" add column if not exists "note" text;
+alter table public."checklist" add column if not exists "done_at" timestamptz;
 alter table public."checklist" enable row level security;
 drop policy if exists "members full access" on public."checklist";
 create policy "members full access" on public."checklist" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -600,6 +828,9 @@ create table if not exists public."tax_tasks" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."tax_tasks" add column if not exists "done" boolean;
+alter table public."tax_tasks" add column if not exists "note" text;
+alter table public."tax_tasks" add column if not exists "done_at" timestamptz;
 alter table public."tax_tasks" enable row level security;
 drop policy if exists "members full access" on public."tax_tasks";
 create policy "members full access" on public."tax_tasks" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -634,6 +865,27 @@ create table if not exists public."tax_filings" (
   "inserted_at" timestamptz not null default now(),
   "updated_by" uuid default auth.uid()
 );
+alter table public."tax_filings" add column if not exists "period_from" text;
+alter table public."tax_filings" add column if not exists "period_to" text;
+alter table public."tax_filings" add column if not exists "status" text;
+alter table public."tax_filings" add column if not exists "sales_ex" numeric;
+alter table public."tax_filings" add column if not exists "output_tax" numeric;
+alter table public."tax_filings" add column if not exists "input_tax" numeric;
+alter table public."tax_filings" add column if not exists "input_asset_tax" numeric;
+alter table public."tax_filings" add column if not exists "prev_cf" numeric;
+alter table public."tax_filings" add column if not exists "payable" numeric;
+alter table public."tax_filings" add column if not exists "refund" numeric;
+alter table public."tax_filings" add column if not exists "cf" numeric;
+alter table public."tax_filings" add column if not exists "platform_sales_ex" numeric;
+alter table public."tax_filings" add column if not exists "platform_output_tax" numeric;
+alter table public."tax_filings" add column if not exists "claimed" jsonb;
+alter table public."tax_filings" add column if not exists "filed_on" date;
+alter table public."tax_filings" add column if not exists "paid_on" date;
+alter table public."tax_filings" add column if not exists "receipt_no" text;
+alter table public."tax_filings" add column if not exists "entry_id" text;
+alter table public."tax_filings" add column if not exists "pay_entry_id" text;
+alter table public."tax_filings" add column if not exists "note" text;
+alter table public."tax_filings" add column if not exists "updated_at" timestamptz;
 alter table public."tax_filings" enable row level security;
 drop policy if exists "members full access" on public."tax_filings";
 create policy "members full access" on public."tax_filings" for all to authenticated using (public.is_member()) with check (public.is_member());
@@ -701,6 +953,9 @@ drop policy if exists "members update documents" on storage.objects;
 create policy "members update documents" on storage.objects for update to authenticated using (bucket_id = 'documents' and public.is_member()) with check (bucket_id = 'documents' and public.is_member());
 drop policy if exists "members delete documents" on storage.objects;
 create policy "members delete documents" on storage.objects for delete to authenticated using (bucket_id = 'documents' and public.is_member());
+
+-- 通知 API 重新讀取資料表結構
+notify pgrst, 'reload schema';
 
 -- ───────── 最後一步（請改成你自己的 Email 後執行）：
 -- insert into public.app_users (email, role) values ('你的Email', 'owner');

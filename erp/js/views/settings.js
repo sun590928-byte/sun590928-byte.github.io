@@ -103,7 +103,7 @@ export async function render(root) {
           <label class="check"><input type="checkbox" name="owns_property" ${s.owns_property ? raw('checked') : ''}> 有自有房地</label>
           <label class="check"><input type="checkbox" name="has_vehicle" ${s.has_vehicle ? raw('checked') : ''}> 有營業用車</label>
         </div>
-        <p class="muted" style="font-size:12.5px;margin-top:8px">一般稅額：POS 含稅金額 ÷ 1.05 為收入、其餘列銷項稅額；寄杯收款時即開發票者，銷項稅額在售出當天認列，兌換時不再計稅。申報行事曆會依「開始準備／目標完成日」提醒（法定期限前完成）。</p>
+        <p class="muted" style="font-size:12.5px;margin-top:8px">一般稅額：POS 含稅金額 ÷ 1.05 為收入、其餘列銷項稅額；寄杯收款時即開發票者，銷項稅額在售出當天認列，兌換時不再計稅（變更寄杯設定只會重算未結帳鎖定的月份）。申報行事曆會依「開始準備／目標完成日」提醒（法定期限前完成）。</p>
         <div class="row" style="margin-top:12px"><button class="btn primary" type="button" data-act="saveBiz">儲存設定</button></div>
       </form>
 
@@ -275,7 +275,7 @@ export async function render(root) {
     cloudOn: async () => {
       const url = root.querySelector('[name=sb_url]').value.trim().replace(/\/$/, '');
       const anonKey = root.querySelector('[name=sb_key]').value.trim();
-      if (!/^https:\/\/[\w.-]+$/.test(url) || anonKey.length < 20) return toast('請填入正確的 Project URL 與 anon key', 'error');
+      if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url) || anonKey.length < 20) return toast('請填入 Supabase 的 Project URL（https://xxxx.supabase.co）與 anon key', 'error');
       saveCloudConfig({ url, anonKey, enabled: true });
       toast('已儲存，重新開啟後請登入雲端帳號', 'good');
       setTimeout(() => lockNow('已切換為雲端資料庫，請輸入開啟密碼後登入雲端帳號。'), 800);

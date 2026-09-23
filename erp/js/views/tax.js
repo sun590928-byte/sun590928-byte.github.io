@@ -97,7 +97,7 @@ export async function render(root, ctx) {
         <button class="btn" data-act="ics">匯出行事曆（.ics）</button>
       </div>
       <div class="callout" style="margin-bottom:14px"><p>目前設定：<b>${ORG[settings.org_type]}</b>・<b>${VAT[settings.vat_mode]}</b>・${settings.filing_self ? '自行申報' : '委託申報'}・${settings.has_employees ? '有聘僱員工' : '無員工'}${settings.pays_rent_to_individual ? '・店租付給個人房東（需扣繳）' : ''}。<a href="#/settings">修改</a><br>
-      每項申報都有<b>開始準備日</b>（每月 ${profile.prepDay} 日）與<b>目標完成日</b>（${profile.targetDay} 日前，遇週末提前到週五）；法定期限在 10 日的扣繳稅款，目標提前 3 天。法定期限遇週末已順延；國定假日與特別公告請以財政部、勞保局、健保署為準，有疑問可撥國稅局免付費電話 0800-000-321。</p></div>
+      每項申報都有<b>開始準備日</b>（每月 ${profile.prepDay} 日）與<b>目標完成日</b>（${profile.targetDay} 日前，遇週末提前到週五）；法定期限在 10 日的扣繳稅款、以及勞健保等繳款單，目標訂在期限前 3 天。法定期限遇週末已順延；國定假日與特別公告請以財政部、勞保局、健保署為準，有疑問可撥國稅局免付費電話 0800-000-321。</p></div>
       <div class="grid-2" style="margin-bottom:16px">
         <div class="card"><div class="card-head"><h2>30 天內要處理</h2></div>${soon.length ? soon.map((i) => h`<div class="row" style="margin-bottom:6px"><b class="num">${md(i.target)}</b><span>${i.title}</span><span class="spacer"></span><span class="muted" title="法定期限 ${i.due}">${daysBetween(t, i.target) >= 0 ? `還有 ${daysBetween(t, i.target)} 天` : '已過目標日'}</span></div>`) : h`<p class="muted">近期沒有待辦申報。</p>`}</div>
         <div class="card"><div class="card-head"><h2>逾期未完成</h2></div>${overdue.length ? overdue.map((i) => h`<div class="row" style="margin-bottom:6px">${status('bad', md(i.due))}<span>${i.title}</span></div>`) : h`<p class="muted">沒有逾期項目。</p>`}</div>

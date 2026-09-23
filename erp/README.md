@@ -102,7 +102,7 @@
 需要：Supabase 帳號（免費方案即可）、Anthropic API 金鑰（AI 辨識發票用）。
 
 1. 在 [supabase.com](https://supabase.com) 建立專案（Region 選 Tokyo 或 Singapore）。
-2. 左側 **SQL Editor** → 貼上 `supabase/migrations/20260923000000_wuyue_erp_init.sql` 全部內容 → Run。
+2. 左側 **SQL Editor** → 貼上 `supabase/migrations/20260923000000_wuyue_erp_init.sql` 全部內容 → Run。這份 SQL 可以重複執行：之後系統更新時再執行一次，就會補上新的資料表與欄位，既有資料不受影響。
 3. 同一個 SQL Editor 執行（換成你的 Email）：
    ```sql
    insert into public.app_users (email, role) values ('你的Email', 'owner');
@@ -120,7 +120,7 @@
      supabase functions deploy extract-document
      ```
    金鑰只存在 Supabase 伺服器端，網頁與 GitHub 上都不會出現。`ALLOWED_ORIGINS`（選用）限制只有你的網站能呼叫。預設模型 `claude-opus-5`，可用 `CLAUDE_MODEL` 更換。
-6. 打開 ERP → **設定與備份 → 雲端資料庫**：填入 Project URL 與 anon public key（Settings → API）→ 啟用 → 輸入開啟密碼 → 登入雲端帳號。之後這台裝置保持登入（加密保存），每次只要輸入開啟密碼。
+6. 打開 ERP → **設定與備份 → 雲端資料庫**：填入 Project URL（`https://xxxx.supabase.co`）與 anon public key（Settings → API）→ 啟用 → 輸入開啟密碼 → 登入雲端帳號。之後這台裝置保持登入（加密保存），每次只要輸入開啟密碼。
 7. 若之前已在本機匯入資料，按「把這台裝置的本機資料上傳到雲端」（照片一起上傳）。
 
 ## 七、資訊安全

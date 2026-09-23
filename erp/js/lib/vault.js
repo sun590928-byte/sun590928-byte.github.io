@@ -83,6 +83,7 @@ export function makeRecoveryCode() {
 
 export function normalizeRecovery(code) {
   return String(code || '')
+    .normalize('NFKC') // 全形輸入（中文輸入法）也可以
     .toUpperCase()
     .replace(/[\s-]/g, '')
     .replace(/O/g, '0')
@@ -220,6 +221,7 @@ export async function decryptBackup(password, bytes) {
   if (!isEncryptedBackup(bytes)) throw new Error('不是午月 ERP 的加密備份檔');
   const header = bytes.slice(0, 41);
   const iterations = new DataView(header.buffer).getUint32(9);
+  if (iterations < 1000 || iterations > 5000000) throw new Error('備份檔格式不正確');
   const key = await deriveKek(password, header.subarray(13, 29), iterations);
   let body;
   try {

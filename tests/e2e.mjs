@@ -92,6 +92,33 @@ const rawDb = () =>
   });
 
 try {
+  // 模擬舊版（未加密）的本機資料：設定開啟密碼時應加密搬移，並清空舊表
+  await page.goto(BASE.replace('/erp/', '/'));
+  await page.evaluate(
+    () =>
+      new Promise((resolve, reject) => {
+        const req = indexedDB.open('wuyue-erp', 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          db.createObjectStore('settings', { keyPath: 'id' });
+          db.createObjectStore('tax_tasks', { keyPath: 'id' });
+          db.createObjectStore('files', { keyPath: 'id' });
+        };
+        req.onsuccess = () => {
+          const t = req.result.transaction(['settings', 'tax_tasks', 'files'], 'readwrite');
+          t.objectStore('settings').put({ id: 'main', value: { business_name: '午月咖啡廳（舊版資料）' } });
+          t.objectStore('tax_tasks').put({ id: 'legacy-task', done: true });
+          t.objectStore('files').put({ id: 'doc_legacy', name: '舊照片.jpg', type: 'image/jpeg', blob: new Blob([new Uint8Array([1, 2, 3])], { type: 'image/jpeg' }) });
+          t.oncomplete = () => {
+            req.result.close();
+            resolve();
+          };
+          t.onerror = () => reject(t.error);
+        };
+        req.onerror = () => reject(req.error);
+      }),
+  );
+
   // 第一次開啟：設定開啟密碼 → 復原碼 → 進入
   await page.goto(BASE + '#/dashboard');
   await page.waitForSelector('#g-setup');
@@ -113,6 +140,36 @@ try {
   await page.waitForSelector('#nav-links a');
   await page.waitForFunction(() => !document.querySelector('#view')?.textContent.includes('載入中'));
   assert(await page.isVisible('text=歡迎使用午月營運帳務系統'), '首頁空狀態');
+  {
+    const legacy = await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const req = indexedDB.open('wuyue-erp');
+          req.onsuccess = () => {
+            const db = req.result;
+            const t = db.transaction(['settings', 'tax_tasks', 'files', '_files']);
+            const n = {};
+            let left = 4;
+            for (const s of ['settings', 'tax_tasks', 'files', '_files'])
+              t.objectStore(s).count().onsuccess = (e) => {
+                n[s] = e.target.result;
+                if (!--left) {
+                  db.close();
+                  resolve(n);
+                }
+              };
+          };
+        }),
+    );
+    console.log('舊版資料搬移：', legacy);
+    assert(legacy.settings === 0 && legacy.tax_tasks === 0 && legacy.files === 0 && legacy._files === 1, '舊表已清空、照片已加密搬移');
+    await go('settings');
+    assert((await page.inputValue('[name=business_name]')) === '午月咖啡廳（舊版資料）', '舊版設定已搬進加密資料庫');
+    await page.fill('[name=business_name]', '午月咖啡廳');
+    await page.click('[data-act="saveBiz"]');
+    await page.waitForTimeout(300);
+    await go('dashboard');
+  }
   await shot('dashboard-empty', false);
 
   // POS（Big5、標題列）
@@ -399,6 +456,26 @@ try {
     await page.waitForSelector('#nav-links a');
     await go('journal?ym=2026-10');
     assert((await page.textContent('table.grid')).includes('營業稅結轉'), '還原後資料完整');
+  }
+
+  // 分頁互斥：第二個分頁解鎖後，第一個分頁自動上鎖
+  {
+    const page2 = await ctx.newPage();
+    page2.on('pageerror', (e) => errors.push('page2 pageerror: ' + e.message));
+    await page2.goto(BASE + '#/journal?ym=2026-10');
+    await page2.waitForSelector('#g-unlock');
+    await page2.fill('#g-unlock [name=p]', 'NewPass-2026');
+    await page2.click('#g-unlock [type=submit]');
+    await page2.waitForSelector('#nav-links a');
+    await page.waitForSelector('#g-unlock', { timeout: 15000 });
+    assert(await page.isVisible('text=另一個分頁開啟'), '舊分頁顯示已在另一個分頁開啟');
+    await page2.waitForFunction(() => !document.querySelector('#view')?.textContent.includes('載入中'));
+    assert((await page2.textContent('table.grid')).includes('營業稅結轉'), '新分頁資料正常');
+    await page2.waitForTimeout(500);
+    assert(await page2.isVisible('#nav-links a'), '新分頁沒有被鎖住');
+    await page2.close();
+    await unlock('NewPass-2026');
+    await page.waitForSelector('#nav-links a');
   }
 
   // 手機版

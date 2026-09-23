@@ -126,6 +126,16 @@ export async function render(root, ctx) {
   async function post(d) {
     if (!d.doc_date || !d.amount_total || !d.account) return toast('請填日期、金額與科目', 'error');
     if (isLocked(settings, d.doc_date)) return toast('該月份已結帳鎖定', 'error');
+    // 固定資產的發票：已有購置分錄就直接連結，避免同一筆購置入帳兩次
+    const asset = d.asset_id ? (await store.all('fixed_assets')).find((a) => a.id === d.asset_id) : null;
+    const assetEntry = asset?.purchase_entry_id ? (await store.all('journal_entries')).find((e) => e.id === asset.purchase_entry_id) : null;
+    if (assetEntry) {
+      const { archived_name, storage_path } = await archivePatch(d);
+      await store.put('documents', { ...d, status: 'posted', entry_id: assetEntry.id, archived_name, storage_path });
+      await store.put('journal_entries', { ...assetEntry, attachments: [...new Set([...(assetEntry.attachments || []), d.id])], updated_at: new Date().toISOString() });
+      toast(`這張發票屬於固定資產「${asset.name}」，已連結到購置分錄 ${assetEntry.voucher_no}，不重複入帳`, 'info', 7000);
+      return;
+    }
     const inv = linkByInvoice(d);
     if (inv?.entry_id) {
       await store.put('documents', { ...d, status: 'posted', entry_id: inv.entry_id, einvoice_id: inv.id });
@@ -145,6 +155,7 @@ export async function render(root, ctx) {
     const { archived_name, storage_path, folder } = await archivePatch(d);
     await store.put('documents', { ...d, deductible, status: 'posted', entry_id: e.id, archived_name, storage_path, einvoice_id: inv?.id || null });
     if (inv) await store.put('einvoices', { ...inv, entry_id: e.id, document_id: d.id, account: d.account });
+    if (asset && !asset.purchase_entry_id) await store.put('fixed_assets', { ...asset, purchase_entry_id: e.id });
     toast(`已入帳 ${e.voucher_no}，歸檔名稱：${folder}/${archived_name}`, 'good', 6000);
   }
 

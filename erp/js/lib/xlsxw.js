@@ -5,9 +5,10 @@ import { makeZip } from './zip.js';
 
 const te = new TextEncoder();
 
+// XML 不允許的字元（控制字元、U+FFFE/U+FFFF、落單的代理字元）直接移除
 const xmlEsc = (s) =>
   String(s)
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '')
     .replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
 export function colName(i) {
@@ -16,12 +17,13 @@ export function colName(i) {
   return s;
 }
 
-// 工作表名稱：最多 31 字、不可含 []:*?/\
+// 工作表名稱：最多 31 字、不可含 []:*?/\、不可以單引號開頭或結尾、不可叫 History；重複時（不分大小寫）加編號
 export function sheetName(name, used = new Set()) {
-  let base = String(name || '工作表').replace(/[[\]:*?/\\]/g, ' ').slice(0, 31) || '工作表';
+  let base = String(name || '工作表').replace(/[[\]:*?/\\]/g, ' ').replace(/^'+|'+$/g, '').trim().slice(0, 31) || '工作表';
+  if (base.toLowerCase() === 'history') base = 'History_1';
   let n = base;
-  for (let i = 2; used.has(n); i++) n = base.slice(0, 31 - String(i).length - 1) + '_' + i;
-  used.add(n);
+  for (let i = 2; used.has(n.toLowerCase()); i++) n = base.slice(0, 31 - String(i).length - 1) + '_' + i;
+  used.add(n.toLowerCase());
   return n;
 }
 

@@ -45,6 +45,12 @@ export function internalTargets(dueYmd, { prepDay = 10, targetDay = 12, buffer =
   return { prep: weekdayBack(prep), target };
 }
 
+// 繳款單類（勞健保、補充保費、地方稅）：帳單約在期限前一兩週寄達，目標訂在期限前 3 天
+export function paymentTargets(dueYmd, { buffer = 3, lead = 4 } = {}) {
+  const target = weekdayBack(addDays(dueYmd, -buffer));
+  return { prep: weekdayBack(addDays(target, -lead)), target };
+}
+
 /**
  * profile: { orgType: 'company'|'sole', vatMode: 'general'|'small'|'none', hasEmployees, ownsProperty, hasVehicle, paysRentToIndividual, prepDay, targetDay }
  */
@@ -56,8 +62,9 @@ export function buildCalendar(year, profile = {}) {
     if (!cond) return;
     const due = shiftWeekend(date);
     const it = { id: `${date}|${title}`, date, due, title, detail, tags, filing: true, ...extra };
-    if (it.filing) Object.assign(it, internalTargets(due, { prepDay: p.prepDay, targetDay: p.targetDay }));
-    else Object.assign(it, { prep: null, target: due });
+    if (!it.filing) Object.assign(it, { prep: null, target: due });
+    else if (it.pay) Object.assign(it, paymentTargets(due));
+    else Object.assign(it, internalTargets(due, { prepDay: p.prepDay, targetDay: p.targetDay }));
     items.push(it);
   };
   const withholding = p.hasEmployees || p.paysRentToIndividual;
@@ -67,8 +74,8 @@ export function buildCalendar(year, profile = {}) {
     const prevM = m === 1 ? 12 : m - 1;
     add(`${ym}-05`, `${prevM} 月帳務結帳`, '完成「每月結帳前檢查表」：POS、金流撥款、憑證、存摺對帳、盤點、折舊，產出試算表與損益表。申報前先完成結帳，數字才會正確。', ['內部作業'], true, { kind: 'monthly', filing: false });
     add(`${ym}-10`, `繳納 ${prevM} 月扣繳稅款`, '上月給付薪資、租金（房東為個人）、執行業務報酬等已扣繳之所得稅，於 10 日前繳納。', ['扣繳'], withholding, { kind: 'monthly' });
-    add(`${ym}-${pad(lastDay(year, m))}`, `繳納 ${prevM} 月勞保、就保、職保、健保、勞退`, '依勞保局、健保署寄發之繳款單，於當月底前繳納上月份保費；新進、離職人員記得加退保。', ['勞健保'], p.hasEmployees, { kind: 'monthly' });
-    add(`${ym}-${pad(lastDay(year, m))}`, `繳納 ${prevM} 月二代健保補充保費`, '給付個人房東租金單次達 2 萬元、兼職人員薪資超過基本工資等，扣取 2.11% 補充保費，於次月底前繳納。', ['勞健保'], withholding, { kind: 'monthly' });
+    add(`${ym}-${pad(lastDay(year, m))}`, `繳納 ${prevM} 月勞保、就保、職保、健保、勞退`, '依勞保局、健保署寄發之繳款單，於當月底前繳納上月份保費；新進、離職人員記得加退保。', ['勞健保'], p.hasEmployees, { kind: 'monthly', pay: true });
+    add(`${ym}-${pad(lastDay(year, m))}`, `繳納 ${prevM} 月二代健保補充保費`, '給付個人房東租金單次達 2 萬元、兼職人員薪資超過基本工資等，扣取 2.11% 補充保費，於次月底前繳納。', ['勞健保'], withholding, { kind: 'monthly', pay: true });
     if (m % 2 === 1) {
       const a = m === 1 ? 11 : m - 2;
       const b = m === 1 ? 12 : m - 1;
@@ -76,7 +83,7 @@ export function buildCalendar(year, profile = {}) {
       add(`${ym}-15`, `營業稅申報（${a}–${b} 月）`, `一般稅額營業人每兩個月為一期，${m} 月 15 日前申報 401 表並繳納。先用「營業稅申報（401）」工作表核對銷項、進項與留抵稅額。`, ['營業稅'], p.vatMode === 'general', { kind: 'bimonthly', vatPeriod: periodKey });
     }
     if ([1, 4, 7, 10].includes(m)) {
-      add(`${ym}-${pad(lastDay(year, m))}`, '小規模營業人營業稅繳款書', '國稅局每季核定並寄發繳款書（查定課徵 1%），依繳款書所載期限繳納；進項憑證可按季申報扣減。', ['營業稅'], p.vatMode === 'small', { kind: 'quarterly' });
+      add(`${ym}-${pad(lastDay(year, m))}`, '小規模營業人營業稅繳款書', '國稅局每季核定並寄發繳款書（查定課徵 1%），依繳款書所載期限繳納；進項憑證可按季申報扣減。', ['營業稅'], p.vatMode === 'small', { kind: 'quarterly', pay: true });
     }
   }
   add(`${year}-01-31`, `扣繳憑單申報（${roc - 1} 年度）`, '申報上年度各類所得扣繳暨免扣繳憑單（薪資、租金、執行業務等），1 月底前完成。', ['扣繳'], withholding);
@@ -86,10 +93,10 @@ export function buildCalendar(year, profile = {}) {
   add(`${year}-${year % 4 === 0 ? '02-29' : '02-28'}`, `${roc - 1} 年度決算`, '會計年度終了後二個月內辦理決算、編製財務報表，並完成年底結帳分錄。', ['年度結算'], true, { filing: false });
   add(`${year}-05-31`, `營利事業所得稅結算申報（${roc - 1} 年度）`, p.orgType === 'company' ? '5/1–5/31 辦理結算申報並繳納應納稅額。' : '獨資、合夥組織（商號）仍須辦理結算申報，但免計算及繳納營所稅，盈餘併入負責人綜合所得稅。', ['所得稅'], p.vatMode !== 'small', { start: `${year}-05-01` });
   add(`${year}-05-31`, `負責人綜合所得稅結算申報（${roc - 1} 年度）`, '5/1–5/31 申報；商號（獨資／合夥）之營利所得併入。', ['所得稅'], true, { start: `${year}-05-01` });
-  add(`${year}-05-31`, '房屋稅繳納', '5 月開徵，自有房屋者繳納。', ['地方稅'], p.ownsProperty, { start: `${year}-05-01` });
-  add(`${year}-04-30`, '使用牌照稅繳納', '4 月開徵，營業用車輛。', ['地方稅'], p.hasVehicle, { start: `${year}-04-01` });
+  add(`${year}-05-31`, '房屋稅繳納', '5 月開徵，自有房屋者繳納。', ['地方稅'], p.ownsProperty, { start: `${year}-05-01`, pay: true });
+  add(`${year}-04-30`, '使用牌照稅繳納', '4 月開徵，營業用車輛。', ['地方稅'], p.hasVehicle, { start: `${year}-04-01`, pay: true });
   add(`${year}-09-30`, `營所稅暫繳申報（${roc} 年度）`, '9/1–9/30 辦理暫繳（公司組織；依規定免辦者除外）。', ['所得稅'], p.orgType === 'company' && p.vatMode !== 'small', { start: `${year}-09-01` });
-  add(`${year}-11-30`, '地價稅繳納', '11 月開徵，自有土地者繳納。', ['地方稅'], p.ownsProperty, { start: `${year}-11-01` });
+  add(`${year}-11-30`, '地價稅繳納', '11 月開徵，自有土地者繳納。', ['地方稅'], p.ownsProperty, { start: `${year}-11-01`, pay: true });
   add(`${year}-12-31`, '年底盤點與關帳準備', '咖啡豆、乳品、包材、零售商品全面盤點；固定資產實地盤點；確認應付／預付費用與寄杯預收餘額。', ['年度結算'], true, { filing: false });
   add(`${year}-12-31`, '憑證與帳簿保存檢查', '會計憑證至少保存 5 年、帳簿及財務報表至少保存 10 年（年度決算完成後起算）；確認加密備份。', ['內部作業'], true, { filing: false });
   return items.sort((a, b) => (a.target < b.target ? -1 : a.target > b.target ? 1 : a.due < b.due ? -1 : a.due > b.due ? 1 : 0));

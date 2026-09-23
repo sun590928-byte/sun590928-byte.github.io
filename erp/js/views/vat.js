@@ -51,8 +51,19 @@ export async function render(root, ctx) {
     // 帳上本期銷項／進項稅額（不含結轉分錄）；前期未結轉的餘額另外提醒
     const bookOutput = -netMovement(entries, '2131', { from: info.start, to: info.end, exclude: ['vat'] });
     const bookInput = netMovement(entries, '1261', { from: info.start, to: info.end, exclude: ['vat'] });
-    const priorOutput = -balance(entries, '2131', addDays(info.start, -1), ownSettlement);
-    const priorInput = balance(entries, '1261', addDays(info.start, -1), ownSettlement);
+    // 前期未結轉：期初前的餘額，加上記在本期內、但屬於前期的結轉分錄（期末月份鎖定時結轉記在申報日）
+    const priorBal = (acc) =>
+      round2(
+        entries.reduce((t, e) => {
+          if (e.status === 'void') return t;
+          const early = e.date < info.start && !ownSettlement(e);
+          const lateSettle = e.source === 'vat' && e.source_ref < f.p && e.date >= info.start;
+          if (!early && !lateSettle) return t;
+          return t + (e.lines || []).filter((l) => l.account === acc).reduce((a, l) => a + (Number(l.debit) || 0) - (Number(l.credit) || 0), 0);
+        }, 0),
+      );
+    const priorOutput = -priorBal('2131');
+    const priorInput = priorBal('1261');
     const platformSales = filing.platform_sales_ex ?? null;
     const platformTax = filing.platform_output_tax ?? null;
     const output = platformTax ?? bookOutput;
@@ -74,7 +85,10 @@ export async function render(root, ctx) {
     // 申報前檢查
     const pendingDocs = docs.filter((d) => ['inbox', 'reviewed'].includes(d.status) && (!d.doc_date || d.doc_date <= info.end));
     const pendingInv = einvoices.filter((e) => !e.entry_id && !e.voided && e.date && e.date <= info.end);
-    const wrongFlag = items.filter((x) => !x.check.ok && x.deductible !== false && Number(x.tax) > 0);
+    // 分錄實際列了進項稅額（1261），但依規定不能扣抵者
+    const byEntry = new Map(entries.map((e) => [e.id, e]));
+    const claims1261 = (x) => (byEntry.get(x.entry_id)?.lines || []).some((l) => l.account === '1261' && l.debit > 0);
+    const wrongFlag = items.filter((x) => !x.check.ok && claims1261(x));
     const invCount = new Map();
     for (const d of docs) if (d.invoice_no && d.status === 'posted') invCount.set(d.invoice_no, (invCount.get(d.invoice_no) || 0) + 1);
     const dupInv = [...invCount.entries()].filter(([, n]) => n > 1).map(([k]) => k);
@@ -199,7 +213,7 @@ export async function render(root, ctx) {
             <li>完成 ${Number(info.from.slice(5))}、${Number(info.to.slice(5))} 月的「每月結帳檢查」並鎖定。</li>
             <li>登入財政部電子發票整合服務平台，核對本期銷項發票總額與進項發票，把平台數字填進「申報紀錄」。</li>
             <li>本頁「申報前檢查」全部通過後，到財政部電子申報繳稅服務網申報 401，繳款書或留抵資料存檔（可拍照上傳到憑證）。</li>
-            <li>按「標記已申報」，並「產生結轉分錄」；繳稅後「登錄繳稅」。</li>
+            <li>按「標記已申報」，並「產生結轉分錄」（期末月份已鎖定時，分錄記在申報日）；繳稅後「登錄繳稅」。</li>
             <li>目標 ${md(targets.target)} 前完成；法定期限 ${md(info.due)}。有疑問可撥國稅局免付費電話 0800-000-321。</li>
           </ol>
         </div>
@@ -277,7 +291,7 @@ export async function render(root, ctx) {
         payable: c.tax.payable,
         refund: c.tax.refund,
         cf: c.tax.cf,
-        claimed: c.items.map((x) => x.id),
+        claimed: c.ok.map((x) => x.id), // 只記可扣抵者：日後補正的發票仍可延後扣抵
       });
       toast(`${c.info.label} 已標記申報`, 'good');
       draw();
@@ -289,8 +303,14 @@ export async function render(root, ctx) {
     },
     settle: async () => {
       const c = compute();
-      if (isLocked(settings, c.info.end)) return toast(`${c.info.to} 已結帳鎖定，請先解除鎖定再產生結轉分錄`, 'error', 6000);
       const e0 = settlementEntry(f.p, { bookOutput: c.bookOutput, bookInput: c.tax.input, tax: c.tax });
+      // 期末月份已結帳鎖定時，結轉分錄記在申報日（或今天）
+      if (isLocked(settings, e0.date)) {
+        const alt = [c.filing.filed_on, today()].find((d) => d && d > e0.date && !isLocked(settings, d));
+        if (!alt) return toast(`${c.info.to} 已結帳鎖定，且找不到可記帳的日期；請先填申報日期，或解除鎖定`, 'error', 7000);
+        e0.date = alt;
+        e0.description += '（期末月份已結帳，記於申報日）';
+      }
       const errs = validateEntry({ ...e0, id: 'x' }, accMap);
       if (errs.length) return toast(errs[0], 'error');
       const plug = e0.lines.find((l) => l.memo === '營業稅尾差');

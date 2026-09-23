@@ -7,8 +7,9 @@ import { SCHEMA } from '../erp/js/schema.js';
 const OUT = new URL('../supabase/migrations/20260923000000_wuyue_erp_init.sql', import.meta.url);
 const q = (id) => `"${id}"`;
 
-const head = `-- 午月營運帳務系統：Supabase 初始結構（由 tools/gen-schema.mjs 產生，請勿手改表格欄位）
+const head = `-- 午月營運帳務系統：Supabase 資料庫結構（由 tools/gen-schema.mjs 產生，請勿手改表格欄位）
 -- 套用：Supabase Dashboard → SQL Editor 貼上執行，或 supabase db push
+-- 可重複執行：系統更新後再執行一次同一份檔案，會補上新增的資料表與欄位，既有資料不受影響。
 -- 安全模型：所有資料表啟用 RLS，只有 app_users 白名單中的 Email 登入者可讀寫。
 
 -- ───────── 使用者白名單
@@ -59,6 +60,8 @@ for (const [name, def] of Object.entries(SCHEMA)) {
   const cols = Object.entries(def.cols).map(([c, t]) => `  ${q(c)} ${t}${c === pk ? ' primary key' : ''}`);
   cols.push(`  "extra" jsonb not null default '{}'::jsonb`, `  "inserted_at" timestamptz not null default now()`, `  "updated_by" uuid default auth.uid()`);
   body += `\n-- ───────── ${def.label}\ncreate table if not exists public.${q(name)} (\n${cols.join(',\n')}\n);\n`;
+  // 舊版已建立的資料表：補上新欄位
+  for (const [c, t] of Object.entries(def.cols)) if (c !== pk) body += `alter table public.${q(name)} add column if not exists ${q(c)} ${t};\n`;
   for (const c of def.index || []) body += `create index if not exists ${name}_${c}_idx on public.${q(name)} (${q(c)});\n`;
   body += `alter table public.${q(name)} enable row level security;\n`;
   body += `drop policy if exists "members full access" on public.${q(name)};\n`;
@@ -129,6 +132,9 @@ drop policy if exists "members update documents" on storage.objects;
 create policy "members update documents" on storage.objects for update to authenticated using (bucket_id = 'documents' and public.is_member()) with check (bucket_id = 'documents' and public.is_member());
 drop policy if exists "members delete documents" on storage.objects;
 create policy "members delete documents" on storage.objects for delete to authenticated using (bucket_id = 'documents' and public.is_member());
+
+-- 通知 API 重新讀取資料表結構
+notify pgrst, 'reload schema';
 
 -- ───────── 最後一步（請改成你自己的 Email 後執行）：
 -- insert into public.app_users (email, role) values ('你的Email', 'owner');

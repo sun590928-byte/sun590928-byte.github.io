@@ -271,7 +271,14 @@ export function readFileAsArrayBuffer(file) {
   return file.arrayBuffer();
 }
 
+let busySince = 0;
+// 正在處理資料（匯入、還原、上傳…）時，自動上鎖會延後到處理完成
+export function isBusy() {
+  return busySince > 0;
+}
+
 export function setBusy(on, text = '處理中…') {
+  busySince = on ? busySince || Date.now() : 0;
   let el = $('#busy');
   if (!el) {
     el = document.createElement('div');

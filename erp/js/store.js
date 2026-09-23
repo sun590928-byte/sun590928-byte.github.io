@@ -103,16 +103,18 @@ class LocalBackend {
   async setup(passcode) {
     if (await this.loadVault()) throw new Error('這台裝置已經設定過開啟密碼');
     const { record, key, recoveryCode } = await V.createVault(passcode);
-    this.key = key;
-    await this.migrateLegacy();
+    // 先保存保管箱再搬移舊資料：中途中斷時金鑰仍在，下次解鎖會繼續搬移
     await this.putRec(META, { id: 'vault', ...record });
     this.vault = record;
+    this.key = key;
+    await this.resumeMigration();
     return recoveryCode;
   }
 
   async unlock(passcode) {
     if (!this.vault) await this.loadVault();
     this.key = await V.unlockVault(this.vault, passcode);
+    await this.resumeMigration();
   }
 
   async recover(code, newPasscode) {
@@ -121,7 +123,18 @@ class LocalBackend {
     await this.putRec(META, { id: 'vault', ...r.record });
     this.vault = r.record;
     this.key = r.key;
+    await this.resumeMigration();
     return r.recoveryCode;
+  }
+
+  async resumeMigration() {
+    try {
+      await this.migrateLegacy();
+      this.migrationError = null;
+    } catch (e) {
+      console.warn(e);
+      this.migrationError = e.message || String(e);
+    }
   }
 
   async changePasscode(oldPasscode, newPasscode) {
@@ -150,21 +163,20 @@ class LocalBackend {
     this.auth = null;
   }
 
-  // 舊版未加密資料 → 加密後搬移，再清空舊表
+  // 舊版未加密資料 → 全部加密寫入後，才清空舊表（可重複執行：同主鍵覆寫）
   async migrateLegacy() {
     const db = await this.open();
-    const legacy = COLLECTIONS.filter((c) => db.objectStoreNames.contains(c));
-    const clearStore = (name) => reqP(db.transaction(name, 'readwrite').objectStore(name).clear());
-    for (const c of legacy) {
+    const names = [...COLLECTIONS, LEGACY_FILES].filter((c) => db.objectStoreNames.contains(c));
+    const counts = await Promise.all(names.map((c) => reqP(db.transaction(c).objectStore(c).count())));
+    const pending = names.filter((_, i) => counts[i] > 0);
+    if (!pending.length) return;
+    for (const c of pending) {
       const rows = await reqP(db.transaction(c).objectStore(c).getAll());
-      if (rows.length) await this.putMany(c, rows);
-      await clearStore(c);
+      if (c === LEGACY_FILES) {
+        for (const f of rows) if (f?.blob) await this.putFile({ id: f.id, name: f.name, type: f.type || f.blob.type, blob: f.blob });
+      } else await this.putMany(c, rows);
     }
-    if (db.objectStoreNames.contains(LEGACY_FILES)) {
-      const files = await reqP(db.transaction(LEGACY_FILES).objectStore(LEGACY_FILES).getAll());
-      for (const f of files) if (f?.blob) await this.putFile({ id: f.id, name: f.name, type: f.type || f.blob.type, blob: f.blob });
-      await clearStore(LEGACY_FILES);
-    }
+    for (const c of pending) await reqP(db.transaction(c, 'readwrite').objectStore(c).clear());
   }
 
   // ── 資料表
@@ -223,6 +235,15 @@ class LocalBackend {
   async clear(coll) {
     const map = await this.load(coll);
     map.clear();
+    return this.persist(coll);
+  }
+
+  // 整批取代（還原備份用）：一次寫入，不會留下清空到一半的狀態
+  async replaceAll(coll, rows) {
+    const map = await this.load(coll);
+    const pk = pkOf(coll);
+    map.clear();
+    for (const r of rows) map.set(r[pk], JSON.stringify(r));
     return this.persist(coll);
   }
 
@@ -457,6 +478,14 @@ class CloudBackend {
     const { error } = await this.client.from(coll).delete().not(pkOf(coll), 'is', null);
     if (error) throw new Error(`${SCHEMA[coll].label}清除失敗：${error.message}`);
   }
+  // 先寫入新資料，再刪除多出來的舊資料（中途中斷也不會是空的）
+  async replaceAll(coll, rows) {
+    const pk = pkOf(coll);
+    await this.putMany(coll, rows);
+    const keep = new Set(rows.map((r) => r[pk]));
+    const extra = (await this.all(coll)).map((r) => r[pk]).filter((id) => !keep.has(id));
+    if (extra.length) await this.removeMany(coll, extra);
+  }
   async upload(path, file) {
     await this.open();
     const { error } = await this.client.storage.from('documents').upload(path, file, { upsert: true, contentType: file.type });
@@ -570,6 +599,17 @@ export const store = {
   // 解鎖後連線：雲端模式建立 Supabase 連線（登入狀態由本機保管箱提供）
   async connect() {
     const cfg = cloudConfig();
+    // 舊版把 Supabase 登入狀態明文存在 localStorage：搬進加密保管箱後刪除
+    try {
+      const auth = local.authStorage();
+      for (const k of Object.keys(localStorage)) {
+        if (!/^sb-.+-(auth-token|code-verifier)/.test(k)) continue;
+        if ((await auth.getItem(k)) === null) await auth.setItem(k, localStorage.getItem(k));
+        localStorage.removeItem(k);
+      }
+    } catch (e) {
+      console.warn(e);
+    }
     if (cfg?.enabled && cfg.url && cfg.anonKey) {
       const be = new CloudBackend(cfg, local.authStorage());
       await be.open();
@@ -670,10 +710,14 @@ export const store = {
   },
   async importAll(json, { replace = false } = {}) {
     if (json?.app !== 'wuyue-erp' || !json.data) throw new Error('不是午月 ERP 的備份檔');
-    for (const [c, rows] of Object.entries(json.data)) {
-      if (!SCHEMA[c]) continue;
-      if (replace) await this.clear(c);
-      await this.put(c, rows);
+    for (const c of COLLECTIONS) {
+      const rows = json.data[c];
+      if (!Array.isArray(rows)) continue;
+      if (replace) {
+        await backend.replaceAll(c, rows);
+        cache.set(c, Promise.resolve([...rows]));
+        emit(c);
+      } else await this.put(c, rows);
     }
   },
   // 本機資料（含加密的憑證照片）一次上傳到雲端

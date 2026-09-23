@@ -213,12 +213,12 @@ export async function render(root, ctx) {
     r.doc_ids = att.ids;
     docs = await store.all('documents');
     // 附上的發票若已在「憑證歸檔」入帳，直接視為購置分錄，避免重複入帳
-    const posted = docs.find((d) => att.ids.includes(d.id) && d.entry_id);
+    const posted = docs.find((d) => att.ids.includes(d.id) && d.entry_id && entries.some((e) => e.id === d.entry_id));
     if (!r.purchase_entry_id && posted) r.purchase_entry_id = posted.entry_id;
     await store.put('fixed_assets', r);
-    const linkDocs = docs.filter((d) => att.ids.includes(d.id) && d.asset_id !== r.id).map((d) => ({ ...d, asset_id: r.id }));
     const unlinkDocs = docs.filter((d) => d.asset_id === r.id && !att.ids.includes(d.id)).map((d) => ({ ...d, asset_id: null }));
-    if (linkDocs.length || unlinkDocs.length) await store.put('documents', [...linkDocs, ...unlinkDocs]);
+    if (unlinkDocs.length) await store.put('documents', unlinkDocs);
+    await syncAssetDocs(r, (ASSET_CATEGORIES[r.category] || ASSET_CATEGORIES.machine).asset);
     assets = await store.all('fixed_assets');
     await syncDepreciation();
     entries = await store.all('journal_entries');
@@ -227,24 +227,26 @@ export async function render(root, ctx) {
     if (!r.purchase_entry_id && !isOpening(r) && (await confirmBox(`要現在建立「${r.name}」的購置分錄嗎？系統會預填金額與科目，確認後再儲存。`, { ok: '建立購置分錄' }))) await purchase(r);
   }
 
-  // 附在資產上的發票：補上發票號、金額、稅額、科目（營業稅工作表的進項清單以憑證為準）
-  async function syncAssetDocs(a, assetAccount, tax) {
+  // 附在資產上的發票：標記所屬資產與科目；只有一張發票時，補上發票缺漏的號碼、金額、稅額（不覆寫既有數字）
+  // （營業稅工作表的進項清單以憑證為準）
+  async function syncAssetDocs(a, assetAccount) {
     docs = await store.all('documents');
     const mine = docs.filter((d) => (a.doc_ids || []).includes(d.id));
-    const invoiceDoc = mine.find((d) => d.invoice_no && d.invoice_no === a.invoice_no) || (mine.length === 1 ? mine[0] : null);
+    const single = mine.length === 1;
     const upd = mine.map((d) => {
       const x = { ...d, asset_id: a.id };
-      if (d === invoiceDoc) {
-        Object.assign(x, {
-          doc_date: d.doc_date || a.acquired_on,
-          vendor_name: d.vendor_name || a.supplier,
-          invoice_no: a.invoice_no || d.invoice_no,
-          amount_total: round2(Number(a.cost) + (Number(a.tax_amount) || 0)),
-          tax_amount: Number(a.tax_amount) || null,
-          account: assetAccount,
-          deductible: tax > 0 ? true : d.deductible,
-          summary: d.summary || a.name,
-        });
+      if (!d.entry_id || d.entry_id === a.purchase_entry_id) x.account = assetAccount;
+      if (single) {
+        const fill = (k, v) => {
+          if ((x[k] === null || x[k] === undefined || x[k] === '') && v !== null && v !== undefined && v !== '') x[k] = v;
+        };
+        fill('doc_date', a.acquired_on);
+        fill('vendor_name', a.supplier);
+        fill('invoice_no', a.invoice_no);
+        fill('amount_total', round2(Number(a.cost) + (Number(a.tax_amount) || 0)));
+        fill('tax_amount', Number(a.tax_amount) || null);
+        fill('summary', a.name);
+        if (x.deductible === undefined && Number(x.tax_amount) > 0 && x.invoice_no) x.deductible = true;
       }
       return x;
     });
@@ -255,8 +257,17 @@ export async function render(root, ctx) {
   // 購置分錄：借 資產科目（未稅成本）、進項稅額；貸 付款方式
   async function purchase(a) {
     a = assets.find((x) => x.id === a.id) || a;
-    if (isLocked(settings, a.acquired_on)) return toast(`${a.acquired_on.slice(0, 7)} 已結帳鎖定，請先解除鎖定`, 'error');
     const cat = ASSET_CATEGORIES[a.category] || ASSET_CATEGORIES.machine;
+    // 發票已在「憑證歸檔」入帳：那張分錄就是購置分錄，不再重複建立
+    docs = await store.all('documents');
+    const posted = docs.find((d) => (a.doc_ids || []).includes(d.id) && d.entry_id && entries.some((e) => e.id === d.entry_id));
+    if (posted) {
+      await store.put('fixed_assets', { ...a, purchase_entry_id: posted.entry_id });
+      assets = await store.all('fixed_assets');
+      toast('這張發票已經入帳，直接連結為購置分錄，不重複建立', 'info', 6000);
+      return draw();
+    }
+    if (isLocked(settings, a.acquired_on)) return toast(`${a.acquired_on.slice(0, 7)} 已結帳鎖定，請先解除鎖定`, 'error');
     const tax = settings.vat_mode === 'general' ? Number(a.tax_amount) || 0 : 0;
     const cost = settings.vat_mode === 'general' ? Number(a.cost) : Number(a.cost) + (Number(a.tax_amount) || 0);
     const lines = [{ account: cat.asset, debit: cost, credit: 0, memo: a.name }];
@@ -269,7 +280,7 @@ export async function render(root, ctx) {
     if (!saved) return;
     const upd = { ...a, purchase_entry_id: saved.id, doc_ids: saved.attachments || a.doc_ids || [] };
     await store.put('fixed_assets', upd);
-    await syncAssetDocs(upd, cat.asset, tax);
+    await syncAssetDocs(upd, cat.asset);
     assets = await store.all('fixed_assets');
     entries = await store.all('journal_entries');
     if (!upd.doc_ids.length) toast('購置分錄已建立，但還沒有附上發票，請記得補上', 'info', 6000);
