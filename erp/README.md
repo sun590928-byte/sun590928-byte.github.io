@@ -125,6 +125,19 @@
 6. 打開 ERP → **設定與備份 → 雲端資料庫**：填入 Project URL（`https://xxxx.supabase.co`）與 anon public key（Settings → API）→ 啟用 → 輸入開啟密碼 → 登入雲端帳號。之後這台裝置保持登入（加密保存），每次只要輸入開啟密碼。
 7. 若之前已在本機匯入資料，按「把這台裝置的本機資料上傳到雲端」（照片一起上傳）。
 
+### Claude 連接器（MCP）：在 Claude 對話框裡覆核憑證
+
+連上之後，在 claude.ai 或 Claude Code 直接說「幫我覆核待處理的憑證」，Claude 會自己讀照片、填欄位、標記已覆核，不確定的問你；最後你回 ERP 按「全部入帳」。連接器只能碰待覆核的憑證（讀照片、填欄位），不能入帳、不能刪除、碰不到銷售與分錄。
+
+1. 部署函式（一次）：Supabase 後台 → **Edge Functions → Deploy a new function → Via editor**，名稱 `erp-mcp`，貼上 `supabase/functions/erp-mcp/index.ts` → Deploy。
+2. 同一個函式的設定頁把 **Verify JWT** 關掉（claude.ai 呼叫時不會帶 Supabase 的 JWT；金鑰由函式自己驗證）。
+3. ERP → **設定與備份 → Claude 連接器** → 「產生連接器金鑰」，按「測試連線」確認成功。
+4. **claude.ai**：設定 → 連接器 → 新增自訂連接器，貼上 ERP 顯示的網址（網址含金鑰，請當密碼保管）。
+   **Claude Code**：複製 ERP 顯示的 `claude mcp add …` 指令到終端機執行。
+5. 金鑰外洩或換人時按「重新產生金鑰」，舊的立即失效。
+
+限制：只支援雲端模式（本機資料加密在裝置裡）；PDF、HEIC 無法透過連接器讀取，請用 ERP 內的「AI 辨識」。
+
 ## 七、資訊安全
 
 | 保護對象 | 做法 |
@@ -158,6 +171,7 @@
 node --test tests/*.test.mjs                               # 單元測試（加密、營業稅、帳務引擎、匯入、品項比對…）
 NODE_PATH=$(npm root -g) node tests/e2e.mjs /tmp/shots/    # 以 Chromium 實際操作並截圖（需 playwright）
 node tools/gen-schema.mjs                                  # 修改 erp/js/schema.js 後重新產生 SQL
+deno test -A supabase/functions/erp-mcp/test.ts            # Claude 連接器（金鑰、JSON-RPC、四個工具）
 ```
 
 架構：純 ES modules、無建置流程。`erp/js/lib/` 為可單獨測試的計算邏輯（加密保管箱、CSV/Big5、xlsx 讀寫、品項比對、複式簿記、營業稅、折舊、存貨、對帳、稅務行事曆）；`erp/js/views/` 為各頁面；`erp/js/store.js` 同一套 API 支援加密的本機 IndexedDB 與 Supabase；`erp/js/gate.js` 為開啟密碼與登入畫面。測試資料 `tests/fixtures/` 全為合成資料。
