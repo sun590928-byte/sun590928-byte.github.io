@@ -69,6 +69,16 @@ function showRecoveryCode(code) {
 
 export async function render(root) {
   let s = await getSettings();
+  const mcpUrl = () => `${(cloudConfig() || {}).url || ''}/functions/v1/erp-mcp`;
+
+  // 連接器金鑰：24 bytes 隨機 → base64url 32 字，存在雲端設定（settings.value.mcp_token），Edge Function 以此驗證
+  async function mcpMake() {
+    const bytes = crypto.getRandomValues(new Uint8Array(24));
+    const token = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    s = await saveSettings({ mcp_token: token });
+    toast('已產生金鑰並存到雲端設定，請把網址貼到 claude.ai 的自訂連接器', 'good', 7000);
+    draw();
+  }
 
   async function draw() {
     const cfg = cloudConfig() || {};
@@ -152,6 +162,21 @@ export async function render(root) {
           ${store.mode === 'cloud' ? h`<button class="btn" data-act="push">把這台裝置的本機資料上傳到雲端</button><button class="btn" data-act="signOut">登出雲端帳號</button><button class="btn danger" data-act="cloudOff">改回本機模式</button>` : ''}
         </div>
         <p class="muted" style="font-size:12.5px;margin-top:8px">anon key 設計上可以放在網頁端；資料安全由資料庫的列級權限（RLS）保護，只有你加入白名單的帳號能讀寫。</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>Claude 連接器（MCP）</h2>${store.mode !== 'cloud' ? status('na', '需要雲端模式') : s.mcp_token ? status('good', '金鑰已產生') : status('na', '尚未設定')}</div>
+        <p class="muted" style="font-size:13.5px">讓 claude.ai 或 Claude Code 直接讀取「待覆核」的憑證照片、填好欄位並標記已覆核；入帳仍由你在「憑證歸檔」按「全部入帳」。連接器只能碰待覆核憑證，不能入帳、不能刪除、碰不到其他資料。</p>
+        ${store.mode !== 'cloud'
+          ? h`<p class="muted" style="font-size:13px">本機模式的資料加密在這台裝置，Claude 讀不到；先在上方啟用雲端。</p>`
+          : s.mcp_token
+            ? h`<div class="stack" style="gap:10px">
+                <label class="field"><span>claude.ai：設定 → 連接器 → 新增自訂連接器 → 貼上這個網址（含金鑰，請當密碼保管）</span><input type="text" readonly value="${mcpUrl()}/${s.mcp_token}"></label>
+                <label class="field"><span>Claude Code：在終端機執行</span><input type="text" readonly value='claude mcp add --transport http wuyue-erp ${mcpUrl()} --header "Authorization: Bearer ${s.mcp_token}"'></label>
+              </div>
+              <div class="row" style="margin-top:10px"><button class="btn primary" data-act="mcpTest">測試連線</button><button class="btn" data-act="mcpCopy">複製 claude.ai 網址</button><button class="btn danger" data-act="mcpRotate">重新產生金鑰（舊的立即失效）</button></div>`
+            : h`<div class="row"><button class="btn primary" data-act="mcpGen">產生連接器金鑰</button></div>`}
+        <p class="muted" style="font-size:12.5px;margin-top:8px">部署一次即可：Supabase 後台 → Edge Functions → Deploy a new function → Via editor，名稱 <code>erp-mcp</code>，貼上 <code>supabase/functions/erp-mcp/index.ts</code> → Deploy；再到該函式的設定把「Verify JWT」關掉。連上後在 Claude 對話框說「幫我覆核待處理的憑證」即可。</p>
       </div>
 
       <div class="card">
@@ -271,6 +296,35 @@ export async function render(root) {
       const tiers = (s.tiers || []).map((t, i) => ({ name: root.querySelector(`[data-tier-name="${i}"]`).value.trim() || t.name, min: Number(root.querySelector(`[data-tier-min="${i}"]`).value) || 0 })).sort((a, b) => a.min - b.min);
       s = await saveSettings({ tiers });
       toast('已儲存', 'good');
+    },
+    mcpGen: () => mcpMake(),
+    mcpRotate: async () => {
+      if (!(await confirmBox('重新產生金鑰？claude.ai 與 Claude Code 上舊的連接器會失效，要重新貼一次網址。', { ok: '重新產生', danger: true }))) return;
+      await mcpMake();
+    },
+    mcpCopy: async () => {
+      try {
+        await navigator.clipboard.writeText(`${mcpUrl()}/${s.mcp_token}`);
+        toast('已複製', 'good');
+      } catch {
+        toast('無法複製，請手動選取欄位內容', 'error');
+      }
+    },
+    mcpTest: async () => {
+      setBusy(true, '測試連線…');
+      try {
+        const r = await fetch(`${mcpUrl()}/health`, { headers: { Authorization: 'Bearer ' + s.mcp_token } });
+        const j = await r.json().catch(() => ({}));
+        if (r.status === 404) toast('函式 erp-mcp 尚未部署（Supabase 後台 → Edge Functions）', 'error', 9000);
+        else if (r.status === 401 && /jwt/i.test(j.message || j.msg || '')) toast('請到 Supabase 該函式的設定把「Verify JWT」關掉', 'error', 9000);
+        else if (r.status === 401) toast('金鑰不符：雲端設定可能還沒同步，重新整理後再試', 'error', 9000);
+        else if (!r.ok) toast(`連線失敗（${r.status}）：${j.error || ''}`, 'error', 9000);
+        else toast(`連線成功：待覆核 ${j.pending} 張（其中 ${j.inbox} 張尚未覆核）`, 'good', 9000);
+      } catch (e) {
+        toast('連不到函式：可能尚未部署，或「Verify JWT」還沒關（瀏覽器會擋下沒有 CORS 標頭的回應）', 'error', 9000);
+      } finally {
+        setBusy(false);
+      }
     },
     cloudOn: async () => {
       const url = root.querySelector('[name=sb_url]').value.trim().replace(/\/$/, '');
