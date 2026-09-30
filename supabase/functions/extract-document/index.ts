@@ -127,24 +127,35 @@ Deno.serve(async (req) => {
     }
 
     const accountList = accounts.map((a) => `${a.code} ${a.name}`).join("\n");
+    if (!Deno.env.get("ANTHROPIC_API_KEY")) return json({ error: "伺服器尚未設定 ANTHROPIC_API_KEY（Supabase 後台 → Edge Functions → Secrets）" }, 500);
     const client = new Anthropic(); // 讀取 ANTHROPIC_API_KEY
-    const response = await client.beta.messages.create({
-      model: MODEL,
-      max_tokens: 16000,
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-      system: SYSTEM,
-      output_config: { format: { type: "json_schema", schema: SCHEMA } },
-      messages: [
-        {
-          role: "user",
-          content: [
-            media,
-            { type: "text", text: `原始檔名：${String(body?.file_name ?? "")}\n\n可用的會計項目：\n${accountList || "（未提供）"}\n\n請擷取這張憑證的資料。` },
-          ],
-        },
-      ],
-    });
+    const content = [
+      media,
+      { type: "text" as const, text: `原始檔名：${String(body?.file_name ?? "")}\n\n可用的會計項目：\n${accountList || "（未提供）"}\n\n請擷取這張憑證的資料。` },
+    ];
+    // 先用伺服器端備援（模型忙碌時自動改用其他模型）；帳號沒開通這個 beta 時，退回一般呼叫
+    let response;
+    try {
+      response = await client.beta.messages.create({
+        model: MODEL,
+        max_tokens: 16000,
+        betas: ["server-side-fallback-2026-07-01"],
+        fallbacks: "default",
+        system: SYSTEM,
+        output_config: { format: { type: "json_schema", schema: SCHEMA } },
+        messages: [{ role: "user", content }],
+      });
+    } catch (err) {
+      if (!(err instanceof Anthropic.BadRequestError)) throw err;
+      console.warn("server-side fallback 不可用，改用一般呼叫：", err.message);
+      response = await client.beta.messages.create({
+        model: MODEL,
+        max_tokens: 16000,
+        system: SYSTEM,
+        output_config: { format: { type: "json_schema", schema: SCHEMA } },
+        messages: [{ role: "user", content }],
+      });
+    }
 
     if (response.stop_reason === "refusal") return json({ error: "模型拒絕處理此影像", category: response.stop_details?.category ?? null }, 422);
     if (response.stop_reason === "max_tokens") return json({ error: "輸出被截斷，請重試" }, 502);
@@ -154,9 +165,11 @@ Deno.serve(async (req) => {
     return json({ ...result, model: response.model });
   } catch (err) {
     if (err instanceof Anthropic.RateLimitError) return json({ error: "AI 服務忙碌中，請稍後再試" }, 429);
-    if (err instanceof Anthropic.AuthenticationError) return json({ error: "ANTHROPIC_API_KEY 未設定或無效" }, 500);
+    if (err instanceof Anthropic.AuthenticationError) return json({ error: "ANTHROPIC_API_KEY 無效（請到 Supabase 後台 → Edge Functions → Secrets 更新）" }, 500);
+    if (err instanceof Anthropic.NotFoundError) return json({ error: `這個 API 金鑰無法使用模型 ${MODEL}；可在 Secrets 設定 CLAUDE_MODEL 改用其他模型` }, 502);
+    if (err instanceof Anthropic.PermissionDeniedError) return json({ error: "API 金鑰沒有權限（請確認 Anthropic 帳戶額度與權限）" }, 502);
     if (err instanceof Anthropic.BadRequestError) return json({ error: "AI 請求格式錯誤：" + err.message }, 400);
-    if (err instanceof Anthropic.APIError) return json({ error: `AI 服務錯誤 ${err.status}` }, 502);
+    if (err instanceof Anthropic.APIError) return json({ error: `AI 服務錯誤 ${err.status}：${err.message}` }, 502);
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });

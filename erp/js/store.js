@@ -520,12 +520,16 @@ class CloudBackend {
     await this.open();
     const { data, error } = await this.client.functions.invoke(fn, { body });
     if (error) {
+      const res = error.context;
       let msg = error.message;
       try {
-        const j = await error.context?.json?.();
-        if (j?.error) msg = j.error;
+        const j = await (res?.clone ? res.clone() : res)?.json?.();
+        if (j) msg = j.error || j.message || j.msg || msg;
       } catch {}
-      throw new Error(msg);
+      const e = new Error(msg);
+      e.status = res?.status ?? 0; // 404＝函式尚未部署、401/403＝沒權限
+      e.fn = fn;
+      throw e;
     }
     return data;
   }
