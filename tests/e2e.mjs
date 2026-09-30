@@ -18,8 +18,9 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; ch
 
 const server = createServer(async (req, res) => {
   try {
-    const p = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname)).replace(/^([/\\])+/, '');
-    const file = join(ROOT, p.endsWith('/') || p === '' ? p + 'index.html' : p);
+    // 先判斷是不是目錄再 normalize：Windows 的 normalize 會把 / 換成 \，endsWith('/') 會失準
+    const raw = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    const file = join(ROOT, normalize(raw.endsWith('/') || raw === '' ? raw + 'index.html' : raw).replace(/^([/\\])+/, ''));
     const body = await readFile(file);
     res.writeHead(200, { 'Content-Type': TYPES[extname(file)] || 'application/octet-stream' });
     res.end(body);
@@ -312,6 +313,28 @@ try {
     await page.click('[data-act="tab"][data-t="posted"]');
     await shot('documents-posted', false);
   }
+
+  // 全部入帳（不用 AI）：資料齊的直接入帳並歸檔，缺欄位的列出來讓人補
+  {
+    await page.click('[data-act="tab"][data-t="inbox"]');
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pick"]')]);
+    await chooser.setFiles([{ name: 'IMG_0007.png', mimeType: 'image/png', buffer: await readFile(FX('20260902_全聯_鮮乳2瓶_356.png')) }]);
+    await page.waitForFunction(() => document.querySelectorAll('.doc-card').length === 2);
+    assert(await page.isVisible('[data-act="postAll"]'), '有「全部入帳」按鈕');
+    await page.click('[data-act="postAll"]');
+    await page.waitForSelector('dialog >> text=全部入帳（1）');
+    await shot('documents-postall', false);
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('dialog >> text=已入帳 1 張');
+    const summary = (await page.textContent('dialog .modal-body')).replace(/\s+/g, ' ').trim();
+    console.log('批次入帳結果：', summary);
+    assert(/略過/.test(summary) && /IMG_0007/.test(summary) && /缺/.test(summary), '缺欄位的憑證被列出：' + summary);
+    await page.click('dialog .modal-foot .btn');
+    await page.waitForTimeout(300);
+  }
+  await go('journal?ym=2026-09');
+  assert((await page.textContent('table.grid')).includes('好市多'), '批次入帳有產生分錄');
+  await go('documents?tab=inbox');
 
   // 營業稅 401 工作表：固定資產進項稅額、產生結轉分錄、標記申報
   await go('vat?p=2026-09');

@@ -63,46 +63,74 @@ export async function render(root, ctx) {
     return invoices.find((i) => i.invoice_no === d.invoice_no) || null;
   }
 
+  // 辨識失敗時判斷是不是「設定沒做完」：是的話停下來一次說清楚，不要每張都跳錯誤
+  function aiSetupProblem(e) {
+    const m = String(e?.message || '');
+    const deploy = h`<ol class="plain-list" style="padding-left:22px">
+        <li>Supabase 後台左側 <b>Edge Functions</b> → <b>Deploy a new function</b> → <b>Via editor</b></li>
+        <li>函式名稱填 <code>extract-document</code></li>
+        <li>把專案裡 <code>supabase/functions/extract-document/index.ts</code> 的內容整份貼上 → <b>Deploy</b></li>
+        <li>左側 <b>Edge Functions → Secrets</b> 新增 <code>ANTHROPIC_API_KEY</code>（Anthropic 的 API 金鑰）</li>
+        <li>回到這一頁再按一次「AI 辨識」</li>
+      </ol>
+      <p class="muted">還沒要用 AI 也沒關係：按「全部入帳」就會用檔名帶入的日期、廠商、金額直接入帳。</p>`;
+    if (e?.status === 404) return { title: 'AI 辨識函式尚未部署', body: h`<p>Supabase 專案裡還沒有 <code>extract-document</code> 這個 Edge Function（伺服器回 404），所以每一張都失敗。</p>${deploy}` };
+    if (/ANTHROPIC_API_KEY/i.test(m)) return { title: '尚未設定 Anthropic API 金鑰', body: h`<p>函式已經部署，但伺服器上沒有可用的金鑰。</p><p>請到 Supabase 後台 <b>Edge Functions → Secrets</b> 新增 <code>ANTHROPIC_API_KEY</code>，再回來重試。</p>` };
+    if (e?.status === 401 || e?.status === 403) return { title: '沒有使用 AI 辨識的權限', body: h`<p>${m}</p><p>請確認登入的 Email 已加入 <code>app_users</code> 白名單，並重新登入。</p>` };
+    if (e?.status === 0) return { title: '連不到雲端', body: h`<p>${m}</p><p>請檢查網路連線後再試一次。</p>` };
+    return null;
+  }
+
   async function aiExtract(list) {
     if (store.mode !== 'cloud') {
-      await modal({ title: 'AI 辨識需要雲端', body: h`<p>AI 辨識會把照片交給 Supabase Edge Function（extract-document）呼叫 Claude 讀取發票內容，API 金鑰只存在伺服器端。</p><p>請先到「設定與備份」連線 Supabase，並依 README 部署函式。未連線前可直接手動輸入，或使用已命名檔案自動帶入的欄位。</p>` });
+      await modal({ title: 'AI 辨識需要雲端', body: h`<p>AI 辨識會把照片交給 Supabase Edge Function（extract-document）呼叫 Claude 讀取發票內容，API 金鑰只存在伺服器端。</p><p>請先到「設定與備份」連線 Supabase，並依說明文件部署函式。未連線前可直接手動輸入，或用「全部入帳」以檔名帶入的欄位入帳。</p>` });
       return;
     }
+    if (!list.length) return toast('沒有可辨識的憑證（照片要先上傳到雲端）', 'info');
     let ok = 0;
-    for (let i = 0; i < list.length; i++) {
-      const d = list[i];
-      setBusy(true, `AI 辨識中（${i + 1}/${list.length}）…`);
-      try {
-        const r = await store.backend.invoke('extract-document', { path: d.storage_path, mime: d.mime, file_name: d.original_name, accounts: accounts.filter((a) => a.active !== false).map((a) => ({ code: a.code, name: a.name, type: a.type })) });
-        const upd = {
-          ...d,
-          kind: r.kind || d.kind,
-          doc_date: r.doc_date || d.doc_date,
-          vendor_name: r.vendor_name || d.vendor_name,
-          vendor_tax_id: r.vendor_tax_id || d.vendor_tax_id || '',
-          buyer_tax_id: r.buyer_tax_id || d.buyer_tax_id || '',
-          invoice_type: r.invoice_type || d.invoice_type || '',
-          deductible: r.buyer_tax_id ? !settings.tax_id || r.buyer_tax_id === settings.tax_id : /二聯|收據/.test(r.invoice_type || '') ? false : d.deductible,
-          invoice_no: r.invoice_no || d.invoice_no,
-          amount_total: r.amount_total ?? d.amount_total,
-          tax_amount: r.tax_amount ?? d.tax_amount,
-          summary: r.summary || d.summary,
-          items: r.items || [],
-          account: r.suggested_account && accounts.some((a) => a.code === r.suggested_account) ? r.suggested_account : d.account,
-          confidence: r.confidence ?? 0.7,
-          ai: r,
-          updated_at: new Date().toISOString(),
-        };
-        await store.put('documents', upd);
-        ok++;
-      } catch (e) {
-        toast(`「${d.original_name}」辨識失敗：${e.message}`, 'error', 7000);
+    const fails = [];
+    let stopped = null;
+    try {
+      for (let i = 0; i < list.length; i++) {
+        const d = list[i];
+        setBusy(true, `AI 辨識中（${i + 1}/${list.length}）…`);
+        try {
+          const r = await store.backend.invoke('extract-document', { path: d.storage_path, mime: d.mime, file_name: d.original_name, accounts: accounts.filter((a) => a.active !== false).map((a) => ({ code: a.code, name: a.name, type: a.type })) });
+          const upd = {
+            ...d,
+            kind: r.kind || d.kind,
+            doc_date: r.doc_date || d.doc_date,
+            vendor_name: r.vendor_name || d.vendor_name,
+            vendor_tax_id: r.vendor_tax_id || d.vendor_tax_id || '',
+            buyer_tax_id: r.buyer_tax_id || d.buyer_tax_id || '',
+            invoice_type: r.invoice_type || d.invoice_type || '',
+            deductible: r.buyer_tax_id ? !settings.tax_id || r.buyer_tax_id === settings.tax_id : /二聯|收據/.test(r.invoice_type || '') ? false : d.deductible,
+            invoice_no: r.invoice_no || d.invoice_no,
+            amount_total: r.amount_total ?? d.amount_total,
+            tax_amount: r.tax_amount ?? d.tax_amount,
+            summary: r.summary || d.summary,
+            items: r.items || [],
+            account: r.suggested_account && accounts.some((a) => a.code === r.suggested_account) ? r.suggested_account : d.account,
+            confidence: r.confidence ?? 0.7,
+            ai: r,
+            updated_at: new Date().toISOString(),
+          };
+          await store.put('documents', upd);
+          ok++;
+        } catch (e) {
+          stopped = aiSetupProblem(e);
+          if (stopped) break;
+          fails.push(`${d.original_name || d.id}：${e.message}`);
+        }
       }
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
     docs = await store.all('documents');
-    if (ok) toast(`已辨識 ${ok} 張，請逐張覆核後入帳`, 'good');
     draw();
+    if (ok) toast(`已辨識 ${ok} 張，請逐張覆核後入帳`, 'good');
+    if (stopped) await modal({ title: stopped.title, body: stopped.body, wide: true });
+    else if (fails.length) await modal({ title: `${fails.length} 張辨識失敗`, body: h`<ul class="plain-list">${fails.slice(0, 20).map((x) => h`<li>${x}</li>`)}</ul>${fails.length > 20 ? h`<p class="muted">其餘 ${fails.length - 20} 張未列出。</p>` : ''}` });
   }
 
   function readForm(card, d) {
@@ -123,9 +151,16 @@ export async function render(root, ctx) {
     };
   }
 
-  async function post(d) {
-    if (!d.doc_date || !d.amount_total || !d.account) return toast('請填日期、金額與科目', 'error');
-    if (isLocked(settings, d.doc_date)) return toast('該月份已結帳鎖定', 'error');
+  async function post(d, { quiet = false } = {}) {
+    const say = (msg, type = 'info', ms) => (quiet ? null : toast(msg, type, ms));
+    if (!d.doc_date || !Number(d.amount_total) || !d.account) {
+      say('請填日期、金額與科目', 'error');
+      return { ok: false, reason: '缺日期、金額或會計項目' };
+    }
+    if (isLocked(settings, d.doc_date)) {
+      say('該月份已結帳鎖定', 'error');
+      return { ok: false, reason: `${d.doc_date.slice(0, 7)} 已結帳鎖定` };
+    }
     // 固定資產的發票：已有購置分錄就直接連結，避免同一筆購置入帳兩次
     const asset = d.asset_id ? (await store.all('fixed_assets')).find((a) => a.id === d.asset_id) : null;
     const assetEntry = asset?.purchase_entry_id ? (await store.all('journal_entries')).find((e) => e.id === asset.purchase_entry_id) : null;
@@ -133,20 +168,20 @@ export async function render(root, ctx) {
       const { archived_name, storage_path } = await archivePatch(d);
       await store.put('documents', { ...d, status: 'posted', entry_id: assetEntry.id, archived_name, storage_path });
       await store.put('journal_entries', { ...assetEntry, attachments: [...new Set([...(assetEntry.attachments || []), d.id])], updated_at: new Date().toISOString() });
-      toast(`這張發票屬於固定資產「${asset.name}」，已連結到購置分錄 ${assetEntry.voucher_no}，不重複入帳`, 'info', 7000);
-      return;
+      say(`這張發票屬於固定資產「${asset.name}」，已連結到購置分錄 ${assetEntry.voucher_no}，不重複入帳`, 'info', 7000);
+      return { ok: true, note: `連結固定資產「${asset.name}」` };
     }
     const inv = linkByInvoice(d);
     if (inv?.entry_id) {
       await store.put('documents', { ...d, status: 'posted', entry_id: inv.entry_id, einvoice_id: inv.id });
       await store.put('einvoices', { ...inv, document_id: d.id });
-      toast('此發票已由電子發票入帳，照片已連結，不重複入帳', 'info', 6000);
-      return;
+      say('此發票已由電子發票入帳，照片已連結，不重複入帳', 'info', 6000);
+      return { ok: true, note: '已與電子發票連結' };
     }
     // 進項稅額可否扣抵：勾選「載明本店統編」且符合條件（統一發票、有稅額、非交際／職工福利）
     const ded = deductibility({ ...d, tax: d.tax_amount }, { taxId: settings.tax_id, vatMode: settings.vat_mode });
     const deductible = d.deductible !== false && ded.ok;
-    if (d.deductible !== false && Number(d.tax_amount) > 0 && !ded.ok) toast(`稅額不扣抵，併入成本：${ded.reason}`, 'info', 6000);
+    if (d.deductible !== false && Number(d.tax_amount) > 0 && !ded.ok) say(`稅額不扣抵，併入成本：${ded.reason}`, 'info', 6000);
     const entries = await store.all('journal_entries');
     const je = documentJournal(d, { deductible });
     const e = { ...je, id: uid('je_'), voucher_no: nextVoucherNo(entries, d.doc_date), status: 'posted', attachments: [d.id], created_at: new Date().toISOString() };
@@ -156,7 +191,58 @@ export async function render(root, ctx) {
     await store.put('documents', { ...d, deductible, status: 'posted', entry_id: e.id, archived_name, storage_path, einvoice_id: inv?.id || null });
     if (inv) await store.put('einvoices', { ...inv, entry_id: e.id, document_id: d.id, account: d.account });
     if (asset && !asset.purchase_entry_id) await store.put('fixed_assets', { ...asset, purchase_entry_id: e.id });
-    toast(`已入帳 ${e.voucher_no}，歸檔名稱：${folder}/${archived_name}`, 'good', 6000);
+    say(`已入帳 ${e.voucher_no}，歸檔名稱：${folder}/${archived_name}`, 'good', 6000);
+    return { ok: true, voucher_no: e.voucher_no };
+  }
+
+  // 全部入帳（不用 AI）：用卡片上目前的欄位（檔名帶入或手動改過的）批次入帳並歸檔
+  async function postAll() {
+    const list = docs.filter((d) => ['inbox', 'reviewed'].includes(d.status) && d.kind !== 'payout_statement');
+    if (!list.length) return toast('沒有待處理的憑證', 'info');
+    const ready = [];
+    const skipped = [];
+    for (const row of list) {
+      const card = root.querySelector(`.doc-card[data-id="${row.id}"]`);
+      const d = card ? readForm(card, row) : row; // 畫面上改過、還沒暫存的欄位也算數
+      const miss = [];
+      if (!d.doc_date) miss.push('日期');
+      if (!Number(d.amount_total)) miss.push('金額');
+      if (!d.account) miss.push('會計項目');
+      if (miss.length) skipped.push({ d, reason: '缺' + miss.join('、') });
+      else if (isLocked(settings, d.doc_date)) skipped.push({ d, reason: `${d.doc_date.slice(0, 7)} 已結帳鎖定` });
+      else ready.push(d);
+    }
+    const label = (x) => x.vendor_name || x.original_name || x.id;
+    if (!ready.length) {
+      await modal({ title: '沒有可以直接入帳的憑證', body: h`<p>這些憑證還缺必要欄位，請在卡片上補齊（或用 AI 辨識）後再試：</p><ul class="plain-list">${skipped.slice(0, 20).map((s) => h`<li>${label(s.d)}：${s.reason}</li>`)}</ul>` });
+      return;
+    }
+    if (!(await confirmBox(`將 ${ready.length} 張憑證依目前欄位一次入帳並歸檔（不使用 AI）？${skipped.length ? `另有 ${skipped.length} 張資料不齊，會略過。` : ''}`, { ok: `全部入帳（${ready.length}）` }))) return;
+    let ok = 0;
+    const fails = [];
+    setBusy(true, '入帳中…');
+    try {
+      for (let i = 0; i < ready.length; i++) {
+        setBusy(true, `入帳中（${i + 1}/${ready.length}）…`);
+        try {
+          const r = await post(ready[i], { quiet: true });
+          if (r.ok) ok++;
+          else fails.push({ d: ready[i], reason: r.reason });
+        } catch (err) {
+          fails.push({ d: ready[i], reason: err.message || String(err) });
+        }
+      }
+    } finally {
+      setBusy(false);
+    }
+    [docs, invoices] = await Promise.all([store.all('documents'), store.all('einvoices')]);
+    draw();
+    const rest = [...fails.map((x) => ({ ...x, tag: '失敗' })), ...skipped.map((x) => ({ ...x, tag: '略過' }))];
+    if (!rest.length) return toast(`已入帳並歸檔 ${ok} 張憑證`, 'good', 6000);
+    await modal({
+      title: `已入帳 ${ok} 張，還有 ${rest.length} 張要處理`,
+      body: h`<p>下列憑證沒有入帳，補齊欄位後再按一次「全部入帳」即可：</p><ul class="plain-list">${rest.slice(0, 30).map((x) => h`<li>${x.tag}｜${label(x.d)}：${x.reason}</li>`)}</ul>${rest.length > 30 ? h`<p class="muted">其餘 ${rest.length - 30} 張未列出。</p>` : ''}`,
+    });
   }
 
   function docCard(d) {
@@ -202,7 +288,7 @@ export async function render(root, ctx) {
       h`<div class="drop no-print" id="drop" style="margin-bottom:16px">
         <h3>把發票、收據照片拖到這裡</h3>
         <p class="muted">可一次選整個「原始憑證圖檔資料_已命名」資料夾：檔名中的日期、廠商、金額、發票號碼會自動帶入。${store.mode === 'cloud' ? '照片存到 Supabase 私有空間，可用 AI 辨識內容。' : '目前為本機模式，照片存在這台電腦的瀏覽器；連線雲端後可用 AI 辨識。'}</p>
-        <div class="row" style="justify-content:center"><button class="btn primary" data-act="camera">拍照上傳</button><button class="btn" data-act="pick">選擇照片／PDF</button><button class="btn" data-act="pickDir">選擇資料夾</button>${store.mode === 'cloud' && counts.inbox ? h`<button class="btn" data-act="aiAll">AI 辨識全部待覆核（${counts.inbox}）</button>` : ''}</div>
+        <div class="row" style="justify-content:center"><button class="btn primary" data-act="camera">拍照上傳</button><button class="btn" data-act="pick">選擇照片／PDF</button><button class="btn" data-act="pickDir">選擇資料夾</button>${counts.inbox + counts.reviewed ? h`<button class="btn" data-act="postAll">全部入帳（${counts.inbox + counts.reviewed}）</button>` : ''}${store.mode === 'cloud' && counts.inbox + counts.reviewed ? h`<button class="btn" data-act="aiAll">AI 辨識（${counts.inbox + counts.reviewed}）</button>` : ''}</div>
       </div>
       <div class="stats">
         ${stat('待覆核', fmt(counts.inbox + counts.reviewed))}
@@ -298,7 +384,8 @@ export async function render(root, ctx) {
     camera: async () => addFiles(await pickDocFiles({ camera: true })),
     pick: async () => addFiles(await pickDocFiles()),
     pickDir: async () => addFiles((await pickFiles({ directory: true })).filter(isDocFile)),
-    aiAll: () => aiExtract(docs.filter((d) => d.status === 'inbox' && d.storage_path)),
+    aiAll: () => aiExtract(docs.filter((d) => ['inbox', 'reviewed'].includes(d.status) && d.storage_path)),
+    postAll: () => postAll(),
     ai: (el) => aiExtract(docs.filter((d) => d.id === el.dataset.id)),
     save: async (el) => {
       const card = el.closest('.doc-card');
