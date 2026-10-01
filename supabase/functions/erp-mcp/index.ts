@@ -11,7 +11,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2.116.0";
 
-const VERSION = "1.0.0";
+const VERSION = "1.0.1";
 const PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
 const PENDING = ["inbox", "reviewed"];
@@ -479,16 +479,13 @@ export function createHandler(db: DataLayer) {
   return async (req: Request): Promise<Response> => {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     const url = new URL(req.url);
-    // 路徑：/functions/v1/<函式名稱>/<金鑰>/health → 取函式名稱之後的段落（名稱不限定）
-    const segs = url.pathname.split("/").filter(Boolean);
-    const v1 = segs.indexOf("v1");
-    const at = v1 > 0 && segs[v1 - 1] === "functions" ? v1 + 1 : segs.lastIndexOf("erp-mcp");
-    const rest = at >= 0 ? segs.slice(at + 1) : [];
-    const health = rest[rest.length - 1] === "health";
-    // 金鑰：Authorization: Bearer、?token=，或路徑第一段
-    const auth = req.headers.get("authorization") ?? "";
-    const pathToken = rest[0] && rest[0] !== "health" ? rest[0] : "";
-    const presented = /^bearer\s+/i.test(auth) ? auth.replace(/^bearer\s+/i, "").trim() : url.searchParams.get("token") || pathToken;
+    // 路徑形狀不固定：Supabase 交給函式時可能是 /functions/v1/<名稱>/…、/<名稱>/…，甚至只剩 /…
+    // 所以不靠位置：最後一段是 health／version 就是該路由；金鑰則看路徑裡有沒有任一段等於金鑰。
+    let segs = url.pathname.split("/").filter(Boolean);
+    if (segs[0] === "functions" && segs[1] === "v1") segs = segs.slice(2);
+    const last = segs[segs.length - 1] ?? "";
+    if (last === "version") return json({ name: "wuyue-erp", version: VERSION }); // 公開：只回版本，供 ERP 與部署檢查用
+    const health = last === "health";
 
     let expected: string;
     try {
@@ -497,7 +494,11 @@ export function createHandler(db: DataLayer) {
       return json({ error: "無法讀取設定：" + (e as Error).message }, 500);
     }
     if (!expected) return json({ error: "尚未設定連接器金鑰：請到 ERP「設定與備份 → Claude 連接器」產生" }, 503);
-    if (!timingSafeEqual(presented, expected)) return json({ error: "連接器金鑰不正確" }, 401);
+    // 金鑰：Authorization: Bearer、?token=，或網址路徑中的一段（claude.ai 自訂連接器用）
+    const auth = req.headers.get("authorization") ?? "";
+    const presented = /^bearer\s+/i.test(auth) ? auth.replace(/^bearer\s+/i, "").trim() : url.searchParams.get("token") || "";
+    const authorized = presented ? timingSafeEqual(presented, expected) : segs.some((s) => timingSafeEqual(s, expected));
+    if (!authorized) return json({ error: "連接器金鑰不正確" }, 401);
 
     if (health) {
       const s = await db.settings();

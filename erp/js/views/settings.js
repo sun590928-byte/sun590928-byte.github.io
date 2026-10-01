@@ -323,7 +323,8 @@ export async function render(root) {
       try {
         const r = await fetch(`${mcpUrl()}/health`, { headers: { Authorization: 'Bearer ' + s.mcp_token } });
         const j = await r.json().catch(() => ({}));
-        if (r.status === 404) toast('函式 erp-mcp 尚未部署（Supabase 後台 → Edge Functions）', 'error', 9000);
+        if (r.status === 404) toast(`找不到函式 ${mcpFn()}（請確認 Supabase 上的函式名稱，或尚未部署）`, 'error', 9000);
+        else if (r.status === 405) toast('函式裡是舊版程式：請把最新的 index.ts 貼到該函式的 Code 分頁再 Deploy updates', 'error', 9000);
         else if (r.status === 401 && /jwt/i.test(j.message || j.msg || '')) toast('請到 Supabase 該函式的設定把「Verify JWT」關掉', 'error', 9000);
         else if (r.status === 401) toast('金鑰不符：雲端設定可能還沒同步，重新整理後再試', 'error', 9000);
         else if (!r.ok) toast(`連線失敗（${r.status}）：${j.error || ''}`, 'error', 9000);

@@ -61,10 +61,16 @@ Deno.test("金鑰：header、路徑、query 都可以；錯誤或未設定會擋
   assertEquals((await h(new Request(BASE, { method: "POST", body: JSON.stringify(ping) }))).status, 401);
   const noToken = createHandler(fakeDb({ token: null }));
   assertEquals((await rpc(noToken, ping)).status, 503);
-  // 函式名稱不限定：自動命名的 slug 也要能用路徑金鑰與 health
-  const other = "https://x.supabase.co/functions/v1/smooth-task";
-  assertEquals((await h(new Request(other + "/test-token-abc", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(ping) }))).status, 200);
-  assertEquals((await h(new Request(other + "/test-token-abc/health"))).status, 200);
+  // 路徑形狀不固定：/functions/v1/<名稱>/…、/<名稱>/…、只剩 /… 都要能用路徑金鑰與 health
+  for (const base of ["https://x.supabase.co/functions/v1/smooth-task", "https://x.supabase.co/smooth-task", "https://x.supabase.co"]) {
+    assertEquals((await h(new Request(base + "/test-token-abc", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(ping) }))).status, 200, base);
+    assertEquals((await h(new Request(base + "/test-token-abc/health"))).status, 200, base + " health");
+    assertEquals((await h(new Request(base + "/health", { headers: { authorization: "Bearer test-token-abc" } }))).status, 200, base + " header health");
+    assertEquals((await h(new Request(base + "/wrong/health"))).status, 401, base + " wrong");
+  }
+  // /version 不需金鑰，只回版本
+  const ver = await (await h(new Request(BASE + "/version"))).json();
+  assertEquals(ver.name, "wuyue-erp");
   // health
   const hr = await h(new Request(BASE + "/test-token-abc/health"));
   assertEquals(hr.status, 200);
