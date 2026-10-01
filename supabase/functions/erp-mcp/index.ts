@@ -11,7 +11,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2.116.0";
 
-const VERSION = "1.0.1";
+const VERSION = "1.0.2";
 const PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
 const PENDING = ["inbox", "reviewed"];
@@ -476,6 +476,19 @@ function timingSafeEqual(a: string, b: string) {
 }
 
 export function createHandler(db: DataLayer) {
+  const inner = handlerCore(db);
+  // 任何未預期的錯誤都回 JSON（帶 CORS 標頭），瀏覽器才看得到原因，不會變成「連不到函式」
+  return async (req: Request): Promise<Response> => {
+    try {
+      return await inner(req);
+    } catch (e) {
+      console.error(e);
+      return json({ error: "函式執行錯誤：" + ((e as Error)?.message ?? String(e)) }, 500);
+    }
+  };
+}
+
+function handlerCore(db: DataLayer) {
   return async (req: Request): Promise<Response> => {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     const url = new URL(req.url);

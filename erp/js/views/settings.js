@@ -327,10 +327,10 @@ export async function render(root) {
         else if (r.status === 405) toast('函式裡是舊版程式：請把最新的 index.ts 貼到該函式的 Code 分頁再 Deploy updates', 'error', 9000);
         else if (r.status === 401 && /jwt/i.test(j.message || j.msg || '')) toast('請到 Supabase 該函式的設定把「Verify JWT」關掉', 'error', 9000);
         else if (r.status === 401) toast('金鑰不符：雲端設定可能還沒同步，重新整理後再試', 'error', 9000);
-        else if (!r.ok) toast(`連線失敗（${r.status}）：${j.error || ''}`, 'error', 9000);
+        else if (!r.ok) toast(`連線失敗（${r.status}）：${j.error || j.message || ''}`, 'error', 12000);
         else toast(`連線成功：待覆核 ${j.pending} 張（其中 ${j.inbox} 張尚未覆核）`, 'good', 9000);
       } catch (e) {
-        toast('連不到函式：可能尚未部署，或「Verify JWT」還沒關（瀏覽器會擋下沒有 CORS 標頭的回應）', 'error', 9000);
+        toast(`連不到函式（${mcpUrl()}/health）：${e.message}。請確認雲端 Project URL 與函式名稱`, 'error', 12000);
       } finally {
         setBusy(false);
       }
