@@ -288,7 +288,7 @@ export async function render(root, ctx) {
       h`<div class="drop no-print" id="drop" style="margin-bottom:16px">
         <h3>把發票、收據照片拖到這裡</h3>
         <p class="muted">可一次選整個「原始憑證圖檔資料_已命名」資料夾：檔名中的日期、廠商、金額、發票號碼會自動帶入。${store.mode === 'cloud' ? '照片存到 Supabase 私有空間，可用 AI 辨識內容。' : '目前為本機模式，照片存在這台電腦的瀏覽器；連線雲端後可用 AI 辨識。'}</p>
-        <div class="row" style="justify-content:center"><button class="btn primary" data-act="camera">拍照上傳</button><button class="btn" data-act="pick">選擇照片／PDF</button><button class="btn" data-act="pickDir">選擇資料夾</button>${counts.inbox + counts.reviewed ? h`<button class="btn" data-act="postAll">全部入帳（${counts.inbox + counts.reviewed}）</button>` : ''}${store.mode === 'cloud' && counts.inbox + counts.reviewed ? h`<button class="btn" data-act="aiAll">AI 辨識（${counts.inbox + counts.reviewed}）</button>` : ''}</div>
+        <div class="row" style="justify-content:center"><button class="btn primary" data-act="camera">拍照上傳</button><button class="btn" data-act="pick">選擇照片／PDF</button><button class="btn" data-act="pickDir">選擇資料夾</button>${counts.inbox + counts.reviewed ? h`<button class="btn" data-act="postAll">全部入帳（${counts.inbox + counts.reviewed}）</button>` : ''}${store.mode === 'cloud' && counts.inbox + counts.reviewed ? (settings.mcp_token ? h`<button class="btn" data-act="claude" title="開啟 claude.ai 新對話，請 Claude 透過連接器覆核">在 Claude 覆核（${counts.inbox + counts.reviewed}）</button>` : h`<button class="btn" data-act="aiAll">AI 辨識（${counts.inbox + counts.reviewed}）</button>`) : ''}</div>
       </div>
       <div class="stats">
         ${stat('待覆核', fmt(counts.inbox + counts.reviewed))}
@@ -385,6 +385,20 @@ export async function render(root, ctx) {
     pick: async () => addFiles(await pickDocFiles()),
     pickDir: async () => addFiles((await pickFiles({ directory: true })).filter(isDocFile)),
     aiAll: () => aiExtract(docs.filter((d) => ['inbox', 'reviewed'].includes(d.status) && d.storage_path)),
+    // 開 claude.ai 新對話並帶入請求；Claude 透過「午月ERP」連接器讀照片、填欄位
+    claude: () => {
+      const list = docs.filter((d) => ['inbox', 'reviewed'].includes(d.status) && d.kind !== 'payout_statement');
+      const local = list.filter((d) => !d.storage_path).length;
+      const notImg = list.filter((d) => d.storage_path && !/^image\/(jpeg|png|gif|webp)$/i.test(d.mime || '')).length;
+      const prompt = [
+        `請用「午月ERP」連接器幫我覆核待處理的憑證（目前 ${list.length} 張）。`,
+        '先 get_context，再逐張看照片、用 update_document 填日期、廠商、統編、發票號碼、金額、稅額、摘要、會計項目與可否扣抵。',
+        '看不清楚或不確定的欄位不要猜，列出來問我。全部處理完給我一份摘要表。',
+      ].join('\n');
+      window.open('https://claude.ai/new?q=' + encodeURIComponent(prompt), '_blank', 'noopener');
+      const notes = [local ? `${local} 張只存在這台裝置（本機上傳），Claude 讀不到` : '', notImg ? `${notImg} 張是 PDF／HEIC，Claude 讀不到` : ''].filter(Boolean);
+      toast(`已開啟 claude.ai，按送出即可。完成後回到這頁會自動更新。${notes.length ? '提醒：' + notes.join('；') : ''}`, 'good', 9000);
+    },
     postAll: () => postAll(),
     ai: (el) => aiExtract(docs.filter((d) => d.id === el.dataset.id)),
     save: async (el) => {
@@ -476,7 +490,19 @@ export async function render(root, ctx) {
   });
   draw();
   if (pending.length) addFiles(pending.splice(0));
+  const onVisible = async () => {
+    if (document.visibilityState !== 'visible' || store.mode !== 'cloud' || document.querySelector('dialog[open]')) return;
+    const sig = (list) => list.map((d) => `${d.id}:${d.status}:${d.updated_at || ''}`).sort().join('|');
+    const before = sig(docs);
+    store.reload('documents');
+    docs = await store.all('documents');
+    if (sig(docs) === before) return; // 沒有變動就不重畫，避免洗掉畫面上還沒暫存的修改
+    draw();
+    toast('已載入 Claude 填好的欄位', 'good');
+  };
+  document.addEventListener('visibilitychange', onVisible);
   return () => {
+    document.removeEventListener('visibilitychange', onVisible);
     unbind();
     for (const u of urls.values()) if (u.startsWith('blob:')) URL.revokeObjectURL(u);
   };
