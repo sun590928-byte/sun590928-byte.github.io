@@ -69,7 +69,8 @@ function showRecoveryCode(code) {
 
 export async function render(root) {
   let s = await getSettings();
-  const mcpUrl = () => `${(cloudConfig() || {}).url || ''}/functions/v1/erp-mcp`;
+  const mcpFn = () => (s.mcp_function || 'erp-mcp').trim();
+  const mcpUrl = () => `${(cloudConfig() || {}).url || ''}/functions/v1/${mcpFn()}`;
 
   // 連接器金鑰：24 bytes 隨機 → base64url 32 字，存在雲端設定（settings.value.mcp_token），Edge Function 以此驗證
   async function mcpMake() {
@@ -171,12 +172,13 @@ export async function render(root) {
           ? h`<p class="muted" style="font-size:13px">本機模式的資料加密在這台裝置，Claude 讀不到；先在上方啟用雲端。</p>`
           : s.mcp_token
             ? h`<div class="stack" style="gap:10px">
+                <label class="field"><span>Supabase 上的函式名稱（部署時若沒改名會是自動取的，例如 smooth-task，照函式頁面上的網址結尾填）</span><input type="text" value="${mcpFn()}" data-act="mcpFn" spellcheck="false"></label>
                 <label class="field"><span>claude.ai：設定 → 連接器 → 新增自訂連接器 → 貼上這個網址（含金鑰，請當密碼保管）</span><input type="text" readonly value="${mcpUrl()}/${s.mcp_token}"></label>
                 <label class="field"><span>Claude Code：在終端機執行</span><input type="text" readonly value='claude mcp add --transport http wuyue-erp ${mcpUrl()} --header "Authorization: Bearer ${s.mcp_token}"'></label>
               </div>
               <div class="row" style="margin-top:10px"><button class="btn primary" data-act="mcpTest">測試連線</button><button class="btn" data-act="mcpCopy">複製 claude.ai 網址</button><button class="btn danger" data-act="mcpRotate">重新產生金鑰（舊的立即失效）</button></div>`
             : h`<div class="row"><button class="btn primary" data-act="mcpGen">產生連接器金鑰</button></div>`}
-        <p class="muted" style="font-size:12.5px;margin-top:8px">部署一次即可：Supabase 後台 → Edge Functions → Deploy a new function → Via editor，名稱 <code>erp-mcp</code>，貼上 <code>supabase/functions/erp-mcp/index.ts</code> → Deploy；再到該函式的設定把「Verify JWT」關掉。連上後在 Claude 對話框說「幫我覆核待處理的憑證」即可。</p>
+        <p class="muted" style="font-size:12.5px;margin-top:8px">部署一次即可：Supabase 後台 → Edge Functions → Deploy a new function → Via editor，名稱建議 <code>erp-mcp</code>（用別的名稱也可以，上面欄位填一樣的），貼上 <code>supabase/functions/erp-mcp/index.ts</code> → Deploy；再到該函式的設定把「Verify JWT」關掉。連上後在 Claude 對話框說「幫我覆核待處理的憑證」即可。</p>
       </div>
 
       <div class="card">
@@ -298,6 +300,12 @@ export async function render(root) {
       toast('已儲存', 'good');
     },
     mcpGen: () => mcpMake(),
+    mcpFn: async (el) => {
+      const v = el.value.trim().replace(/^.*\/functions\/v1\//, '').replace(/\/.*$/, '');
+      if (!/^[a-z0-9][a-z0-9_-]*$/i.test(v)) return toast('函式名稱只能有英數字、減號、底線', 'error');
+      s = await saveSettings({ mcp_function: v });
+      draw();
+    },
     mcpRotate: async () => {
       if (!(await confirmBox('重新產生金鑰？claude.ai 與 Claude Code 上舊的連接器會失效，要重新貼一次網址。', { ok: '重新產生', danger: true }))) return;
       await mcpMake();

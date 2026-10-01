@@ -129,7 +129,7 @@
 
 連上之後，在 claude.ai 或 Claude Code 直接說「幫我覆核待處理的憑證」，Claude 會自己讀照片、填欄位、標記已覆核，不確定的問你；最後你回 ERP 按「全部入帳」。連接器只能碰待覆核的憑證（讀照片、填欄位），不能入帳、不能刪除、碰不到銷售與分錄。
 
-1. 部署函式（一次）：Supabase 後台 → **Edge Functions → Deploy a new function → Via editor**，名稱 `erp-mcp`，貼上 `supabase/functions/erp-mcp/index.ts` → Deploy。
+1. 部署函式（一次）：Supabase 後台 → **Edge Functions → Deploy a new function → Via editor**，名稱 `erp-mcp`，貼上 `supabase/functions/erp-mcp/index.ts` → Deploy。（名稱若沒改、被自動命名成例如 `smooth-task`，不用重建，到 ERP 的連接器設定把函式名稱填成一樣的即可。）
 2. 同一個函式的設定頁把 **Verify JWT** 關掉（claude.ai 呼叫時不會帶 Supabase 的 JWT；金鑰由函式自己驗證）。
 3. ERP → **設定與備份 → Claude 連接器** → 「產生連接器金鑰」，按「測試連線」確認成功。
 4. **claude.ai**：設定 → 連接器 → 新增自訂連接器，貼上 ERP 顯示的網址（網址含金鑰，請當密碼保管）。

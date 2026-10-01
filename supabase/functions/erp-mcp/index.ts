@@ -3,7 +3,8 @@
 // 入帳仍在 ERP 按「全部入帳」執行，營業稅扣抵、重複發票、月份鎖定的規則只在 ERP 一處。
 //
 // 部署（一次）：Supabase 後台 → Edge Functions → Deploy a new function → Via editor
-//   名稱 erp-mcp，貼上本檔 → Deploy；再到該函式的設定把「Verify JWT」關掉（claude.ai 無法附帶 Supabase 的 JWT）。
+//   名稱建議 erp-mcp（用其他名稱也可以，在 ERP 設定填同樣的名稱），貼上本檔 → Deploy；
+//   再到該函式的設定把「Verify JWT」關掉（claude.ai 無法附帶 Supabase 的 JWT）。
 // 金鑰：在 ERP「設定與備份 → Claude 連接器」產生，存於 settings.value.mcp_token；也可用 Secrets 的 ERP_MCP_TOKEN 覆寫。
 // 呼叫：Authorization: Bearer <金鑰>（Claude Code），或網址 …/erp-mcp/<金鑰>（claude.ai 自訂連接器）。
 // 本函式以 service role 讀寫，但只碰 documents（待覆核者）、accounts、settings 與 documents 儲存空間。
@@ -478,8 +479,10 @@ export function createHandler(db: DataLayer) {
   return async (req: Request): Promise<Response> => {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     const url = new URL(req.url);
+    // 路徑：/functions/v1/<函式名稱>/<金鑰>/health → 取函式名稱之後的段落（名稱不限定）
     const segs = url.pathname.split("/").filter(Boolean);
-    const at = segs.lastIndexOf("erp-mcp");
+    const v1 = segs.indexOf("v1");
+    const at = v1 > 0 && segs[v1 - 1] === "functions" ? v1 + 1 : segs.lastIndexOf("erp-mcp");
     const rest = at >= 0 ? segs.slice(at + 1) : [];
     const health = rest[rest.length - 1] === "health";
     // 金鑰：Authorization: Bearer、?token=，或路徑第一段
