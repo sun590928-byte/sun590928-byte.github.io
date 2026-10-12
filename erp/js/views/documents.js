@@ -10,20 +10,22 @@ import { nextVoucherNo } from '../lib/ledger.js';
 import { uid } from '../lib/text.js';
 import { makeZip } from '../lib/zip.js';
 import { fnv1a } from '../lib/text.js';
-import { deductibility } from '../lib/vat.js';
+import { deductibility, taxCodes, impliedTax, docParts, FIXED_ASSET_ACCOUNTS, TAX_TYPES, DED_CODES, normalizeInvoiceNo, INVOICE_NO_RE } from '../lib/vat.js';
+import { payAccountsOf, payAccountForFolder, STATEMENT_FOLDER, ASSET_CATEGORIES } from '../lib/coa.js';
+import { round2 } from '../lib/money.js';
 import { today } from '../lib/dates.js';
 import { accountSelect } from './_shared.js';
-import { syncPayouts } from '../sync.js';
+import { syncPayouts, syncDepreciation } from '../sync.js';
 import { createDocuments, archivePatch, pickDocFiles, isDocFile, previewDocument } from '../attach.js';
 
-const PAY_ACCOUNTS = [
-  ['1101', '現金（收銀機）'],
-  ['1102', '零用金'],
-  ['1103', '銀行存款（轉帳／扣款）'],
-  ['2111', '應付帳款（月結）'],
-  ['2191', '老闆代墊（業主往來）'],
-];
 const STATUS = { inbox: ['待覆核', 'medium'], reviewed: ['已覆核', 'accent'], posted: ['已入帳', 'high'], ignored: ['不入帳', 'low'] };
+const ASSET_CATEGORY_BY_ACCOUNT = Object.fromEntries(Object.entries(ASSET_CATEGORIES).map(([k, c]) => [c.asset, k]));
+
+// 檔案所在的子資料夾（選整個資料夾上傳時）：「原始憑證圖檔資料/員工代墊支出/xxx.jpg」→「員工代墊支出」
+function folderOf(file) {
+  const parts = String(file.webkitRelativePath || '').split('/').filter(Boolean);
+  return parts.length > 2 ? parts[1] : parts.length === 2 ? parts[0] : '';
+}
 const pending = [];
 export function queueFiles(files) {
   pending.push(...files);
@@ -56,6 +58,53 @@ export async function render(root, ctx) {
     toast(`已加入 ${rows.length} 張憑證${store.mode === 'cloud' ? '，可按「AI 辨識」自動讀取內容' : '（已從檔名帶入日期、廠商、金額）'}`, 'good', 6000);
     f.tab = 'inbox';
     draw();
+  }
+
+  // 選整個資料夾：子資料夾名稱決定付款方式（員工代墊支出→員工代墊、負責人代墊支出→負責人代墊、銀行名稱的資料夾→該銀行存款（依科目名稱比對）…）
+  // 已上傳過的同名檔案不重複上傳，只把付款方式更新成資料夾對應的科目；存摺、明細類資料夾略過。
+  async function addFolder(all) {
+    const files = all.filter(isDocFile);
+    if (!files.length) return toast('資料夾裡沒有照片或 PDF', 'info');
+    const byName = new Map();
+    for (const d of docs) if (d.original_name && !byName.has(d.original_name)) byName.set(d.original_name, d);
+    const groups = new Map();
+    for (const file of files) {
+      const folder = folderOf(file);
+      if (!groups.has(folder)) groups.set(folder, { folder, pay: STATEMENT_FOLDER.test(folder) ? null : payAccountForFolder(folder, accounts), statement: STATEMENT_FOLDER.test(folder), add: [], update: [], same: [], posted: [] });
+      const g = groups.get(folder);
+      if (g.statement) continue;
+      const d = byName.get(file.name);
+      if (!d) g.add.push(file);
+      else if (d.status === 'posted') g.posted.push(d);
+      else if (g.pay && d.pay_account !== g.pay) g.update.push(d);
+      else g.same.push(d);
+    }
+    const list = [...groups.values()];
+    const accName = (c) => (c ? `${c} ${accounts.find((a) => a.code === c)?.name || ''}` : '未對應（維持預設，請手動選）');
+    const nAdd = list.reduce((t, g) => t + g.add.length, 0);
+    const nUpd = list.reduce((t, g) => t + g.update.length, 0);
+    const ok = await modal({
+      title: '依資料夾匯入憑證',
+      wide: true,
+      body: h`<p>子資料夾名稱決定付款方式；同名檔案已上傳過的不重複上傳，只更新付款方式（已入帳的不動）。</p>
+        <div class="table-wrap"><table class="grid"><thead><tr><th>資料夾</th><th>付款方式</th><th class="num">新上傳</th><th class="num">更新付款方式</th><th class="num">已一致</th><th class="num">已入帳</th></tr></thead><tbody>
+        ${list.map((g) => h`<tr><td>${g.folder || '（最上層）'}</td><td>${g.statement ? '對帳單／明細，略過' : accName(g.pay)}</td><td class="num">${g.add.length}</td><td class="num">${g.update.length}</td><td class="num">${g.same.length}</td><td class="num">${g.posted.length}</td></tr>`)}
+        </tbody></table></div>`,
+      actions: [
+        { label: '取消', value: null },
+        { label: `確認（新上傳 ${nAdd}、更新 ${nUpd}）`, primary: true, value: true },
+      ],
+    });
+    if (!ok) return;
+    let added = 0;
+    for (const g of list) {
+      if (g.update.length) await store.put('documents', g.update.map((d) => ({ ...d, pay_account: g.pay, source_folder: g.folder, updated_at: new Date().toISOString() })));
+      if (g.add.length) added += (await createDocuments(g.add, { ...(g.pay ? { pay_account: g.pay } : {}), source_folder: g.folder })).length;
+    }
+    docs = await store.all('documents');
+    f.tab = 'inbox';
+    draw();
+    toast(`新上傳 ${added} 張、更新付款方式 ${nUpd} 張`, 'good', 7000);
   }
 
   function linkByInvoice(d) {
@@ -147,8 +196,23 @@ export async function render(root, ctx) {
       account: g('account').value,
       pay_account: g('pay_account').value,
       deductible: g('deductible').checked,
+      tax_type: g('tax_type')?.value || '',
+      ded_code: g('ded_code')?.value || '',
       updated_at: new Date().toISOString(),
     };
+  }
+
+  // 依目前欄位判斷扣抵與申報代號（收銀機發票未印稅額者先推算稅額）
+  function evalDoc(d) {
+    const tax = d.lines?.length ? null : (impliedTax(d, settings.tax_id) ?? d.tax_amount);
+    const opts = { taxId: settings.tax_id, vatMode: settings.vat_mode };
+    const parts = docParts({ ...d, tax_amount: tax ?? d.tax_amount }).map((p) => {
+      const item = { ...p, buyer_tax_id: d.buyer_tax_id, invoice_type: d.invoice_type, deductible: p.deductible ?? d.deductible };
+      const ded = deductibility(item, opts);
+      const ok = item.deductible !== false && ded.ok;
+      return { ...p, ok, reason: ded.reason, ...taxCodes(item, ok) };
+    });
+    return { tax, parts };
   }
 
   async function post(d, { quiet = false } = {}) {
@@ -160,6 +224,21 @@ export async function render(root, ctx) {
     if (isLocked(settings, d.doc_date)) {
       say('該月份已結帳鎖定', 'error');
       return { ok: false, reason: `${d.doc_date.slice(0, 7)} 已結帳鎖定` };
+    }
+    if (d.hold) {
+      say('這張憑證標記為「暫緩入帳」，請先取消暫緩', 'error');
+      return { ok: false, reason: '暫緩入帳' };
+    }
+    if (d.lines?.length) {
+      const sum = round2(d.lines.reduce((t, p) => t + (Number(p.amount) || 0), 0));
+      if (Math.abs(sum - Number(d.amount_total)) >= 1) {
+        say(`明細合計 ${sum} 與金額 ${d.amount_total} 不符`, 'error');
+        return { ok: false, reason: `明細合計 ${sum} 與金額 ${d.amount_total} 不符` };
+      }
+      if (d.lines.some((p) => !p.account)) {
+        say('明細有幾行沒有會計項目', 'error');
+        return { ok: false, reason: '明細缺會計項目' };
+      }
     }
     // 固定資產的發票：已有購置分錄就直接連結，避免同一筆購置入帳兩次
     const asset = d.asset_id ? (await store.all('fixed_assets')).find((a) => a.id === d.asset_id) : null;
@@ -178,10 +257,18 @@ export async function render(root, ctx) {
       say('此發票已由電子發票入帳，照片已連結，不重複入帳', 'info', 6000);
       return { ok: true, note: '已與電子發票連結' };
     }
-    // 進項稅額可否扣抵：勾選「載明本店統編」且符合條件（統一發票、有稅額、非交際／職工福利）
-    const ded = deductibility({ ...d, tax: d.tax_amount }, { taxId: settings.tax_id, vatMode: settings.vat_mode });
-    const deductible = d.deductible !== false && ded.ok;
-    if (d.deductible !== false && Number(d.tax_amount) > 0 && !ded.ok) say(`稅額不扣抵，併入成本：${ded.reason}`, 'info', 6000);
+    // 進項稅額可否扣抵：統一發票、載明本店統編、有稅額、非交際／職工福利；手動指定的扣抵代號優先
+    const ev = evalDoc(d);
+    if (ev.tax !== null && ev.tax !== undefined && Number(ev.tax) !== Number(d.tax_amount)) d = { ...d, tax_amount: ev.tax };
+    let deductible = d.deductible;
+    if (d.lines?.length) {
+      d = { ...d, lines: d.lines.map((p, i) => ({ ...p, deductible: ev.parts[i].ok, tax_type: p.tax_type || ev.parts[i].tax_type, ded_code: p.ded_code || ev.parts[i].ded_code })) };
+    } else {
+      const p = ev.parts[0];
+      deductible = p.ok;
+      if (d.deductible !== false && Number(d.tax_amount) > 0 && !p.ok) say(`稅額不扣抵，併入成本：${p.reason}`, 'info', 6000);
+      d = { ...d, tax_type: d.tax_type || p.tax_type, ded_code: d.ded_code || p.ded_code };
+    }
     const entries = await store.all('journal_entries');
     const je = documentJournal(d, { deductible });
     const e = { ...je, id: uid('je_'), voucher_no: nextVoucherNo(entries, d.doc_date), status: 'posted', attachments: [d.id], created_at: new Date().toISOString() };
@@ -191,8 +278,50 @@ export async function render(root, ctx) {
     await store.put('documents', { ...d, deductible, status: 'posted', entry_id: e.id, archived_name, storage_path, einvoice_id: inv?.id || null });
     if (inv) await store.put('einvoices', { ...inv, entry_id: e.id, document_id: d.id, account: d.account });
     if (asset && !asset.purchase_entry_id) await store.put('fixed_assets', { ...asset, purchase_entry_id: e.id });
-    say(`已入帳 ${e.voucher_no}，歸檔名稱：${folder}/${archived_name}`, 'good', 6000);
+    const made = asset ? [] : await createAssets({ ...d, deductible }, e);
+    say(`已入帳 ${e.voucher_no}，歸檔名稱：${folder}/${archived_name}${made.length ? `；已建立固定資產「${made.map((a) => a.name).join('、')}」並開始提列折舊` : ''}`, 'good', 7000);
     return { ok: true, voucher_no: e.voucher_no };
+  }
+
+  // 科目是固定資產（15xx）的憑證：入帳時自動建立固定資產（依科目分組），之後每月自動提列折舊
+  async function createAssets(d, entry) {
+    const groups = new Map();
+    for (const p of docParts(d)) {
+      if (!FIXED_ASSET_ACCOUNTS.has(p.account)) continue;
+      const g = groups.get(p.account) || { cost: 0, tax: 0, invoices: [] };
+      const t = (d.lines?.length ? p.deductible : d.deductible) ? p.tax : 0;
+      g.cost = round2(g.cost + p.total - t);
+      g.tax = round2(g.tax + t);
+      if (p.invoice_no) g.invoices.push(p.invoice_no);
+      groups.set(p.account, g);
+    }
+    const made = [];
+    for (const [account, g] of groups) {
+      if (!(g.cost > 0)) continue;
+      const a = {
+        id: 'fa_' + d.id.replace(/^doc_/, '') + (groups.size > 1 ? '_' + account : ''),
+        name: d.summary || d.vendor_name || '固定資產',
+        category: ASSET_CATEGORY_BY_ACCOUNT[account] || 'machine',
+        acquired_on: d.doc_date,
+        cost: g.cost,
+        life_years: null,
+        residual: null,
+        supplier: d.vendor_name || '',
+        invoice_no: g.invoices.join('+'),
+        tax_amount: g.tax || null,
+        pay_account: d.pay_account,
+        doc_ids: [d.id],
+        purchase_entry_id: entry.id,
+        note: '入帳時自動建立',
+      };
+      made.push(a);
+    }
+    if (!made.length) return [];
+    await store.put('fixed_assets', made);
+    const cur = (await store.all('documents')).find((x) => x.id === d.id) || d;
+    await store.put('documents', { ...cur, asset_id: made[0].id });
+    await syncDepreciation();
+    return made;
   }
 
   // 全部入帳（不用 AI）：用卡片上目前的欄位（檔名帶入或手動改過的）批次入帳並歸檔
@@ -207,8 +336,9 @@ export async function render(root, ctx) {
       const miss = [];
       if (!d.doc_date) miss.push('日期');
       if (!Number(d.amount_total)) miss.push('金額');
-      if (!d.account) miss.push('會計項目');
-      if (miss.length) skipped.push({ d, reason: '缺' + miss.join('、') });
+      if (!d.account && !d.lines?.length) miss.push('會計項目');
+      if (d.hold) skipped.push({ d, reason: '暫緩入帳' });
+      else if (miss.length) skipped.push({ d, reason: '缺' + miss.join('、') });
       else if (isLocked(settings, d.doc_date)) skipped.push({ d, reason: `${d.doc_date.slice(0, 7)} 已結帳鎖定` });
       else ready.push(d);
     }
@@ -245,15 +375,90 @@ export async function render(root, ctx) {
     });
   }
 
+  // 明細拆分：一張照片多張發票（例如訂金＋尾款），或一筆款項分屬多個科目（例如代墊收據 7 張）
+  async function editLines(d) {
+    const accs = accounts.filter((a) => ['asset', 'expense', 'cogs', 'nonop_expense', 'liability'].includes(a.type));
+    const start = d.lines?.length
+      ? d.lines
+      : [{ invoice_no: d.invoice_no || '', account: d.account || '', amount: d.amount_total ?? '', tax: d.tax_amount || '', tax_type: d.tax_type || '', ded_code: d.ded_code || '', memo: d.summary || '' }];
+    const row = (p = {}) => h`<tr>
+      <td><input class="cell" name="inv" value="${p.invoice_no || ''}" placeholder="AB12345678" style="width:110px"></td>
+      <td>${accountSelect(accs, p.account || '', 'name="acc"')}</td>
+      <td><input class="cell num" name="amt" inputmode="decimal" value="${p.amount ?? ''}" style="width:90px"></td>
+      <td><input class="cell num" name="tax" inputmode="decimal" value="${p.tax || ''}" style="width:70px"></td>
+      <td><select name="tt">${options([['', '自動'], ...Object.keys(TAX_TYPES).map((k) => [k, `${k} ${TAX_TYPES[k]}`])], p.tax_type || '')}</select></td>
+      <td><select name="dc">${options([['', '自動'], ...Object.keys(DED_CODES).map((k) => [k, k])], p.ded_code || '')}</select></td>
+      <td><input class="cell" name="memo" value="${p.memo || ''}" style="width:120px"></td>
+      <td><button type="button" class="icon-btn" data-del aria-label="刪除此行">✕</button></td>
+    </tr>`;
+    const collect = (dlg) =>
+      [...dlg.querySelectorAll('#ln tr')]
+        .map((tr) => {
+          const v = (n) => tr.querySelector(`[name=${n}]`).value.trim();
+          return { invoice_no: normalizeInvoiceNo(v('inv')), account: v('acc'), amount: Number(v('amt').replace(/,/g, '')) || 0, tax: Number(v('tax').replace(/,/g, '')) || 0, tax_type: v('tt'), ded_code: v('dc'), memo: v('memo') };
+        })
+        .filter((p) => p.account || p.amount || p.invoice_no);
+    const refresh = (dlg) => {
+      const list = collect(dlg);
+      const sum = round2(list.reduce((t, p) => t + p.amount, 0));
+      const diff = round2(sum - (Number(d.amount_total) || 0));
+      dlg.querySelector('#ln-sum').textContent = `明細合計 ${fmt(sum)}；憑證金額 ${fmt(Number(d.amount_total) || 0)}${diff ? `（差 ${fmt(diff)}）` : ' ✓'}`;
+    };
+    return modal({
+      title: `拆分明細：${d.vendor_name || d.original_name || ''}`,
+      wide: true,
+      body: h`<p class="muted" style="margin-bottom:8px">每一行是一張發票或一個科目；含稅金額合計要等於憑證金額。稅額填發票上的營業稅（收據留空）；課稅別、扣抵代號選「自動」時依發票與科目判斷，申報時照這裡逐張登打。</p>
+        <div class="table-wrap"><table class="grid"><thead><tr><th>發票號碼</th><th>會計項目</th><th class="num">含稅金額</th><th class="num">稅額</th><th>課稅別</th><th>扣抵代號</th><th>說明</th><th></th></tr></thead><tbody id="ln">${start.map(row)}${row()}</tbody></table></div>
+        <div class="row" style="margin-top:8px"><button type="button" class="btn sm" data-add>＋ 新增一行</button><span class="spacer"></span><span id="ln-sum" class="muted"></span></div>
+        <label class="check" style="margin-top:6px"><input type="checkbox" id="ln-upd"> 以明細合計更新憑證金額</label>`,
+      onMount: (dlg) => {
+        refresh(dlg);
+        dlg.addEventListener('input', () => refresh(dlg));
+        dlg.addEventListener('change', () => refresh(dlg));
+        dlg.addEventListener('click', (ev) => {
+          if (ev.target.closest('[data-add]')) dlg.querySelector('#ln').insertAdjacentHTML('beforeend', String(row()));
+          const del = ev.target.closest('[data-del]');
+          if (del) {
+            del.closest('tr').remove();
+            refresh(dlg);
+          }
+        });
+      },
+      actions: [
+        ...(d.lines?.length ? [{ label: '取消拆分', danger: true, value: () => ({ lines: null }) }] : []),
+        { label: '取消', value: null },
+        {
+          label: '套用',
+          primary: true,
+          value: (dlg) => {
+            const list = collect(dlg);
+            if (list.length < 2) return toast('拆分至少要兩行；只有一張發票、一個科目時不需要拆分', 'error'), false;
+            if (list.some((p) => !p.account || !p.amount)) return toast('每一行都要有會計項目與金額', 'error'), false;
+            const badNo = list.find((p) => p.invoice_no && !INVOICE_NO_RE.test(p.invoice_no));
+            if (badNo) return toast(`發票號碼 ${badNo.invoice_no} 格式不對（2 碼英文＋8 碼數字）`, 'error'), false;
+            const sum = round2(list.reduce((t, p) => t + p.amount, 0));
+            const upd = dlg.querySelector('#ln-upd').checked;
+            if (!upd && Math.abs(sum - (Number(d.amount_total) || 0)) >= 1) return toast(`明細合計 ${sum} 與憑證金額不符；確認無誤可勾「以明細合計更新憑證金額」`, 'error'), false;
+            const nos = [...new Set(list.map((p) => p.invoice_no).filter(Boolean))];
+            // 有填稅額＝發票上的營業稅，預設可扣抵（仍依統編、科目等規則判斷；不可扣抵者可選扣抵代號 3／4）
+            const taxSum = round2(list.reduce((t, p) => t + p.tax, 0));
+            return { lines: list, amount_total: upd ? sum : d.amount_total, tax_amount: taxSum, invoice_no: nos[0] || d.invoice_no || null, deductible: taxSum > 0 ? true : d.deductible };
+          },
+        },
+      ],
+    });
+  }
+
   function docCard(d) {
     const [label, tone] = STATUS[d.status] || ['?', ''];
     const inv = linkByInvoice(d);
     const ro = d.status === 'posted';
     const dis = ro ? raw('disabled') : '';
+    const ev = evalDoc(d);
     return h`<div class="doc-card" data-id="${d.id}">
       <div class="doc-thumb" data-act="zoom" data-id="${d.id}"><img alt="${d.original_name}" data-thumb="${d.id}"></div>
       <div class="doc-body">
-        <div class="row">${badge(label, tone)}${d.ai ? badge('AI ' + Math.round((d.confidence || 0) * 100) + '%', 'accent') : ''}${inv ? badge('電子發票已存在', inv.entry_id ? 'high' : '') : ''}${d.kind === 'payout_statement' ? badge('撥款明細', 'accent') : ''}</div>
+        <div class="row">${badge(label, tone)}${d.hold ? badge('暫緩入帳', 'medium') : ''}${d.lines?.length ? badge(`拆分 ${d.lines.length} 行`, 'accent') : ''}${d.ai ? badge('AI ' + Math.round((d.confidence || 0) * 100) + '%', 'accent') : ''}${inv ? badge('電子發票已存在', inv.entry_id ? 'high' : '') : ''}${d.kind === 'payout_statement' ? badge('撥款明細', 'accent') : ''}</div>
         <div class="fn">${d.archived_name ? `${archiveFolder(d.doc_date)}/${d.archived_name}` : d.original_name}</div>
         <div class="doc-fields">
           <label>日期<input type="date" name="doc_date" value="${d.doc_date || ''}" ${dis}></label>
@@ -264,15 +469,18 @@ export async function render(root, ctx) {
           <label>稅額（可扣抵）<input type="number" name="tax_amount" value="${d.tax_amount ?? ''}" ${dis}></label>
           <label class="full">摘要（品項）<input type="text" name="summary" value="${d.summary || ''}" ${dis}></label>
           <label class="full">會計項目${accountSelect(accounts.filter((a) => ['asset', 'expense', 'cogs', 'nonop_expense', 'liability'].includes(a.type)), d.account, `name="account" ${ro ? 'disabled' : ''}`)}</label>
-          <label class="full">付款方式<select name="pay_account" ${dis}>${options(PAY_ACCOUNTS, d.pay_account || '1101')}</select></label>
+          <label class="full">付款方式<select name="pay_account" ${dis}>${options(payAccountsOf(accounts, d.pay_account || '1101'), d.pay_account || '1101')}</select></label>
           <label class="full check" style="display:flex"><input type="checkbox" name="deductible" ${(d.deductible ?? Number(d.tax_amount) > 0) ? raw('checked') : ''} ${dis}> 三聯式／載明本店統編（進項稅額可扣抵）</label>
+          ${d.lines?.length ? '' : h`<label>課稅別<select name="tax_type" ${dis}>${options([['', `自動（${ev.parts[0].tax_type} ${TAX_TYPES[ev.parts[0].tax_type]}）`], ...Object.entries(TAX_TYPES).map(([k, v]) => [k, `${k} ${v}`])], d.tax_type || '')}</select></label>
+          <label>扣抵代號<select name="ded_code" ${dis}>${options([['', `自動（${ev.parts[0].ded_code}）`], ...Object.entries(DED_CODES).map(([k, v]) => [k, `${k} ${v}`])], d.ded_code || '')}</select></label>`}
+          ${d.lines?.length ? h`<div class="full callout" style="padding:8px 10px"><p style="font-size:12.5px">${d.lines.map((p, i) => h`<span style="display:block">${p.invoice_no || '（無發票號）'}｜${p.account} ${accounts.find((a) => a.code === p.account)?.name || ''}｜${fmt(p.amount)}${p.tax ? `（稅 ${fmt(p.tax)}）` : ''}｜代號 ${ev.parts[i].tax_type}/${ev.parts[i].ded_code}${p.memo ? '｜' + p.memo : ''}</span>`)}</p></div>` : ''}
           ${d.buyer_tax_id && settings.tax_id && d.buyer_tax_id !== settings.tax_id ? h`<div class="full status status-warn"><span class="status-ic" aria-hidden="true">!</span>發票上的買方統編 ${d.buyer_tax_id} 不是本店</div>` : ''}
         </div>
         ${d.kind === 'payout_statement' && d.ai?.payouts?.length ? h`<div class="callout"><p>AI 讀到 ${d.ai.payouts.length} 筆撥款：${d.ai.payouts.map((p) => `${p.payout_date} ${fmt(p.net)}`).join('、')}</p><button class="btn sm" data-act="importPayouts" data-id="${d.id}">匯入為撥款紀錄</button></div>` : ''}
         <div class="row">
           ${ro ? h`<a class="btn sm" href="#/journal?ym=${(d.doc_date || '').slice(0, 7)}">查看分錄</a>` : h`<button class="btn sm primary" data-act="post" data-id="${d.id}">入帳並歸檔</button><button class="btn sm" data-act="save" data-id="${d.id}">暫存</button>${store.mode === 'cloud' ? h`<button class="btn sm" data-act="ai" data-id="${d.id}">AI 辨識</button>` : ''}`}
           <span class="spacer"></span>
-          ${ro ? '' : h`<button class="btn sm ghost" data-act="ignore" data-id="${d.id}">不入帳</button>`}<button class="btn sm danger" data-act="del" data-id="${d.id}">刪除</button>
+          ${ro ? '' : d.status === 'ignored' ? h`<button class="btn sm" data-act="restore" data-id="${d.id}">移回待處理</button>` : h`<button class="btn sm ghost" data-act="split" data-id="${d.id}">${d.lines?.length ? '編輯拆分' : '拆分明細'}</button><button class="btn sm ghost" data-act="hold" data-id="${d.id}">${d.hold ? '取消暫緩' : '暫緩'}</button><button class="btn sm ghost" data-act="ignore" data-id="${d.id}">不入帳</button>`}<button class="btn sm danger" data-act="del" data-id="${d.id}">刪除</button>
         </div>
       </div>
     </div>`;
@@ -383,7 +591,7 @@ export async function render(root, ctx) {
     },
     camera: async () => addFiles(await pickDocFiles({ camera: true })),
     pick: async () => addFiles(await pickDocFiles()),
-    pickDir: async () => addFiles((await pickFiles({ directory: true })).filter(isDocFile)),
+    pickDir: async () => addFolder(await pickFiles({ directory: true })),
     aiAll: () => aiExtract(docs.filter((d) => ['inbox', 'reviewed'].includes(d.status) && d.storage_path)),
     // 開 claude.ai 新對話並帶入請求；Claude 透過「午月ERP」連接器讀照片、填欄位
     claude: () => {
@@ -419,6 +627,30 @@ export async function render(root, ctx) {
       const d = docs.find((x) => x.id === el.dataset.id);
       await store.put('documents', { ...d, status: 'ignored' });
       docs = await store.all('documents');
+      draw();
+    },
+    restore: async (el) => {
+      const d = docs.find((x) => x.id === el.dataset.id);
+      await store.put('documents', { ...d, status: 'inbox', updated_at: new Date().toISOString() });
+      docs = await store.all('documents');
+      draw();
+    },
+    hold: async (el) => {
+      const card = el.closest('.doc-card');
+      const d = readForm(card, docs.find((x) => x.id === el.dataset.id));
+      await store.put('documents', { ...d, hold: !d.hold });
+      docs = await store.all('documents');
+      toast(d.hold ? '已取消暫緩' : '已暫緩：「全部入帳」會略過這張', 'good');
+      draw();
+    },
+    split: async (el) => {
+      const card = el.closest('.doc-card');
+      const d = readForm(card, docs.find((x) => x.id === el.dataset.id));
+      const r = await editLines(d);
+      if (!r) return;
+      await store.put('documents', { ...d, ...r, status: d.status === 'inbox' ? 'reviewed' : d.status });
+      docs = await store.all('documents');
+      toast(r.lines ? `已拆成 ${r.lines.length} 行` : '已取消拆分', 'good');
       draw();
     },
     del: async (el) => {

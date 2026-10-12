@@ -2,11 +2,12 @@
 // 執行：NODE_PATH=$(npm root -g) node tests/e2e.mjs [截圖輸出資料夾]
 
 import { createServer } from 'node:http';
-import { readFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir, writeFile, rm } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { readXlsx } from '../erp/js/lib/xlsx.js';
+import { DEFAULT_ACCOUNTS, TYPE_LABELS } from '../erp/js/lib/coa.js';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -335,6 +336,118 @@ try {
   await go('journal?ym=2026-09');
   assert((await page.textContent('table.grid')).includes('好市多'), '批次入帳有產生分錄');
   await go('documents?tab=inbox');
+
+  // 依資料夾上傳：子資料夾名稱決定付款方式；已上傳過的同名檔案只更新付款方式；存摺明細略過
+  {
+    const png = await readFile(FX('20260902_全聯_鮮乳2瓶_356.png'));
+    const [c0] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pick"]')]);
+    await c0.setFiles([{ name: '20260911_大創_小碟5件_245.png', mimeType: 'image/png', buffer: png }]);
+    await page.waitForSelector('.doc-card >> text=20260911_大創_小碟5件_245.png');
+    const dir = join(OUT, 'fx-folder', '原始憑證');
+    await rm(join(OUT, 'fx-folder'), { recursive: true, force: true });
+    for (const [sub, name] of [
+      ['員工代墊支出', '20260911_大創_小碟5件_245.png'],
+      ['員工代墊支出', '20260910_蝦皮_吧台抹布_150.png'],
+      ['主要帳戶', '20260912_設備商_磨豆機訂金及尾款_120000.png'],
+      ['存摺明細', '20260921_存摺.png'],
+    ]) {
+      await mkdir(join(dir, sub), { recursive: true });
+      await writeFile(join(dir, sub, name), png);
+    }
+    const [c1] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pickDir"]')]);
+    await c1.setFiles(dir);
+    await page.waitForSelector('dialog >> text=依資料夾匯入憑證');
+    const rows = await page.$$eval('dialog tbody tr', (trs) => trs.map((tr) => [...tr.children].map((td) => td.textContent.trim())));
+    console.log('資料夾對應：', rows);
+    const row = (f) => rows.find((r) => r[0] === f) || [];
+    assert(/2134/.test(row('員工代墊支出')[1]) && row('員工代墊支出')[2] === '1' && row('員工代墊支出')[3] === '1', '員工代墊：新上傳 1、更新 1');
+    assert(/1103/.test(row('主要帳戶')[1]), '主要帳戶 → 1103');
+    assert(/略過/.test(row('存摺明細')[1]), '存摺明細略過');
+    await shot('documents-folder', false);
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('.doc-card >> text=20260912_設備商_磨豆機訂金及尾款_120000.png');
+    const pays = await page.$$eval('.doc-card', (cards) => Object.fromEntries(cards.map((c) => [c.querySelector('.fn').textContent.trim(), c.querySelector('[name=pay_account]').value])));
+    console.log('付款方式：', pays);
+    assert(pays['20260911_大創_小碟5件_245.png'] === '2134' && pays['20260910_蝦皮_吧台抹布_150.png'] === '2134' && pays['20260912_設備商_磨豆機訂金及尾款_120000.png'] === '1103', '依資料夾設定付款方式');
+    assert(!Object.keys(pays).some((k) => k.includes('存摺')), '存摺沒有上傳');
+
+    // 拆分明細：一張照片兩張發票（訂金＋尾款），固定資產 → 入帳時自動建立資產
+    const card = page.locator('.doc-card', { hasText: '20260912_設備商_磨豆機訂金及尾款_120000.png' });
+    await card.locator('[data-act="split"]').click();
+    await page.waitForSelector('dialog #ln');
+    const fillRow = async (i, inv, acc, amt, tax) => {
+      const tr = page.locator('dialog #ln tr').nth(i);
+      await tr.locator('[name=inv]').fill(inv);
+      await tr.locator('[name=acc]').selectOption(acc);
+      await tr.locator('[name=amt]').fill(String(amt));
+      await tr.locator('[name=tax]').fill(String(tax));
+    };
+    await fillRow(0, 'FA11111111', '1511', 50000, 2381);
+    await fillRow(1, 'FA11111112', '1511', 70000, 3333);
+    await shot('documents-split', false);
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('.doc-card >> text=拆分 2 行');
+    await page.locator('.doc-card', { hasText: '20260912_設備商_磨豆機訂金及尾款_120000.png' }).locator('[data-act="post"]').click();
+    await page.waitForSelector('text=已建立固定資產');
+    // 暫緩：全部入帳會略過
+    await page.locator('.doc-card', { hasText: '20260910_蝦皮_吧台抹布_150.png' }).locator('[data-act="hold"]').click();
+    await page.waitForSelector('.doc-card >> text=暫緩入帳');
+    await go('journal?ym=2026-09');
+    const jt = await page.textContent('table.grid');
+    assert(jt.includes('FA11111111+FA11111112') && jt.includes('5,714'), '拆分入帳：兩張發票、進項稅額 5,714');
+    await go('assets?ym=2026-09');
+    const at = await page.textContent('#view');
+    assert(at.includes('磨豆機訂金及尾款') && at.includes('114,286'), '自動建立固定資產，成本 114,286（未稅）');
+    await shot('assets-auto', false);
+  }
+
+  // 會計項目：匯入整份科目表 CSV（預覽差異）→ 重新開啟系統後仍是新的
+  {
+    await go('accounts');
+    assert(await page.isVisible('text=資料位置：'), '頁首顯示資料位置');
+    const rowsCsv = [['代號', '名稱', '類別', '餘額方向', '成本性質', '營所稅申報欄位', '說明'], ...DEFAULT_ACCOUNTS.map((a) => [a.code, a.code === '6130' ? '訓練費（員工教育）' : a.name, TYPE_LABELS[a.type], a.side === 'credit' ? '貸' : '借', '', a.tax_line || '', a.hint || ''])];
+    rowsCsv.push(['6137', '測試新科目', '營業費用', '借', '固定', '借', '匯入測試']);
+    rowsCsv.push(['1116', '應收帳款－測試', '營業費用', '借', '', '', '']);
+    const csv = '\uFEFF' + rowsCsv.map((r) => r.join(',')).join('\r\n');
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="import"]')]);
+    await chooser.setFiles([{ name: '會計項目表-測試.csv', mimeType: 'text/csv', buffer: Buffer.from(csv, 'utf8') }]);
+    await page.waitForSelector('dialog >> text=匯入科目表');
+    const body = (await page.textContent('dialog .modal-body')).replace(/\s+/g, ' ');
+    assert(/新增 2 個/.test(body) && /改名 1 個/.test(body) && /自動修正 2 處/.test(body), '匯入預覽：' + body.slice(0, 300));
+    await shot('accounts-import', false);
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('text=已匯入並確認');
+    await page.reload();
+    await unlock();
+    await page.waitForSelector('#nav-links a');
+    await go('accounts');
+    const t = await page.textContent('#view');
+    assert(t.includes('訓練費（員工教育）') && t.includes('測試新科目') && t.includes('應收帳款－測試'), '重新開啟後科目仍是新的');
+  }
+
+  // 匯入已申報的 7–8 月媒體檔（合成資料）→ 標記已申報並逐張核對
+  {
+    const rec = (fmt, ym, buyer, seller, inv, amount, taxType, tax, ded) => [fmt, '000000000', '0000001', ym, String(buyer).padEnd(8, ' '), String(seller).padEnd(8, ' '), inv.padEnd(10, ' '), String(amount).padStart(12, '0'), taxType, String(tax).padStart(10, '0'), ded, '     ', ' ', ' ', ' '].join('');
+    const txt = [
+      rec('25', '11508', '12345675', '66666666', 'AB12345678', 1219, '1', 61, '1'),
+      rec('25', '11508', '12345675', '11111111', 'ZZ00000001', 1000, '1', 50, '1'),
+      rec('35', '11508', '', '12345675', 'DV00000001', 10500, '1', 0, ' '),
+      rec('35', '11508', '', '12345675', 'DV00000002', 0, 'F', 0, ' '),
+    ].join('\r\n');
+    await go('vat?p=2026-07');
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="media"]')]);
+    await chooser.setFiles([{ name: '12345675.TXT', mimeType: 'text/plain', buffer: Buffer.from(txt, 'latin1') }]);
+    await page.waitForSelector('dialog >> text=匯入申報媒體檔');
+    assert((await page.inputValue('dialog [name=o]')) === '500', '銷項稅額估算 10,500 ÷ 1.05 × 5%');
+    assert((await page.inputValue('dialog [name=ie]')) === '111', '可扣抵進項稅額 61＋50');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('text=申報媒體檔核對');
+    const vt = (await page.textContent('#view')).replace(/\s+/g, ' ');
+    assert(/系統找不到這張憑證：1 張/.test(vt), '找不到 ZZ00000001');
+    assert(vt.includes('已申報'), '7–8 月標記已申報');
+    assert(vt.includes('$389') && vt.includes('依申報紀錄'), '已申報期別顯示 401 數字（應繳 500－111＝389）');
+    await shot('vat-media', false);
+  }
 
   // 營業稅 401 工作表：固定資產進項稅額、產生結轉分錄、標記申報
   await go('vat?p=2026-09');
