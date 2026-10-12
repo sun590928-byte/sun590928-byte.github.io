@@ -475,3 +475,11 @@ tr.muted-row td { color: var(--mute); }
   table.grid th { position: static; }
   .table-wrap { border: 0; overflow: visible; }
 }
+
+/* 本機辨識 */
+.recog-bar { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 90; display: flex; align-items: center; gap: 12px; max-width: min(640px, calc(100vw - 32px)); background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 8px 10px 8px 16px; font-size: 13px; }
+.recog-bar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.recog-note { padding: 8px 10px; font-size: 12.5px; }
+.recog-note ul, .recog-why ul { margin: 4px 0 0; padding-left: 18px; }
+.recog-why { font-size: 12px; color: var(--mute); }
+.recog-why summary { cursor: pointer; }

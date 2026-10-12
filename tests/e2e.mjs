@@ -15,7 +15,7 @@ const { chromium } = require('playwright');
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const FX = (n) => fileURLToPath(new URL(`./fixtures/${n}`, import.meta.url));
 const OUT = process.argv[2] || fileURLToPath(new URL('../.e2e-shots/', import.meta.url));
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml' };
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.wasm': 'application/wasm' };
 
 const server = createServer(async (req, res) => {
   try {
@@ -39,7 +39,8 @@ const ctx = await browser.newContext({ viewport: { width: 1360, height: 900 }, l
 const page = await ctx.newPage();
 const errors = [];
 page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
-page.on('console', (m) => m.type() === 'error' && errors.push('console: ' + m.text()));
+// Tesseract 載入繁中語言檔時會印出舊版參數的警告（無害）
+page.on('console', (m) => m.type() === 'error' && !/^Warning: Parameter not found/.test(m.text()) && errors.push('console: ' + m.text()));
 const BASE = 'http://127.0.0.1:8123/erp/';
 let step = 0;
 const shot = async (name, full = true) => {
@@ -296,6 +297,15 @@ try {
   await shot('accounts', false);
   await go('settings');
   await shot('settings');
+  // 既有的憑證流程測試先關掉「上傳後自動本機辨識」（另有專門的辨識測試）
+  const setRecognize = async (on, taxId) => {
+    await go('settings');
+    await page.setChecked('#biz [name=auto_recognize]', on);
+    if (taxId !== undefined) await page.fill('#biz [name=tax_id]', taxId);
+    await page.click('[data-act="saveBiz"]');
+    await page.waitForTimeout(600);
+  };
+  await setRecognize(false);
 
   // 憑證（已命名檔案 → 帶入欄位 → 入帳）
   await go('documents');
@@ -399,6 +409,55 @@ try {
     const at = await page.textContent('#view');
     assert(at.includes('磨豆機訂金及尾款') && at.includes('114,286'), '自動建立固定資產，成本 114,286（未稅）');
     await shot('assets-auto', false);
+  }
+
+  // 本機辨識（瀏覽器內，不用外部 AI）：電子發票 QR 碼 → 自動帶入；沒有 QR 的收據 → 文字辨識 → 標「需確認」
+  {
+    await setRecognize(true, '12345675');
+    await go('documents?tab=inbox');
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pick"]')]);
+    await chooser.setFiles([{ name: '20260915-測試烘豆-咖啡豆鮮乳.png', mimeType: 'image/png', buffer: await readFile(FX('einvoice-qr.png')) }]);
+    const card = page.locator('.doc-card', { hasText: '20260915-測試烘豆-咖啡豆鮮乳.png' });
+    await card.locator('.badge >> text=本機辨識').waitFor({ timeout: 60000 });
+    const v = await card.evaluate((c) => Object.fromEntries(['doc_date', 'invoice_no', 'amount_total', 'tax_amount', 'vendor_name', 'vendor_tax_id'].map((n) => [n, c.querySelector(`[name=${n}]`).value]).concat([['deductible', c.querySelector('[name=deductible]').checked]])));
+    console.log('QR 辨識：', v);
+    assert(v.invoice_no === 'QR00000001' && v.doc_date === '2026-09-15' && v.amount_total === '1050' && v.tax_amount === '50' && v.deductible && v.vendor_tax_id === '10047514' && v.vendor_name === '測試烘豆', 'QR 碼帶入發票號碼、日期、金額、稅額、賣方統編、可扣抵');
+    assert((await card.textContent('.recog-why')).includes('QR 碼'), '辨識依據列出 QR 碼');
+    await shot('documents-recognize-qr', false);
+    await page.evaluate(() => document.querySelectorAll('.toast').forEach((t) => t.remove()));
+    await card.screenshot({ path: join(OUT, `${String(++step).padStart(2, '0')}-card-qr.png`) });
+
+    // 沒有 QR 的收據：在瀏覽器畫一張合成收據，交給文字辨識
+    const b64 = await page.evaluate(() => {
+      const c = document.createElement('canvas');
+      c.width = 900;
+      c.height = 1000;
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff';
+      g.fillRect(0, 0, c.width, c.height);
+      g.fillStyle = '#000';
+      g.font = 'bold 56px "Microsoft JhengHei", "Noto Sans CJK TC", sans-serif';
+      ['收  據', '測試商行', '日期 2026/09/20 10:11', '品名 抹布 3 條', '總計 356 元'].forEach((t, i) => g.fillText(t, 70, 130 + i * 160));
+      return c.toDataURL('image/png').split(',')[1];
+    });
+    const [c2] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pick"]')]);
+    await c2.setFiles([{ name: 'IMG_0101.png', mimeType: 'image/png', buffer: Buffer.from(b64, 'base64') }]);
+    const rc = page.locator('.doc-card', { hasText: 'IMG_0101.png' });
+    await rc.locator('.badge >> text=本機辨識').waitFor({ timeout: 180000 });
+    const r = await rc.evaluate((c) => ({ date: c.querySelector('[name=doc_date]').value, amt: c.querySelector('[name=amount_total]').value, note: c.querySelector('.recog-note')?.textContent || '' }));
+    console.log('文字辨識：', r);
+    assert(r.amt === '356' && r.date === '2026-09-20', '文字辨識帶入金額與日期');
+    assert(/需確認/.test(r.note) && /文字辨識/.test(r.note), '只靠文字辨識的欄位標「需確認」');
+    await shot('documents-recognize-ocr', false);
+    await page.evaluate(() => document.querySelectorAll('.toast').forEach((t) => t.remove()));
+    await rc.locator('.recog-why summary').click();
+    await rc.screenshot({ path: join(OUT, `${String(++step).padStart(2, '0')}-card-ocr.png`) });
+    // 老闆看過按「暫存」＝確認，清掉需確認
+    await rc.locator('[data-act="save"]').click();
+    await page.waitForTimeout(500);
+    assert(!(await rc.locator('.recog-note').count()), '暫存後不再標需確認');
+    await setRecognize(false, '');
+    await go('documents?tab=inbox');
   }
 
   // 會計項目：匯入整份科目表 CSV（預覽差異）→ 重新開啟系統後仍是新的

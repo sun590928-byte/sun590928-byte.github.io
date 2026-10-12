@@ -9,13 +9,14 @@ export function parseDocName(fileName) {
   const ext = (/\.[a-z0-9]+$/i.exec(fileName) || [''])[0];
   let s = fileName.slice(0, fileName.length - ext.length).normalize('NFKC');
   const cameraLike = /^(img|dsc|dcim|pxl|mvimg|photo|screenshot|scan|螢幕截圖|截圖|line_album|line_)/i.test(s);
-  const out = { date: null, invoice_no: null, amount: null, vendor: '', summary: '', ext: ext.toLowerCase() };
-  const inv = INVOICE_RE.exec(s.toUpperCase());
-  if (inv) {
-    out.invoice_no = inv[1] + inv[2];
+  const out = { date: null, invoice_no: null, invoice_nos: [], amount: null, vendor: '', summary: '', ext: ext.toLowerCase() };
+  // 一個檔名可能有好幾張發票（「AB12345678+AB12345679」）
+  for (let inv; (inv = INVOICE_RE.exec(s.toUpperCase())); ) {
+    out.invoice_nos.push(inv[1] + inv[2]);
     const at = s.toUpperCase().indexOf(inv[0]);
     s = s.slice(0, at) + ' ' + s.slice(at + inv[0].length);
   }
+  out.invoice_no = out.invoice_nos[0] || null;
   // 日期：8 碼西元、7 碼民國，或含分隔符號
   const dm = /(?<!\d)((?:20\d{2}|1[01]\d)[-_./年]?\d{2}[-_./月]?\d{2})日?(?!\d)/.exec(s);
   if (dm) {
@@ -31,15 +32,15 @@ export function parseDocName(fileName) {
     out.amount = Number((money[1] || money[2]).replace(/,/g, ''));
     s = s.replace(money[0], ' ');
   } else if (!cameraLike) {
-    // 沒有 $ 或「元」時取最後一個數字（最多 7 位數；相機流水號檔名不猜金額）
-    const nums = [...s.matchAll(/(?<![\d.])(\d{1,3}(?:,\d{3})+|\d{1,7})(?![\d.])/g)];
+    // 沒有 $ 或「元」時取最後一個「獨立」的數字（前後是分隔符號；「鮮乳x2」「115年7月」「24入」裡的數字不算；相機流水號檔名不猜金額）
+    const nums = [...s.matchAll(/(?<=^|[\s_\-－—–·・|｜,，])(\d{1,3}(?:,\d{3})+|\d{1,7})(?=$|[\s_\-－—–·・|｜,，])/g)];
     if (nums.length) {
       const last = nums[nums.length - 1];
       out.amount = Number(last[1].replace(/,/g, ''));
       s = s.slice(0, last.index) + ' ' + s.slice(last.index + last[0].length);
     }
   }
-  const tokens = s.split(/[\s_\-－—–·・|｜,，]+/).map((t) => t.trim()).filter((t) => t && !/^(發票|收據|憑證|單據|img|dsc|photo|scan|掃描)$/i.test(t));
+  const tokens = s.split(/[\s_\-－—–·・|｜,，+＋]+/).map((t) => t.trim()).filter((t) => t && !/^(發票|收據|憑證|單據|img|dsc|photo|scan|掃描)$/i.test(t));
   const vi = tokens.findIndex((t) => !/^\d+$/.test(t));
   out.vendor = vi >= 0 ? tokens[vi] : '';
   out.summary = tokens.filter((t, i) => i !== vi && !(cameraLike && /^\d+$/.test(t))).join(' ');

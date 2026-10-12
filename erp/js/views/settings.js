@@ -105,11 +105,14 @@ export async function render(root) {
           <label class="field"><span>主要銀行存款科目</span><input type="text" name="bank_gl" value="${s.bank_gl}"></label>
           <label class="field"><span>付款方式不明時暫列科目</span><input type="text" name="unknown_payment_account" value="${s.unknown_payment_account}"></label>
           <label class="field"><span>估計毛利率（行銷 ROI 用）</span><input type="number" name="gross_margin_est" step="0.05" min="0" max="1" value="${s.gross_margin_est}"></label>
+          <label class="field"><span>固定資產資本化門檻（元）</span><input type="number" name="capitalize_threshold" min="0" step="1000" value="${s.capitalize_threshold ?? 80000}"></label>
         </div>
         <div class="row" style="margin-top:12px;gap:18px">
           <label class="check"><input type="checkbox" name="vat_confirmed" ${s.vat_confirmed ? raw('checked') : ''}> 已確認營業稅類型</label>
           <label class="check"><input type="checkbox" name="filing_self" ${s.filing_self ? raw('checked') : ''}> 自行申報</label>
           <label class="check" title="綠界、LINE Pay 從撥款中扣的手續費，用他們開的發票入帳（借 手續費、進項稅額／貸 應收帳款－未撥款項）；撥款分錄只記實撥金額"><input type="checkbox" name="fee_by_invoice" ${s.fee_by_invoice ? raw('checked') : ''}> 金流手續費以發票入帳</label>
+          <label class="check" title="照片上傳後在這台電腦的瀏覽器裡讀 QR 碼與文字，照片不會送到外部 AI"><input type="checkbox" name="auto_recognize" ${s.auto_recognize !== false ? raw('checked') : ''}> 上傳憑證後自動本機辨識</label>
+          <label class="check" title="沒有 QR 碼的發票、收據用文字辨識（第一次會下載約 10 MB 的辨識資料）"><input type="checkbox" name="ocr_enabled" ${s.ocr_enabled !== false ? raw('checked') : ''}> 讀不到 QR 碼時做文字辨識</label>
           <label class="check"><input type="checkbox" name="has_employees" ${s.has_employees ? raw('checked') : ''}> 有聘僱員工</label>
           <label class="check"><input type="checkbox" name="pays_rent_to_individual" ${s.pays_rent_to_individual ? raw('checked') : ''}> 店租付給個人房東</label>
           <label class="check"><input type="checkbox" name="owns_property" ${s.owns_property ? raw('checked') : ''}> 有自有房地</label>
@@ -223,6 +226,9 @@ export async function render(root) {
         bank_gl: g('bank_gl').value.trim() || '1103',
         unknown_payment_account: g('unknown_payment_account').value.trim() || '1101',
         fee_by_invoice: g('fee_by_invoice').checked,
+        auto_recognize: g('auto_recognize').checked,
+        ocr_enabled: g('ocr_enabled').checked,
+        capitalize_threshold: Math.max(0, Number(g('capitalize_threshold').value) || 80000),
         gross_margin_est: Number(g('gross_margin_est').value) || 0.7,
         vat_confirmed: g('vat_confirmed').checked,
         filing_self: g('filing_self').checked,

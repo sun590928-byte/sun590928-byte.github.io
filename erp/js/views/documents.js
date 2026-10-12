@@ -1,4 +1,4 @@
-// 憑證歸檔：實體發票／收據照片 → AI 辨識（或從已命名檔名解析）→ 覆核 → 入帳 → 依「民國年/月/日期_廠商_摘要_發票號_金額」歸檔。
+// 憑證歸檔：實體發票／收據照片 → 本機辨識（QR 碼、文字辨識、廠商資料庫、自動覆核規則；不用外部 AI）→ 覆核 → 入帳 → 依「民國年/月/日期_廠商_摘要_發票號_金額」歸檔。
 // 另含「電子發票」分頁：財政部平台下載的進項發票逐張入帳，並與照片依發票號碼比對，避免重複入帳。
 
 import { h, raw, mount, bindActions, fmt, toast, confirmBox, modal, pickFiles, options, badge, status, setBusy, download, emptyState, stat, dataTable } from '../ui.js';
@@ -17,6 +17,10 @@ import { today } from '../lib/dates.js';
 import { accountSelect } from './_shared.js';
 import { syncPayouts, syncDepreciation } from '../sync.js';
 import { createDocuments, archivePatch, pickDocFiles, isDocFile, previewDocument } from '../attach.js';
+import { recognizeDocuments, isRecognizing, stopRecognizing } from '../recognize.js';
+import { canRecognize } from '../vision.js';
+import { SOURCE_LABELS } from '../lib/autoreview.js';
+import { reviewedAfterAuto } from '../lib/vendorkb.js';
 
 const STATUS = { inbox: ['待覆核', 'medium'], reviewed: ['已覆核', 'accent'], posted: ['已入帳', 'high'], ignored: ['不入帳', 'low'] };
 const ASSET_CATEGORY_BY_ACCOUNT = Object.fromEntries(Object.entries(ASSET_CATEGORIES).map(([k, c]) => [c.asset, k]));
@@ -26,6 +30,24 @@ function folderOf(file) {
   const parts = String(file.webkitRelativePath || '').split('/').filter(Boolean);
   return parts.length > 2 ? parts[1] : parts.length === 2 ? parts[0] : '';
 }
+const FIELD_LABELS = { invoice_no: '發票號碼', doc_date: '日期', amount_total: '金額', vendor_name: '廠商', vendor_tax_id: '統編', buyer_tax_id: '買方統編', summary: '摘要', account: '會計項目', tax_amount: '稅額' };
+const recognizable = (f) => /^image\/(jpeg|png|webp)$/i.test(f.type || '');
+
+// 辨識進度（固定在畫面下方，換頁也看得到；可停止）
+function progressBar() {
+  const el = document.createElement('div');
+  el.className = 'recog-bar no-print';
+  el.setAttribute('role', 'status');
+  el.innerHTML = '<span></span><button type="button" class="btn sm">停止</button>';
+  const text = el.querySelector('span');
+  el.querySelector('button').onclick = () => {
+    stopRecognizing();
+    text.textContent = '停止中…（這張辨識完就停）';
+  };
+  document.body.appendChild(el);
+  return { set: (t) => (text.textContent = t), close: () => el.remove() };
+}
+
 const pending = [];
 export function queueFiles(files) {
   pending.push(...files);
@@ -55,9 +77,59 @@ export async function render(root, ctx) {
     if (!files.length) return;
     const rows = await createDocuments(files);
     docs = await store.all('documents');
-    toast(`已加入 ${rows.length} 張憑證${store.mode === 'cloud' ? '，可按「AI 辨識」自動讀取內容' : '（已從檔名帶入日期、廠商、金額）'}`, 'good', 6000);
     f.tab = 'inbox';
     draw();
+    if (settings.auto_recognize !== false) recognize(rows, { files: new Map(rows.map((r, i) => [r.id, files[i]]).filter(([, x]) => recognizable(x))), auto: true });
+    else toast(`已加入 ${rows.length} 張憑證（已從檔名帶入日期、廠商、金額），可按「本機辨識」讀取照片內容`, 'good', 6000);
+  }
+
+  // 本機辨識（瀏覽器內，不用外部 AI）：每張辨識完就更新那張卡片；沒疑點的自動標「已覆核」，有疑點的標「需確認」
+  async function recognize(list, { files = new Map(), auto = false } = {}) {
+    list = list.filter((d) => ['inbox', 'reviewed'].includes(d.status) && d.kind !== 'payout_statement');
+    if (!list.length) return auto ? null : toast('沒有要辨識的憑證', 'info');
+    if (isRecognizing()) return toast('辨識進行中，請等這一批完成', 'info');
+    const bar = progressBar();
+    let r;
+    try {
+      r = await recognizeDocuments(list, {
+        files,
+        onProgress: (i, n, d, step) => bar.set(`本機辨識 ${i + 1}/${n}　${d.original_name || ''}　${step || ''}`),
+        onDoc: (d) => {
+          const k = docs.findIndex((x) => x.id === d.id);
+          if (k >= 0) docs[k] = d;
+          refreshCard(d);
+        },
+      });
+    } catch (e) {
+      return toast(e.message || String(e), 'error');
+    } finally {
+      bar.close();
+    }
+    docs = await store.all('documents');
+    if (root.isConnected && !root.querySelector('.doc-card[data-dirty]')) draw();
+    const parts = [`${r.clean} 張沒有疑點，已標「已覆核」`, r.needs ? `${r.needs} 張需確認（卡片上列出原因）` : '', r.failed.length ? `${r.failed.length} 張失敗` : ''].filter(Boolean);
+    toast(`本機辨識完成 ${r.done} 張：${parts.join('、')}`, r.needs || r.failed.length ? 'info' : 'good', 9000);
+    if (r.failed.length) console.warn('辨識失敗', r.failed);
+  }
+
+  // 只重畫一張卡片（使用者正在改的卡片不動）
+  function refreshCard(d) {
+    const card = d && root.querySelector(`.doc-card[data-id="${d.id}"]`);
+    if (!card || card.dataset.dirty) return;
+    const tmp = document.createElement('div');
+    mount(tmp, docCard(d));
+    const fresh = tmp.firstElementChild;
+    card.replaceWith(fresh);
+    const img = fresh.querySelector('img[data-thumb]');
+    if (img) loadThumb(img);
+  }
+
+  async function loadThumb(img) {
+    const d = docs.find((x) => x.id === img.dataset.thumb);
+    if (!d) return;
+    const u = await thumbUrl(d);
+    if (u && !/\.pdf$/i.test(d.original_name || '')) img.src = u;
+    else img.replaceWith(Object.assign(document.createElement('span'), { className: 'muted', textContent: /\.pdf$/i.test(d.original_name || '') ? 'PDF' : '無預覽' }));
   }
 
   // 選整個資料夾：子資料夾名稱決定付款方式（員工代墊支出→員工代墊、負責人代墊支出→負責人代墊、銀行名稱的資料夾→該銀行存款（依科目名稱比對）…）
@@ -96,15 +168,20 @@ export async function render(root, ctx) {
       ],
     });
     if (!ok) return;
-    let added = 0;
+    const created = [];
+    const fileOf = new Map();
     for (const g of list) {
       if (g.update.length) await store.put('documents', g.update.map((d) => ({ ...d, pay_account: g.pay, source_folder: g.folder, updated_at: new Date().toISOString() })));
-      if (g.add.length) added += (await createDocuments(g.add, { ...(g.pay ? { pay_account: g.pay } : {}), source_folder: g.folder })).length;
+      if (!g.add.length) continue;
+      const rows = await createDocuments(g.add, { ...(g.pay ? { pay_account: g.pay } : {}), source_folder: g.folder });
+      rows.forEach((r, i) => recognizable(g.add[i]) && fileOf.set(r.id, g.add[i]));
+      created.push(...rows);
     }
     docs = await store.all('documents');
     f.tab = 'inbox';
     draw();
-    toast(`新上傳 ${added} 張、更新付款方式 ${nUpd} 張`, 'good', 7000);
+    toast(`新上傳 ${created.length} 張、更新付款方式 ${nUpd} 張`, 'good', 7000);
+    if (created.length && settings.auto_recognize !== false) recognize(created, { files: fileOf, auto: true });
   }
 
   function linkByInvoice(d) {
@@ -338,6 +415,7 @@ export async function render(root, ctx) {
       if (!Number(d.amount_total)) miss.push('金額');
       if (!d.account && !d.lines?.length) miss.push('會計項目');
       if (d.hold) skipped.push({ d, reason: '暫緩入帳' });
+      else if (d.status === 'inbox' && d.review_issues?.length && !reviewedAfterAuto(d)) skipped.push({ d, reason: `需確認：${d.review_issues.join('；')}` });
       else if (miss.length) skipped.push({ d, reason: '缺' + miss.join('、') });
       else if (isLocked(settings, d.doc_date)) skipped.push({ d, reason: `${d.doc_date.slice(0, 7)} 已結帳鎖定` });
       else ready.push(d);
@@ -371,7 +449,7 @@ export async function render(root, ctx) {
     if (!rest.length) return toast(`已入帳並歸檔 ${ok} 張憑證`, 'good', 6000);
     await modal({
       title: `已入帳 ${ok} 張，還有 ${rest.length} 張要處理`,
-      body: h`<p>下列憑證沒有入帳，補齊欄位後再按一次「全部入帳」即可：</p><ul class="plain-list">${rest.slice(0, 30).map((x) => h`<li>${x.tag}｜${label(x.d)}：${x.reason}</li>`)}</ul>${rest.length > 30 ? h`<p class="muted">其餘 ${rest.length - 30} 張未列出。</p>` : ''}`,
+      body: h`<p>下列憑證沒有入帳。缺欄位的補齊後再按一次「全部入帳」；「需確認」的請對照照片核對，沒問題就按卡片上的「暫存」（或直接「入帳並歸檔」）：</p><ul class="plain-list">${rest.slice(0, 30).map((x) => h`<li>${x.tag}｜${label(x.d)}：${x.reason}</li>`)}</ul>${rest.length > 30 ? h`<p class="muted">其餘 ${rest.length - 30} 張未列出。</p>` : ''}`,
     });
   }
 
@@ -455,11 +533,17 @@ export async function render(root, ctx) {
     const ro = d.status === 'posted';
     const dis = ro ? raw('disabled') : '';
     const ev = evalDoc(d);
+    const auto = d.auto && d.status !== 'posted' ? d.auto : null;
+    const byClaude = reviewedAfterAuto(d);
+    const issues = d.status !== 'posted' && !byClaude ? d.review_issues || [] : [];
+    const srcLine = auto ? Object.entries(auto.sources || {}).filter(([k, v]) => v && FIELD_LABELS[k]).map(([k, v]) => `${FIELD_LABELS[k]}：${SOURCE_LABELS[v] || v}`).join('、') : '';
     return h`<div class="doc-card" data-id="${d.id}">
       <div class="doc-thumb" data-act="zoom" data-id="${d.id}"><img alt="${d.original_name}" data-thumb="${d.id}"></div>
       <div class="doc-body">
-        <div class="row">${badge(label, tone)}${d.hold ? badge('暫緩入帳', 'medium') : ''}${d.lines?.length ? badge(`拆分 ${d.lines.length} 行`, 'accent') : ''}${d.ai ? badge('AI ' + Math.round((d.confidence || 0) * 100) + '%', 'accent') : ''}${inv ? badge('電子發票已存在', inv.entry_id ? 'high' : '') : ''}${d.kind === 'payout_statement' ? badge('撥款明細', 'accent') : ''}</div>
+        <div class="row">${badge(d.status === 'reviewed' && d.reviewed_by === 'auto' && !byClaude ? '已覆核（自動）' : label, tone)}${issues.length ? badge('需確認', 'medium') : ''}${auto ? badge(`本機辨識 ${Math.round((auto.confidence || 0) * 100)}%`, 'accent') : ''}${d.hold ? badge('暫緩入帳', 'medium') : ''}${d.lines?.length ? badge(`拆分 ${d.lines.length} 行`, 'accent') : ''}${d.ai ? badge('AI ' + Math.round((d.confidence || 0) * 100) + '%', 'accent') : ''}${inv ? badge('電子發票已存在', inv.entry_id ? 'high' : '') : ''}${d.kind === 'payout_statement' ? badge('撥款明細', 'accent') : ''}</div>
         <div class="fn">${d.archived_name ? `${archiveFolder(d.doc_date)}/${d.archived_name}` : d.original_name}</div>
+        ${issues.length ? h`<div class="callout warn recog-note"><b>需確認</b><ul>${issues.map((x) => h`<li>${x}</li>`)}</ul></div>` : ''}
+        ${auto ? h`<details class="recog-why"><summary>辨識依據${auto.qr?.length ? `（QR 碼 ${auto.qr.length} 張發票）` : auto.ocr_confidence !== null && auto.ocr_confidence !== undefined ? `（文字辨識信心 ${auto.ocr_confidence}%）` : ''}</summary><ul>${srcLine ? h`<li>${srcLine}</li>` : ''}${(auto.reasons || []).map((x) => h`<li>${x}</li>`)}${auto.error ? h`<li>${auto.error}</li>` : ''}</ul></details>` : ''}
         <div class="doc-fields">
           <label>日期<input type="date" name="doc_date" value="${d.doc_date || ''}" ${dis}></label>
           <label>金額（含稅）<input type="number" name="amount_total" value="${d.amount_total ?? ''}" ${dis}></label>
@@ -478,7 +562,7 @@ export async function render(root, ctx) {
         </div>
         ${d.kind === 'payout_statement' && d.ai?.payouts?.length ? h`<div class="callout"><p>AI 讀到 ${d.ai.payouts.length} 筆撥款：${d.ai.payouts.map((p) => `${p.payout_date} ${fmt(p.net)}`).join('、')}</p><button class="btn sm" data-act="importPayouts" data-id="${d.id}">匯入為撥款紀錄</button></div>` : ''}
         <div class="row">
-          ${ro ? h`<a class="btn sm" href="#/journal?ym=${(d.doc_date || '').slice(0, 7)}">查看分錄</a>` : h`<button class="btn sm primary" data-act="post" data-id="${d.id}">入帳並歸檔</button><button class="btn sm" data-act="save" data-id="${d.id}">暫存</button>${store.mode === 'cloud' ? h`<button class="btn sm" data-act="ai" data-id="${d.id}">AI 辨識</button>` : ''}`}
+          ${ro ? h`<a class="btn sm" href="#/journal?ym=${(d.doc_date || '').slice(0, 7)}">查看分錄</a>` : h`<button class="btn sm primary" data-act="post" data-id="${d.id}">入帳並歸檔</button><button class="btn sm" data-act="save" data-id="${d.id}">暫存</button>${canRecognize(d) ? h`<button class="btn sm" data-act="recog" data-id="${d.id}" title="在這台電腦讀 QR 碼與文字，不用外部 AI">本機辨識</button>` : ''}${store.mode === 'cloud' ? h`<button class="btn sm" data-act="ai" data-id="${d.id}">AI 辨識</button>` : ''}`}
           <span class="spacer"></span>
           ${ro ? '' : d.status === 'ignored' ? h`<button class="btn sm" data-act="restore" data-id="${d.id}">移回待處理</button>` : h`<button class="btn sm ghost" data-act="split" data-id="${d.id}">${d.lines?.length ? '編輯拆分' : '拆分明細'}</button><button class="btn sm ghost" data-act="hold" data-id="${d.id}">${d.hold ? '取消暫緩' : '暫緩'}</button><button class="btn sm ghost" data-act="ignore" data-id="${d.id}">不入帳</button>`}<button class="btn sm danger" data-act="del" data-id="${d.id}">刪除</button>
         </div>
@@ -495,8 +579,8 @@ export async function render(root, ctx) {
       root,
       h`<div class="drop no-print" id="drop" style="margin-bottom:16px">
         <h3>把發票、收據照片拖到這裡</h3>
-        <p class="muted">可一次選整個「原始憑證圖檔資料_已命名」資料夾：檔名中的日期、廠商、金額、發票號碼會自動帶入。${store.mode === 'cloud' ? '照片存到 Supabase 私有空間，可用 AI 辨識內容。' : '目前為本機模式，照片存在這台電腦的瀏覽器；連線雲端後可用 AI 辨識。'}</p>
-        <div class="row" style="justify-content:center"><button class="btn primary" data-act="camera">拍照上傳</button><button class="btn" data-act="pick">選擇照片／PDF</button><button class="btn" data-act="pickDir">選擇資料夾</button>${counts.inbox + counts.reviewed ? h`<button class="btn" data-act="postAll">全部入帳（${counts.inbox + counts.reviewed}）</button>` : ''}${store.mode === 'cloud' && counts.inbox + counts.reviewed ? (settings.mcp_token ? h`<button class="btn" data-act="claude" title="開啟 claude.ai 新對話，請 Claude 透過連接器覆核">在 Claude 覆核（${counts.inbox + counts.reviewed}）</button>` : h`<button class="btn" data-act="aiAll">AI 辨識（${counts.inbox + counts.reviewed}）</button>`) : ''}</div>
+        <p class="muted">可一次選整個資料夾：子資料夾決定付款方式，檔名中的日期、廠商、金額、發票號碼會自動帶入。上傳後在這台電腦自動辨識（讀發票 QR 碼與文字，依你以前的選擇帶出會計項目），照片不會送到外部 AI；沒有疑點的標「已覆核」，有疑點的標「需確認」。</p>
+        <div class="row" style="justify-content:center"><button class="btn primary" data-act="camera">拍照上傳</button><button class="btn" data-act="pick">選擇照片／PDF</button><button class="btn" data-act="pickDir">選擇資料夾</button>${counts.inbox ? h`<button class="btn" data-act="recogAll" title="在這台電腦讀 QR 碼與文字，不用外部 AI">本機辨識（${counts.inbox}）</button>` : ''}${counts.inbox + counts.reviewed ? h`<button class="btn" data-act="postAll">全部入帳（${counts.inbox + counts.reviewed}）</button>` : ''}${store.mode === 'cloud' && counts.inbox + counts.reviewed ? (settings.mcp_token ? h`<button class="btn" data-act="claude" title="開啟 claude.ai 新對話，請 Claude 透過連接器覆核">在 Claude 覆核（${counts.inbox + counts.reviewed}）</button>` : h`<button class="btn" data-act="aiAll">AI 辨識（${counts.inbox + counts.reviewed}）</button>`) : ''}</div>
       </div>
       <div class="stats">
         ${stat('待覆核', fmt(counts.inbox + counts.reviewed))}
@@ -522,12 +606,7 @@ export async function render(root, ctx) {
       return;
     }
     mount(body, h`<div class="doc-grid">${list.map(docCard)}</div>`);
-    body.querySelectorAll('img[data-thumb]').forEach(async (img) => {
-      const d = docs.find((x) => x.id === img.dataset.thumb);
-      const u = await thumbUrl(d);
-      if (u && !/\.pdf$/i.test(d.original_name || '')) img.src = u;
-      else img.replaceWith(Object.assign(document.createElement('span'), { className: 'muted', textContent: /\.pdf$/i.test(d.original_name || '') ? 'PDF' : '無預覽' }));
-    });
+    body.querySelectorAll('img[data-thumb]').forEach(loadThumb);
     const drop = root.querySelector('#drop');
     drop.addEventListener('dragover', (e) => {
       e.preventDefault();
@@ -608,12 +687,17 @@ export async function render(root, ctx) {
       toast(`已開啟 claude.ai，按送出即可。完成後回到這頁會自動更新。${notes.length ? '提醒：' + notes.join('；') : ''}`, 'good', 9000);
     },
     postAll: () => postAll(),
+    recogAll: () => recognize(docs.filter((d) => d.status === 'inbox')),
+    recog: (el) => recognize(docs.filter((d) => d.id === el.dataset.id)),
     ai: (el) => aiExtract(docs.filter((d) => d.id === el.dataset.id)),
     save: async (el) => {
       const card = el.closest('.doc-card');
       const d = readForm(card, docs.find((x) => x.id === el.dataset.id));
-      await store.put('documents', { ...d, status: 'reviewed' });
+      // 老闆看過按暫存＝確認：清掉「需確認」，之後辨識不會再改這張的欄位，也會被廠商資料庫學起來
+      await store.put('documents', { ...d, status: 'reviewed', reviewed_by: 'user', review_issues: [] });
       docs = await store.all('documents');
+      card.removeAttribute('data-dirty');
+      refreshCard(docs.find((x) => x.id === d.id));
       toast('已暫存', 'good');
     },
     post: async (el) => {
@@ -638,7 +722,7 @@ export async function render(root, ctx) {
     hold: async (el) => {
       const card = el.closest('.doc-card');
       const d = readForm(card, docs.find((x) => x.id === el.dataset.id));
-      await store.put('documents', { ...d, hold: !d.hold });
+      await store.put('documents', { ...d, hold: !d.hold, reviewed_by: 'user' });
       docs = await store.all('documents');
       toast(d.hold ? '已取消暫緩' : '已暫緩：「全部入帳」會略過這張', 'good');
       draw();
@@ -648,7 +732,7 @@ export async function render(root, ctx) {
       const d = readForm(card, docs.find((x) => x.id === el.dataset.id));
       const r = await editLines(d);
       if (!r) return;
-      await store.put('documents', { ...d, ...r, status: d.status === 'inbox' ? 'reviewed' : d.status });
+      await store.put('documents', { ...d, ...r, status: d.status === 'inbox' ? 'reviewed' : d.status, reviewed_by: 'user' });
       docs = await store.all('documents');
       toast(r.lines ? `已拆成 ${r.lines.length} 行` : '已取消拆分', 'good');
       draw();
@@ -720,6 +804,9 @@ export async function render(root, ctx) {
       }
     },
   });
+  // 卡片上改過還沒暫存：背景辨識不要蓋掉
+  const markDirty = (e) => e.target.closest?.('.doc-card')?.setAttribute('data-dirty', '1');
+  root.addEventListener('input', markDirty);
   draw();
   if (pending.length) addFiles(pending.splice(0));
   const onVisible = async () => {
@@ -735,6 +822,7 @@ export async function render(root, ctx) {
   document.addEventListener('visibilitychange', onVisible);
   return () => {
     document.removeEventListener('visibilitychange', onVisible);
+    root.removeEventListener('input', markDirty);
     unbind();
     for (const u of urls.values()) if (u.startsWith('blob:')) URL.revokeObjectURL(u);
   };
