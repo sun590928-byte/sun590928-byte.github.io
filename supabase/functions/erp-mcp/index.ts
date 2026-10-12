@@ -11,7 +11,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2.116.0";
 
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 const PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
 const PENDING = ["inbox", "reviewed"];
@@ -82,7 +82,7 @@ function liveDb(): DataLayer {
 const INSTRUCTIONS = `你是「午月咖啡廳」的記帳助理，透過這個連接器幫老闆覆核支出憑證（發票、收據照片）。
 流程：
 1. 先呼叫 get_context 取得店家資料、可用的會計項目與規則。
-2. list_pending_documents 列出待覆核憑證；逐張用 get_document_image 讀取照片。
+2. list_pending_documents 列出待覆核憑證；逐張用 get_document_image 讀取照片。ERP 已在本機辨識過的憑證會附 local_review：sources 是各欄位來源（QR 碼最可靠），need_check 是規則找到要確認的地方，請優先核對這些。
 3. 用 update_document 填入日期、廠商、統編、發票號碼、金額、稅額、摘要、會計項目、付款方式、可否扣抵；預設會標記為「已覆核」。
 4. 看不清楚的欄位留空並寫在 notes，或直接問老闆；不要猜數字。
 5. 全部處理完，提醒老闆回到 ERP「憑證歸檔」按「全部入帳」。
@@ -245,6 +245,12 @@ function docSummary(d: Doc, accounts: Account[]) {
     hold: !!(d.hold ?? extraOf(d).hold),
     lines: (d.lines ?? extraOf(d).lines ?? null) as unknown,
     notes: (d.ai as { notes?: string } | null)?.notes ?? "",
+    // ERP 本機辨識（QR 碼／文字辨識／自動覆核規則）的結果：need_check 是規則找到要人工確認的地方，覆核時優先看
+    local_review: (() => {
+      const auto = (d.auto ?? extraOf(d).auto) as { confidence?: number; reasons?: string[]; sources?: Record<string, string> } | undefined;
+      if (!auto) return null;
+      return { by: d.reviewed_by ?? extraOf(d).reviewed_by ?? null, confidence: auto.confidence ?? null, need_check: (d.review_issues ?? extraOf(d).review_issues ?? []) as unknown, reasons: auto.reasons ?? [], sources: auto.sources ?? {} };
+    })(),
   };
 }
 
@@ -415,6 +421,9 @@ export function buildPatch(args: Record<string, unknown>, accounts: Account[], s
     } else if (patch.deductible === undefined) patch.deductible = true;
   }
   if (patch.deductible === undefined && taxNow === 0) patch.deductible = false;
+  // Claude 覆核過：清掉 ERP 本機辨識標的「需確認」，ERP 的廠商資料庫也會學這張
+  extra.reviewed_by = "claude";
+  if (patch.status === "reviewed") extra.review_issues = [];
   if (Object.keys(extra).length) patch.extra = { ...extraOf(current), ...extra };
 
   patch.ai = { source: "claude-connector", notes: has("notes") ? String(args.notes).slice(0, 800) : ((current.ai as { notes?: string } | null)?.notes ?? ""), at: new Date().toISOString() };

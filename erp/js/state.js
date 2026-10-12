@@ -30,6 +30,9 @@ export const DEFAULT_SETTINGS = {
   bank_gl: '1103',
   unknown_payment_account: '1101',
   fee_by_invoice: true, // 金流手續費以綠界／LINE Pay 開的發票入帳（貸 應收帳款－未撥款項），撥款分錄不另計手續費
+  auto_recognize: true, // 上傳憑證後自動在瀏覽器裡辨識（QR 碼、文字），不使用外部 AI
+  ocr_enabled: true, // 讀不到 QR 碼時做文字辨識（第一次使用會下載約 10 MB 的辨識資料）
+  capitalize_threshold: 80000, // 設備達此金額才列固定資產，未達列 6135 雜項購置
 };
 
 let settingsCache = null;
