@@ -322,7 +322,9 @@ export function autoReview(doc, ctx = {}) {
   // 照片上的日期（文字辨識信心高）與檔名不同
   if (sources.doc_date === 'filename' && ocr?.date?.score >= 3 && ocr.date.value !== out.doc_date) issues.push(`照片上的日期像是 ${ocr.date.value}，檔名是 ${out.doc_date}`);
   if (BUNDLE.test(`${fn.vendor} ${fn.summary} ${out.summary || ''}`) && !doc.lines?.length) issues.push('這張照片是多張收據的彙總，請確認金額與拆分明細');
-  if (HOLD_NOTE.test(doc.notes || '')) issues.push(`備註：${String(doc.notes).slice(0, 40)}`);
+  // 備註多半是 Claude 覆核時寫的（存在 ai.notes）；「｜原註記」之後是舊的說明，不看
+  const noteNow = String(doc.notes || doc.ai?.notes || '').split('｜原註記')[0];
+  if (HOLD_NOTE.test(noteNow)) issues.push(`備註：${noteNow.slice(0, 40)}`);
   if (doc.hold) issues.push('標記為暫緩入帳');
   if (!invs.length && !ein && !fil && !ocr) reasons.push('沒有讀到 QR 碼與文字，只用檔名欄位');
 

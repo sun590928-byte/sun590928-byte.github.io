@@ -209,7 +209,7 @@ test('自動覆核：只有文字辨識的金額、店名 → 需確認；綜合
 
 test('自動覆核：老闆覆核過的欄位不覆寫；備註寫「不入帳」的列入需確認', () => {
   const qr = assembleInvoices([{ bytes: leftQR({ total: 2100, ex: 2000 }) }]);
-  const doc = baseDoc({ status: 'reviewed', reviewed_by: 'user', doc_date: '2026-09-15', vendor_name: '老闆填的', amount_total: 1050, account: '6133', invoice_no: 'AB12345678', notes: '家用水費，不入帳' });
+  const doc = baseDoc({ status: 'reviewed', reviewed_by: 'user', doc_date: '2026-09-15', vendor_name: '老闆填的', amount_total: 1050, account: '6133', invoice_no: 'AB12345678', ai: { notes: '家用水費，不入帳｜原註記：舊說明' } });
   const r = autoReview(doc, { qr, kb: kbOf(), accounts, settings, today: TODAY });
   assert.equal(r.patch.amount_total, undefined, '手動欄位不放進 patch');
   assert.equal(r.patch.vendor_name, undefined);
