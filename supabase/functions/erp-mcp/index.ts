@@ -11,13 +11,16 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2.116.0";
 
-const VERSION = "1.0.2";
+const VERSION = "1.1.0";
 const PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
 const PENDING = ["inbox", "reviewed"];
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
-const PAY_ACCOUNTS: Record<string, string> = { "1101": "現金（收銀機）", "1102": "零用金", "1103": "銀行存款（轉帳／刷卡扣款）", "2111": "應付帳款（月結）", "2191": "業主往來（老闆代墊）" };
 const INVOICE_TYPES = ["電子發票", "三聯式發票", "收銀機發票", "二聯式發票", "收據", "其他"];
+// 統一發票號碼：2 碼英文＋8 碼數字；公用事業（水電瓦斯電信）的載具發票為 BB＋8 碼英數
+const INVOICE_NO_RE = /^(?:[A-Z]{2}\d{8}|BB[0-9A-Z]{8})$/;
+const TAX_TYPES: Record<string, string> = { "1": "應稅", "2": "零稅率", "3": "免稅" };
+const DED_CODES: Record<string, string> = { "1": "可扣抵之進貨及費用", "2": "可扣抵之固定資產", "3": "不可扣抵之進貨及費用", "4": "不可扣抵之固定資產" };
 const DOC_ACCOUNT_TYPES = new Set(["asset", "expense", "cogs", "nonop_expense", "liability"]);
 const NON_DEDUCTIBLE: Record<string, string> = { "6120": "交際費", "6127": "職工福利" };
 
@@ -89,7 +92,12 @@ const INSTRUCTIONS = `你是「午月咖啡廳」的記帳助理，透過這個�
 - amount_total 是含稅總額；三聯式或載明買方統編的發票才有可扣抵的 tax_amount；二聯式、收據的稅額不填。
 - 只有載明本店統編（get_context 會給）的統一發票，deductible 才是 true；交際費（6120）、職工福利（6127）用途一律不可扣抵。
 - summary 是 10 字內的品項摘要，會用在歸檔檔名，例如「鮮乳4瓶」「咖啡豆2kg」。
-- account 只能從 get_context 的清單選：咖啡豆、乳品、茶粉糖漿、甜點原料、包材屬於存貨（12xx）；水電、電信、修繕、清潔、文具、運費屬於費用（61xx）；咖啡機、製冰機等設備屬於固定資產（15xx）。
+- account 只能從 get_context 的清單選：咖啡豆、乳品、茶粉糖漿、甜點原料、包材屬於原料／存貨（12xx）；水電、電信、修繕、文具、運費屬於費用（61xx）；單價 8 萬元以上的設備屬於固定資產（15xx），未達 8 萬的器具列「雜項購置」。
+- pay_account（付款方式）只能從 get_context 的「付款方式」清單選；檔案上傳時所在的資料夾（source_folder）就是付款來源：員工代墊支出→員工代墊、負責人代墊支出→負責人代墊、銀行名稱的資料夾→該銀行存款（依科目名稱比對）。綠界、LINE Pay 的手續費發票由撥款中扣除，付款方式選對應的「應收帳款－…未撥款項」（信用卡 1111、LINE Pay 1112）。
+- 收銀機發票載明本店統編但沒有分開印稅額：tax_amount＝總額 ÷ 1.05 × 5%（四捨五入），可扣抵（課稅別 1、扣抵代號 1）。
+- 申報代號：tax_type 課稅別（1 應稅、2 零稅率、3 免稅）、ded_code 扣抵代號（1 可扣抵進貨及費用、2 可扣抵固定資產、3 不可扣抵進貨及費用、4 不可扣抵固定資產）。老闆指定的代號優先；不確定就不要填，ERP 會依發票與科目自動判斷。
+- 一張照片含多張發票（例如訂金＋尾款），或一筆款項分屬多個科目（例如多張代墊收據）時，用 lines 拆分：每行一張發票或一個科目，含稅金額合計要等於 amount_total。
+- 老闆說「先不認列」「之後再說」的憑證，用 hold=true 標記暫緩，ERP「全部入帳」會略過。
 - 這個連接器不能入帳、不能刪除、不能碰已入帳的憑證；這些都由 ERP 處理。`;
 
 const TOOLS = [
@@ -139,7 +147,28 @@ const TOOLS = [
         summary: { type: "string", description: "10 字內品項摘要，用於檔名" },
         items: { type: "array", maxItems: 50, items: { type: "object", properties: { name: { type: "string" }, qty: { type: ["number", "null"] }, amount: { type: ["number", "null"] } }, required: ["name"] } },
         account: { type: "string", description: "會計項目代號（見 get_context）" },
-        pay_account: { type: "string", enum: Object.keys(PAY_ACCOUNTS), description: "付款方式科目：1101 現金、1102 零用金、1103 銀行存款、2111 應付帳款、2191 老闆代墊" },
+        pay_account: { type: "string", description: "付款方式（付款來源）科目代號，見 get_context 的「付款方式」清單" },
+        tax_type: { type: "string", enum: ["", "1", "2", "3"], description: "課稅別：1 應稅、2 零稅率、3 免稅；空字串＝ERP 自動判斷" },
+        ded_code: { type: "string", enum: ["", "1", "2", "3", "4"], description: "扣抵代號：1 可扣抵進貨及費用、2 可扣抵固定資產、3 不可扣抵進貨及費用、4 不可扣抵固定資產；空字串＝ERP 自動判斷" },
+        lines: {
+          type: "array",
+          maxItems: 30,
+          description: "拆分明細（一張照片多張發票、或分屬多個科目時才用）；空陣列＝取消拆分",
+          items: {
+            type: "object",
+            properties: {
+              invoice_no: { type: "string" },
+              account: { type: "string" },
+              amount: { type: "number", description: "含稅金額" },
+              tax: { type: "number", description: "這張發票的營業稅額；收據為 0" },
+              tax_type: { type: "string", enum: ["", "1", "2", "3"] },
+              ded_code: { type: "string", enum: ["", "1", "2", "3", "4"] },
+              memo: { type: "string" },
+            },
+            required: ["account", "amount"],
+          },
+        },
+        hold: { type: "boolean", description: "true＝暫緩入帳（老闆說先不認列時用）" },
         deductible: { type: "boolean", description: "進項稅額可否扣抵（載明本店統編的統一發票才可）" },
         confidence: { type: "number", minimum: 0, maximum: 1, description: "整體把握度 0–1" },
         notes: { type: "string", description: "看不清楚或需老闆確認之處" },
@@ -166,6 +195,19 @@ async function getAccounts(ctx: Ctx) {
 }
 function docAccounts(accounts: Account[]) {
   return accounts.filter((a) => DOC_ACCOUNT_TYPES.has(a.type) && a.active !== false).sort((a, b) => (a.code < b.code ? -1 : 1));
+}
+// 付款來源：現金、零用金、銀行存款（110x）、金流未撥款項（111x）、應付帳款、代墊（其他應付款）、業主往來
+function isPayAccount(a: Account) {
+  if (a.active === false) return false;
+  if (a.type === "asset") return /^11[01]\d$/.test(a.code);
+  if (a.type === "liability") return a.code === "2111" || a.code === "2191" || /代墊/.test(a.name ?? "");
+  return false;
+}
+function payAccounts(accounts: Account[]) {
+  return accounts.filter(isPayAccount).sort((a, b) => (a.code < b.code ? -1 : 1));
+}
+function extraOf(d: Doc) {
+  return ((d.extra ?? {}) as Record<string, unknown>) || {};
 }
 function isPendingDoc(d: Doc) {
   return PENDING.includes(d.status) && d.kind !== "payout_statement";
@@ -197,6 +239,11 @@ function docSummary(d: Doc, accounts: Account[]) {
     confidence: d.confidence ?? null,
     reviewed_by_ai: !!d.ai,
     asset_id: d.asset_id ?? null,
+    source_folder: d.source_folder ?? extraOf(d).source_folder ?? "",
+    tax_type: d.tax_type ?? extraOf(d).tax_type ?? "",
+    ded_code: d.ded_code ?? extraOf(d).ded_code ?? "",
+    hold: !!(d.hold ?? extraOf(d).hold),
+    lines: (d.lines ?? extraOf(d).lines ?? null) as unknown,
     notes: (d.ai as { notes?: string } | null)?.notes ?? "",
   };
 }
@@ -255,8 +302,8 @@ export function buildPatch(args: Record<string, unknown>, accounts: Account[], s
     }
   }
   if (has("invoice_no")) {
-    const v = String(args.invoice_no).toUpperCase().normalize("NFKC").replace(/[\s-]/g, "");
-    if (v && !/^[A-Z]{2}\d{8}$/.test(v)) errors.push("invoice_no 須為 2 碼英文 + 8 碼數字（收據請留空）");
+    const v = String(args.invoice_no).normalize("NFKC").toUpperCase().replace(/[\s-]/g, "");
+    if (v && !INVOICE_NO_RE.test(v)) errors.push("invoice_no 須為 2 碼英文 + 8 碼數字（公用事業載具發票為 BB＋8 碼；收據請留空）");
     else patch.invoice_no = v || null;
   }
   if (has("amount_total")) {
@@ -287,10 +334,46 @@ export function buildPatch(args: Record<string, unknown>, accounts: Account[], s
   }
   if (has("pay_account")) {
     const code = String(args.pay_account).trim();
-    if (!PAY_ACCOUNTS[code]) errors.push(`pay_account 必須是：${Object.keys(PAY_ACCOUNTS).join("、")}`);
+    const pays = payAccounts(accounts);
+    if (!pays.some((a) => a.code === code)) errors.push(`pay_account 必須是：${pays.map((a) => `${a.code} ${a.name}`).join("、")}`);
     else patch.pay_account = code;
   }
   if (has("deductible")) patch.deductible = !!args.deductible;
+  // 以下欄位存在 extra（jsonb），不需要改資料表
+  const extra: Record<string, unknown> = {};
+  for (const [k, list] of [["tax_type", TAX_TYPES], ["ded_code", DED_CODES]] as const) {
+    if (!has(k)) continue;
+    const v = String(args[k]).trim();
+    if (v && !list[v]) errors.push(`${k} 必須是：${Object.keys(list).join("、")} 或空字串`);
+    else extra[k] = v;
+  }
+  if (has("hold")) extra.hold = !!args.hold;
+  if (has("lines")) {
+    const list = Array.isArray(args.lines) ? args.lines.slice(0, 30) : null;
+    if (!list) errors.push("lines 必須是陣列");
+    else if (!list.length) extra.lines = null;
+    else {
+      const codes = new Set(docAccounts(accounts).map((a) => a.code));
+      const rows = list.map((x, i) => {
+        const r = x as Record<string, unknown>;
+        const no = String(r.invoice_no ?? "").normalize("NFKC").toUpperCase().replace(/[\s-]/g, "");
+        const row = { invoice_no: no, account: String(r.account ?? "").trim(), amount: round2(Number(r.amount)), tax: round2(Number(r.tax ?? 0)), tax_type: String(r.tax_type ?? ""), ded_code: String(r.ded_code ?? ""), memo: String(r.memo ?? "").slice(0, 40) };
+        if (!codes.has(row.account)) errors.push(`lines 第 ${i + 1} 行：科目 ${row.account} 不在清單`);
+        if (!(row.amount > 0)) errors.push(`lines 第 ${i + 1} 行：含稅金額要大於 0`);
+        if (!(row.tax >= 0) || row.tax > row.amount) errors.push(`lines 第 ${i + 1} 行：稅額不合理`);
+        if (no && !INVOICE_NO_RE.test(no)) errors.push(`lines 第 ${i + 1} 行：發票號碼 ${no} 格式不對`);
+        if (row.tax_type && !TAX_TYPES[row.tax_type]) errors.push(`lines 第 ${i + 1} 行：tax_type 不對`);
+        if (row.ded_code && !DED_CODES[row.ded_code]) errors.push(`lines 第 ${i + 1} 行：ded_code 不對`);
+        return row;
+      });
+      const sum = round2(rows.reduce((t, r) => t + (r.amount || 0), 0));
+      const target = (patch.amount_total ?? current.amount_total) as number | null;
+      if (target != null && Math.abs(sum - target) >= 1) errors.push(`lines 含稅金額合計 ${sum} 不等於 amount_total ${target}（要改總額請一併給 amount_total）`);
+      extra.lines = rows;
+      if (!has("tax_amount")) patch.tax_amount = round2(rows.reduce((t, r) => t + (r.tax || 0), 0));
+      if (!has("invoice_no")) patch.invoice_no = rows.find((r) => r.invoice_no)?.invoice_no ?? current.invoice_no ?? null;
+    }
+  }
   if (has("confidence")) {
     const n = Number(args.confidence);
     patch.confidence = Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.5;
@@ -301,13 +384,25 @@ export function buildPatch(args: Record<string, unknown>, accounts: Account[], s
     else patch.status = s;
   } else patch.status = "reviewed";
 
-  // 扣抵規則：買方統編不是本店、二聯式／收據、交際費／職工福利 → 不可扣抵
+  // 扣抵規則：買方統編不是本店、二聯式／收據、交際費／職工福利 → 不可扣抵；老闆指定的扣抵代號優先
   const shopTaxId = String(settings.tax_id ?? "").trim();
   const buyer = (patch.buyer_tax_id ?? current.buyer_tax_id ?? "") as string;
   const invoiceType = (patch.invoice_type ?? current.invoice_type ?? "") as string;
   const account = (patch.account ?? current.account ?? "") as string;
   const invoiceNo = (patch.invoice_no ?? current.invoice_no ?? null) as string | null;
-  if (patch.deductible === true || (patch.deductible === undefined && tax != null && tax > 0)) {
+  const dedCode = String(extra.ded_code ?? extraOf(current).ded_code ?? "");
+  // 收銀機發票載明本店統編、沒有分開印稅額：稅額＝總額 ÷ 1.05 × 5%
+  if (!has("tax_amount") && !extra.lines && /收銀機/.test(invoiceType) && invoiceNo && shopTaxId && buyer === shopTaxId && !(Number(tax) > 0) && Number(total) > 0) {
+    patch.tax_amount = Math.round(Number(total) - Number(total) / 1.05);
+    warnings.push(`收銀機發票未印稅額，依總額推算稅額 ${patch.tax_amount}`);
+  }
+  const taxNow = (patch.tax_amount ?? tax) as number | null;
+  if (dedCode === "3" || dedCode === "4") {
+    if (patch.deductible === true) warnings.push(`扣抵代號 ${dedCode} 為不可扣抵，deductible 改為 false`);
+    patch.deductible = false;
+  } else if ((dedCode === "1" || dedCode === "2") && invoiceNo && Number(taxNow) > 0) {
+    patch.deductible = true;
+  } else if (patch.deductible === true || (patch.deductible === undefined && taxNow != null && taxNow > 0)) {
     let why = "";
     if (!invoiceNo) why = "沒有統一發票號碼";
     else if (/二聯|收據/.test(invoiceType)) why = `${invoiceType}不能扣抵`;
@@ -319,9 +414,10 @@ export function buildPatch(args: Record<string, unknown>, accounts: Account[], s
       warnings.push(`進項稅額改為不扣抵：${why}`);
     } else if (patch.deductible === undefined) patch.deductible = true;
   }
-  if (patch.deductible === undefined && tax === 0) patch.deductible = false;
+  if (patch.deductible === undefined && taxNow === 0) patch.deductible = false;
+  if (Object.keys(extra).length) patch.extra = { ...extraOf(current), ...extra };
 
-  patch.ai = { source: "claude-connector", notes: has("notes") ? String(args.notes).slice(0, 500) : ((current.ai as { notes?: string } | null)?.notes ?? ""), at: new Date().toISOString() };
+  patch.ai = { source: "claude-connector", notes: has("notes") ? String(args.notes).slice(0, 800) : ((current.ai as { notes?: string } | null)?.notes ?? ""), at: new Date().toISOString() };
   patch.updated_at = new Date().toISOString();
   return { patch, errors, warnings };
 }
@@ -354,10 +450,11 @@ async function callTool(name: string, args: Record<string, unknown>, ctx: Ctx): 
         "可用的會計項目（代號 名稱｜用途）：",
         ...accounts.map((a) => `- ${a.code} ${a.name}${a.hint ? `｜${a.hint}` : ""}`),
         "",
-        "付款方式（pay_account）：",
-        ...Object.entries(PAY_ACCOUNTS).map(([k, v]) => `- ${k} ${v}`),
+        "付款方式（pay_account，依科目表）：",
+        ...payAccounts(await getAccounts(ctx)).map((a) => `- ${a.code} ${a.name}`),
         "",
-        "扣抵規則：只有載明本店統編的統一發票（電子發票證明聯、三聯式）進項稅額可扣抵；二聯式、收據、交際費（6120）、職工福利（6127）不可扣抵。",
+        "扣抵規則：只有載明本店統編的統一發票（電子發票證明聯、三聯式、收銀機發票）進項稅額可扣抵；二聯式、收據、交際費（6120）、職工福利（6127）不可扣抵。",
+        "申報代號：課稅別 tax_type（1 應稅、2 零稅率、3 免稅）；扣抵代號 ded_code（1 可扣抵進貨及費用、2 可扣抵固定資產、3 不可扣抵進貨及費用、4 不可扣抵固定資產）。",
       ];
       return text(lines.join("\n"));
     }

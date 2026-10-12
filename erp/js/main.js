@@ -75,8 +75,8 @@ function renderNav(active) {
   mount(
     $('#mode-pill'),
     store.mode === 'cloud'
-      ? h`資料位置：<b>雲端（Supabase）</b><br>${store.backend.session?.user?.email || ''}`
-      : h`資料位置：<b>這台裝置（已加密）</b>`,
+      ? h`資料位置：<b>雲端（Supabase）</b><br>專案 ${store.location.ref}<br>${store.location.email}`
+      : h`資料位置：<b>這台裝置（本機模式）</b><br>其他電腦與 Claude 看不到`,
   );
 }
 

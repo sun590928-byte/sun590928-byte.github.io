@@ -96,17 +96,18 @@ export function salesJournal(lines, { categoryOf, vatMode = 'general', paymentAc
   return entries;
 }
 
-const PROVIDER_ACCOUNT = { ecpay: '1111', linepay: '1112', mobile: '1113', jkopay: '1113', platform: '1114' };
-export const PROVIDERS = { ecpay: '綠界（信用卡）', linepay: 'LINE Pay', jkopay: '街口支付', mobile: '其他行動支付', platform: '外送平台' };
+const PROVIDER_ACCOUNT = { ecpay: '1111', linepay: '1112', jkopay: '1113', mobile: '1113', taiwanpay: '1114', platform: '1115' };
+export const PROVIDERS = { ecpay: '綠界（信用卡）', linepay: 'LINE Pay', jkopay: '街口支付', taiwanpay: '台灣Pay', mobile: '其他行動支付', platform: '外送平台' };
 
-// 撥款入帳：借 銀行存款、手續費；貸 在途款項
-export function payoutJournal(p, { bankAccount = '1103' } = {}) {
+// 撥款入帳：借 銀行存款、手續費；貸 應收（未撥款項）
+// feeByInvoice：手續費改由綠界／LINE Pay 開的發票入帳（借 手續費、進項稅額／貸 未撥款項），撥款分錄只記實撥金額，避免重複
+export function payoutJournal(p, { bankAccount = '1103', feeByInvoice = false } = {}) {
   const fee = round2(Math.abs(Number(p.fee) || 0));
   const net = round2(Number(p.net) || 0);
   const gross = round2(Number(p.gross) || net + fee);
   const lines = [{ account: bankAccount, debit: net, credit: 0, memo: `${PROVIDERS[p.provider] || p.provider} 撥款` }];
-  if (fee) lines.push({ account: p.provider === 'platform' ? '6129' : '6131', debit: fee, credit: 0, memo: '金流手續費' });
-  lines.push({ account: PROVIDER_ACCOUNT[p.provider] || '1113', debit: 0, credit: round2(net + fee), memo: '' });
+  if (fee && !feeByInvoice) lines.push({ account: p.provider === 'platform' ? '6129' : '6131', debit: fee, credit: 0, memo: '金流手續費' });
+  lines.push({ account: PROVIDER_ACCOUNT[p.provider] || '1113', debit: 0, credit: feeByInvoice ? net : round2(net + fee), memo: feeByInvoice && fee ? `手續費 ${fee} 以發票入帳` : '' });
   const diff = round2(gross - net - fee);
   return {
     date: p.payout_date,
@@ -171,16 +172,30 @@ export function cogsJournal(ym, rows, voidCost = {}) {
 }
 
 // 支出憑證 → 分錄（借 費用/存貨 + 進項稅額；貸 付款來源）
+// doc.lines（明細拆分：一張照片多張發票、或分屬多個科目）：[{ invoice_no, account, amount（含稅）, tax, deductible, memo }]
 export function documentJournal(doc, { payAccount = '1101', deductible = true } = {}) {
   const total = round2(Number(doc.amount_total) || 0);
-  if (!total || !doc.account) return null;
-  const tax = deductible ? round2(Number(doc.tax_amount) || 0) : 0;
-  const lines = [{ account: doc.account, debit: round2(total - tax), credit: 0, memo: doc.summary || doc.vendor_name || '' }];
-  if (tax) lines.push({ account: '1261', debit: tax, credit: 0, memo: '進項稅額' });
+  const parts = Array.isArray(doc.lines) && doc.lines.length ? doc.lines : null;
+  if (!total || (!doc.account && !parts)) return null;
+  const lines = [];
+  let taxSum = 0;
+  if (parts) {
+    for (const p of parts) {
+      const amt = round2(Number(p.amount) || 0);
+      if (!amt || !p.account) continue;
+      const t = p.deductible ? round2(Number(p.tax) || 0) : 0;
+      taxSum = round2(taxSum + t);
+      lines.push({ account: p.account, debit: round2(amt - t), credit: 0, memo: [p.memo || doc.summary || doc.vendor_name || '', p.invoice_no].filter(Boolean).join(' ') });
+    }
+  } else {
+    taxSum = deductible ? round2(Number(doc.tax_amount) || 0) : 0;
+    lines.push({ account: doc.account, debit: round2(total - taxSum), credit: 0, memo: doc.summary || doc.vendor_name || '' });
+  }
+  if (taxSum) lines.push({ account: '1261', debit: taxSum, credit: 0, memo: '進項稅額' });
   lines.push({ account: doc.pay_account || payAccount, debit: 0, credit: total, memo: '' });
   return {
     date: doc.doc_date,
-    description: [doc.vendor_name, doc.summary, doc.invoice_no].filter(Boolean).join('｜'),
+    description: [doc.vendor_name, doc.summary, parts ? [...new Set(parts.map((p) => p.invoice_no).filter(Boolean))].join('+') || doc.invoice_no : doc.invoice_no].filter(Boolean).join('｜'),
     source: 'document',
     source_ref: doc.id,
     lines,

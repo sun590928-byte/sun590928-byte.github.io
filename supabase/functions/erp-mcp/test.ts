@@ -8,7 +8,14 @@ import type { DataLayer, Doc, Account } from "./index.ts";
 
 const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82]);
 const ACCOUNTS: Account[] = [
-  { code: "1101", name: "庫存現金（收銀機）", type: "asset", active: true },
+  { code: "1101", name: "零用金-門市收銀", type: "asset", active: true },
+  { code: "1103", name: "銀行存款-主要帳戶", type: "asset", active: true },
+  { code: "1511", name: "生財器具－咖啡機磨豆機", type: "asset", active: true },
+  { code: "1215", name: "原料－包材耗材", type: "asset", active: true },
+  { code: "2133", name: "其他應付款-負責人代墊", type: "liability", active: true },
+  { code: "2134", name: "其他應付款-員工代墊", type: "liability", active: true },
+  { code: "2501", name: "長期借款", type: "liability", active: true },
+  { code: "6133", name: "雜項費用", type: "expense", active: true },
   { code: "1212", name: "存貨－乳品", type: "asset", hint: "鮮奶、燕麥奶", active: true },
   { code: "1521", name: "營業設備", type: "asset", active: true },
   { code: "4101", name: "銷貨收入－咖啡飲品", type: "revenue", active: true },
@@ -174,6 +181,60 @@ Deno.test("update_document：驗證、扣抵規則、只改待覆核", async () 
   // 已入帳不能改
   assert((await call(h, "update_document", { id: "doc_3", vendor_name: "x" })).isError);
   assertEquals(db.docs[2].vendor_name, undefined);
+});
+
+Deno.test("付款方式依科目表；拆分明細、申報代號、暫緩、收銀機稅額", async () => {
+  const db = fakeDb();
+  const h = createHandler(db);
+  const ctx = await call(h, "get_context", {});
+  assertMatch(ctx.content[0].text!, /2134 其他應付款-員工代墊/);
+  assert(!/2501/.test(ctx.content[0].text!.split("付款方式")[1].split("扣抵規則")[0]), "長期借款不是付款方式");
+  const badPay = await call(h, "update_document", { id: "doc_1", pay_account: "2501" });
+  assert(badPay.isError);
+  assertMatch(badPay.content[0].text!, /pay_account/);
+  assert(!(await call(h, "update_document", { id: "doc_1", pay_account: "2134" })).isError);
+  assertEquals(db.docs[0].pay_account, "2134");
+
+  // 一張照片兩張發票（訂金＋尾款），不可扣抵之固定資產
+  const two = await call(h, "update_document", {
+    id: "doc_1",
+    amount_total: 308000,
+    account: "1511",
+    buyer_tax_id: "12345675",
+    ded_code: "4",
+    tax_type: "3",
+    lines: [
+      { invoice_no: "QM10000001", account: "1511", amount: 92400, tax: 4400, ded_code: "4", tax_type: "3" },
+      { invoice_no: "qm-10000002", account: "1511", amount: 215600, tax: 10267, ded_code: "4", tax_type: "3" },
+    ],
+  });
+  assert(!two.isError, two.content[0].text);
+  const ex = db.docs[0].extra as Record<string, unknown>;
+  assertEquals((ex.lines as { invoice_no: string }[]).map((x) => x.invoice_no), ["QM10000001", "QM10000002"]);
+  assertEquals(ex.ded_code, "4");
+  assertEquals(db.docs[0].deductible, false);
+  assertEquals(db.docs[0].tax_amount, 14667);
+  assertEquals(db.docs[0].invoice_no, "QM10000001");
+  // 合計不符 → 不更新
+  const off = await call(h, "update_document", { id: "doc_1", lines: [{ account: "1511", amount: 100 }, { account: "6133", amount: 50 }] });
+  assert(off.isError);
+  assertMatch(off.content[0].text!, /合計/);
+  // 取消拆分、暫緩
+  await call(h, "update_document", { id: "doc_1", lines: [], hold: true });
+  assertEquals((db.docs[0].extra as Record<string, unknown>).lines, null);
+  assertEquals((db.docs[0].extra as Record<string, unknown>).hold, true);
+  const list = JSON.parse((await call(h, "list_pending_documents", {})).content[0].text!);
+  assertEquals(list.items[0].hold, true);
+
+  // 收銀機發票：載明本店統編、未印稅額 → 稅額＝總額÷1.05×5%
+  const r = buildPatch({ invoice_type: "收銀機發票", invoice_no: "QF10000007", buyer_tax_id: "12345675", amount_total: 130 }, ACCOUNTS, { tax_id: "12345675" }, { id: "x", status: "inbox", account: "6133" });
+  assertEquals(r.errors, []);
+  assertEquals(r.patch.tax_amount, 6);
+  assertEquals(r.patch.deductible, true);
+  // 公用事業載具發票號碼
+  const bb = buildPatch({ invoice_no: "BBX1234567" }, ACCOUNTS, {}, { id: "x", status: "inbox" });
+  assertEquals(bb.errors, []);
+  assertEquals(bb.patch.invoice_no, "BBX1234567");
 });
 
 Deno.test("buildPatch：稅額與總額不合理會提醒", () => {

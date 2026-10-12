@@ -34,7 +34,7 @@ export async function syncSales() {
 export async function syncPayouts() {
   const s = await getSettings();
   const payouts = (await store.all('payouts')).filter((p) => p.payout_date >= s.revenue_start);
-  return apply('payout', payouts.map((p) => payoutJournal(p, { bankAccount: s.bank_gl || '1103' })));
+  return apply('payout', payouts.map((p) => payoutJournal(p, { bankAccount: s.bank_gl || '1103', feeByInvoice: !!s.fee_by_invoice })));
 }
 
 export async function syncDepreciation() {

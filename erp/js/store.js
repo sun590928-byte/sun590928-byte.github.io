@@ -219,6 +219,16 @@ class LocalBackend {
     return [...map.values()].map((line) => JSON.parse(line));
   }
 
+  // 直接讀 IndexedDB 裡已寫入（加密）的內容，不經記憶體：用來確認修改真的存進去了
+  async readPersisted(coll) {
+    this.requireKey();
+    await this.flush();
+    const rec = await this.getRec(ENC, coll);
+    if (!rec) return [];
+    const text = await V.decryptText(this.key, rec, 'wuyue:c:' + coll);
+    return text.split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  }
+
   async putMany(coll, rows) {
     const map = await this.load(coll);
     const pk = pkOf(coll);
@@ -622,6 +632,21 @@ export const store = {
   },
   needsLogin() {
     return backend.kind === 'cloud' && !backend.session;
+  },
+  // 目前資料位置（顯示用）：雲端專案代號，或這台裝置
+  get location() {
+    if (backend.kind === 'cloud') {
+      const ref = (/^https:\/\/([^.]+)\./.exec(backend.cfg?.url || '') || [])[1] || '';
+      return { kind: 'cloud', ref, email: backend.session?.user?.email || '', label: `雲端資料庫（Supabase 專案 ${ref}）` };
+    }
+    return { kind: 'local', ref: '', email: '', label: '這台電腦的這個瀏覽器（本機模式）' };
+  },
+  // 不經快取，直接從資料來源重讀（確認修改是否真的存進去）
+  async fresh(coll) {
+    cache.delete(coll);
+    const rows = backend.kind === 'local' ? await local.readPersisted(coll) : await backend.all(coll);
+    cache.set(coll, Promise.resolve(rows));
+    return rows;
   },
   async all(coll) {
     if (!cache.has(coll)) cache.set(coll, backend.all(coll));

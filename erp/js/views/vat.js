@@ -1,10 +1,12 @@
 // 營業稅申報（401）工作表：雙月一期。銷項（POS 開立發票基礎、帳上銷項稅額、電子發票平台數字）、
 // 進項憑證清單（可否扣抵與原因）、稅額計算（留抵、退稅）、申報前檢查、結轉分錄與繳稅登錄、匯出 Excel。
 
-import { h, raw, mount, bindActions, fmt, toast, confirmBox, modal, badge, status, download, options, stat, dataTable } from '../ui.js';
+import { h, raw, mount, bindActions, fmt, toast, confirmBox, modal, badge, status, download, options, stat, dataTable, pickFiles } from '../ui.js';
 import { store } from '../store.js';
 import { getSettings, getAccounts, getProductIndex, isLocked } from '../state.js';
-import { periodInfo, periodsBetween, periodKeyOf, internalTargets, inputItems, assignPeriods, deductibility, posInvoiceBase, computeTax, settlementEntry, netMovement } from '../lib/vat.js';
+import { periodInfo, periodsBetween, periodKeyOf, internalTargets, inputItems, assignPeriods, deductibility, posInvoiceBase, computeTax, settlementEntry, netMovement, taxCodes, docParts, parseMediaFile, summarizeMedia, reconcileMedia, TAX_TYPES, DED_CODES } from '../lib/vat.js';
+import { payAccountsOf } from '../lib/coa.js';
+import { decodeBytes } from '../lib/csv.js';
 import { nextVoucherNo, validateEntry } from '../lib/ledger.js';
 import { accountMap } from '../lib/coa.js';
 import { addMonths, addDays, today, daysBetween, weekdayIndex, WEEKDAYS } from '../lib/dates.js';
@@ -69,9 +71,13 @@ export async function render(root, ctx) {
     const output = platformTax ?? bookOutput;
     // 進項
     const opts = { taxId: settings.tax_id, vatMode: settings.vat_mode };
-    const items = assignPeriods(inputItems(docs, einvoices), filings)
+    const assigned = assignPeriods(inputItems(docs, einvoices), filings);
+    const items = assigned
       .filter((it) => it.period === f.p)
-      .map((it) => ({ ...it, check: deductibility(it, opts) }));
+      .map((it) => {
+        const check = deductibility(it, opts);
+        return { ...it, check, ...taxCodes(it, check.ok) };
+      });
     const sum = (list, k) => round2(list.reduce((a, x) => a + (x[k] || 0), 0));
     const ok = items.filter((x) => x.check.ok);
     const exp = ok.filter((x) => x.use === 'expense');
@@ -80,7 +86,12 @@ export async function render(root, ctx) {
     const prev = filings.find((x) => x.id === addMonths(f.p, -2));
     const prevDefault = prev && FILED.has(prev.status) ? prev.cf || 0 : Math.max(0, balance(entries, '1262', addDays(info.start, -1)));
     const prevCf = filing.prev_cf ?? prevDefault;
-    const tax = computeTax({ output, inputExpense: sum(exp, 'tax'), inputAsset: sum(ast, 'tax'), prevCf });
+    const sysTax = computeTax({ output, inputExpense: sum(exp, 'tax'), inputAsset: sum(ast, 'tax'), prevCf });
+    // 已申報的期別：以申報紀錄（401 實際數字）為準；系統帳上數字另外保留供核對
+    const filedTax = FILED.has(filing.status) && filing.cf != null && filing.payable != null
+      ? { output: filing.output_tax ?? sysTax.output, inputExpense: filing.input_tax ?? 0, inputAsset: filing.input_asset_tax ?? 0, input: round2((filing.input_tax ?? 0) + (filing.input_asset_tax ?? 0)), prevCf: filing.prev_cf ?? 0, payable: filing.payable, refund: filing.refund ?? 0, cf: filing.cf, overpaid: round2((filing.refund ?? 0) + (filing.cf ?? 0)) }
+      : null;
+    const tax = filedTax || sysTax;
     const targets = internalTargets(info.due, { prepDay: settings.filing_prep_day ?? 10, targetDay: settings.filing_target_day ?? 12 });
     // 申報前檢查
     const pendingDocs = docs.filter((d) => ['inbox', 'reviewed'].includes(d.status) && (!d.doc_date || d.doc_date <= info.end));
@@ -109,7 +120,141 @@ export async function render(root, ctx) {
       { ok: Math.abs(outputDiff) <= Math.max(10, pos.tax * 0.002), warn: true, text: `帳上銷項稅額 ${fmt(bookOutput)}，POS 開立發票基礎 ${fmt(pos.tax)}${Math.abs(outputDiff) > 0.5 ? `（差 ${fmt(outputDiff)}，多為每日四捨五入）` : ''}` },
       { ok: !prevOpen, warn: true, text: prevOpen ? '前期尚未標記申報（留抵與順延憑證可能不正確）' : '前期已申報' },
     ];
-    return { info, filing, pos, lines, bookOutput, bookInput, output, platformSales, platformTax, items, ok, exp, ast, sum, prevCf, prevDefault, tax, targets, checks };
+    // 已匯入申報媒體檔：逐張核對（系統所有憑證，含尚未入帳者）
+    const recon = filing.filed_inputs?.length ? reconcileMedia(filing.filed_inputs, allParts(assigned), { periodKey: f.p }) : null;
+    return { info, filing, pos, lines, bookOutput, bookInput, output, platformSales, platformTax, items, ok, exp, ast, sum, prevCf, prevDefault, tax, sysTax, filedTax, targets, checks, recon };
+  }
+
+  // 系統內所有憑證明細（含待入帳），供申報媒體檔核對
+  function allParts(assigned) {
+    const opts = { taxId: settings.tax_id, vatMode: settings.vat_mode };
+    const periodOf = new Map(assigned.map((it) => [it.id, it.period]));
+    const out = [];
+    for (const d of docs) {
+      if (d.status === 'ignored' || d.kind === 'payout_statement') continue;
+      for (const p of docParts(d)) {
+        const item = { ...p, buyer_tax_id: d.buyer_tax_id, invoice_type: d.invoice_type, deductible: p.deductible ?? d.deductible };
+        const ok = deductibility(item, opts).ok;
+        out.push({ ...p, ...taxCodes(item, ok), doc_id: d.id, status: d.status, ex: round2(p.total - p.tax), period: periodOf.get(p.key) || null, label: `${d.doc_date || ''} ${d.vendor_name || d.original_name || ''}` });
+      }
+    }
+    for (const e of einvoices) {
+      if (e.voided) continue;
+      const item = { invoice_no: e.invoice_no, account: e.account || e.suggested_account, tax: Number(e.tax) || 0, buyer_tax_id: e.buyer_tax_id, invoice_type: '電子發票', deductible: e.deductible };
+      const ok = deductibility(item, opts).ok;
+      out.push({ key: e.id, invoice_no: e.invoice_no, total: Number(e.total) || 0, tax: Number(e.tax) || 0, ex: round2((Number(e.total) || 0) - (Number(e.tax) || 0)), ...taxCodes(item, ok), status: e.entry_id ? 'posted' : 'reviewed', period: periodOf.get(e.id) || null, label: `${e.date || ''} ${e.seller_name || ''}（電子發票）` });
+    }
+    return out;
+  }
+
+  function reconCard(c) {
+    const r = c.recon;
+    if (!r) return '';
+    const m = c.filing.media || {};
+    const bad = r.matched.filter((x) => x.diffs.length);
+    const waiting = r.matched.filter((x) => x.part.status !== 'posted');
+    const fine = r.matched.length - bad.length - waiting.filter((x) => !x.diffs.length).length;
+    const li = (list, fn) => (list.length ? h`<ul class="plain-list" style="max-height:220px;overflow:auto">${list.map((x) => h`<li>${fn(x)}</li>`)}</ul>` : h`<p class="muted">（無）</p>`);
+    const fl = (x) => `${x.invoice_no}｜賣方 ${x.seller}｜${fmt(x.amount)}${x.tax ? `＋稅 ${fmt(x.tax)}` : ''}｜課稅別 ${x.tax_type}・扣抵代號 ${x.ded_code}`;
+    return h`<div class="card" style="margin-bottom:16px">
+      <div class="card-head"><h2>申報媒體檔核對</h2><span class="card-note">${m.file_name || ''}・匯入於 ${(m.imported_at || '').slice(0, 10)}・申報進項 ${c.filing.filed_inputs.length} 張</span></div>
+      <div class="stack" style="gap:6px">
+        <div class="row" style="gap:8px">${status('good', '')}<span>申報與系統一致且已入帳：${fine} 張</span></div>
+        <div class="row" style="gap:8px">${waiting.length ? status('warn', '') : status('good', '')}<span>申報有、系統還沒入帳：${waiting.length} 張（入帳後自動歸到這一期）</span></div>
+        <div class="row" style="gap:8px">${bad.length ? status('bad', '') : status('good', '')}<span>金額或扣抵代號不一致：${bad.length} 張</span></div>
+        <div class="row" style="gap:8px">${r.filedOnly.length ? status('warn', '') : status('good', '')}<span>申報有、系統找不到這張憑證：${r.filedOnly.length} 張（請上傳照片或匯入電子發票）</span></div>
+        <div class="row" style="gap:8px">${r.bookedOnly.length ? status('warn', '') : status('good', '')}<span>系統本期已入帳、但申報檔沒有：${r.bookedOnly.length} 張（會順延到下一期申報）</span></div>
+      </div>
+      ${bad.length ? h`<h3 style="font-size:14px;margin:12px 0 4px">不一致</h3>${li(bad, (x) => `${x.filed.invoice_no}｜${x.part.label}｜${x.diffs.join('；')}`)}` : ''}
+      ${waiting.length ? h`<h3 style="font-size:14px;margin:12px 0 4px">還沒入帳</h3>${li(waiting, (x) => `${x.filed.invoice_no}｜${x.part.label}${x.diffs.length ? '｜' + x.diffs.join('；') : ''}`)}` : ''}
+      ${r.filedOnly.length ? h`<h3 style="font-size:14px;margin:12px 0 4px">系統找不到</h3>${li(r.filedOnly, fl)}` : ''}
+      ${r.bookedOnly.length ? h`<h3 style="font-size:14px;margin:12px 0 4px">本期已入帳但未申報</h3>${li(r.bookedOnly, (x) => `${x.invoice_no}｜${x.label}｜${fmt(x.total)}`)}` : ''}
+    </div>`;
+  }
+
+  // 匯入財政部申報媒體檔（TXT）：標記該期已申報、保存申報的進項清單，之後逐張核對
+  async function importMedia() {
+    const [file] = await pickFiles({ accept: '.txt,.TXT,text/plain', multiple: false });
+    if (!file) return;
+    const { text } = decodeBytes(new Uint8Array(await file.arrayBuffer()));
+    const { rows, errors } = parseMediaFile(text);
+    if (!rows.length) return toast('讀不到申報資料：請選財政部申報系統產生的「統編.TXT」媒體檔', 'error', 7000);
+    const sm = summarizeMedia(rows);
+    if (sm.periods.length !== 1) return toast(`這個檔案含 ${sm.periods.length} 個申報期別，請一次匯入一期`, 'error');
+    f.p = sm.periods[0];
+    ctx.setParams({ p: f.p });
+    const info = periodInfo(f.p);
+    const cur = filings.find((x) => x.id === f.p) || { id: f.p, period_from: info.from, period_to: info.to, status: 'draft' };
+    const prevRec = filings.find((x) => x.id === addMonths(f.p, -2));
+    const prevCf = cur.prev_cf ?? (prevRec && FILED.has(prevRec.status) ? prevRec.cf || 0 : 0);
+    const inputs = rows.filter((x) => x.fmt[0] === '2').map(({ fmt: fm, ym, seller, invoice_no, amount, tax_type, tax, ded_code }) => ({ fmt: fm, ym, seller, invoice_no, amount, tax_type, tax, ded_code }));
+    const num = (n) => `<input type="number" name="${n}" class="cell num" style="width:120px">`;
+    const r = await modal({
+      title: `匯入申報媒體檔：${info.label}`,
+      wide: true,
+      body: h`<p>${file.name}：進項 ${sm.inputs.count} 張、銷項 ${sm.outputs.count} 張（作廢 ${sm.outputs.voided}、空白 ${sm.outputs.blank}）${errors.length ? `；${errors.length} 列格式不符已略過` : ''}。</p>
+        <table class="fin" style="margin:8px 0">
+          <tr><td>進項：可扣抵進貨及費用（扣抵代號 1）</td><td class="amt">${fmt(sm.inputs.expense.amount)}／稅 ${fmt(sm.inputs.expense.tax)}</td></tr>
+          <tr><td>進項：可扣抵固定資產（扣抵代號 2）</td><td class="amt">${fmt(sm.inputs.asset.amount)}／稅 ${fmt(sm.inputs.asset.tax)}</td></tr>
+          <tr><td>進項：不可扣抵（扣抵代號 3、4）</td><td class="amt">${fmt(sm.inputs.nonDeductible.amount)}</td></tr>
+          <tr><td>銷項：三聯（有買方統編）</td><td class="amt">${fmt(sm.outputs.b2b.amount)}／稅 ${fmt(sm.outputs.b2b.tax)}</td></tr>
+          <tr><td>銷項：二聯（含稅）</td><td class="amt">${fmt(sm.outputs.b2c.amountIncl)}</td></tr>
+        </table>
+        <p class="muted" style="font-size:12.5px">下面的數字已依媒體檔估算，請對照 401 申報書上的實際數字修改後再存（銷項二聯以含稅 ÷ 1.05 估算）。</p>
+        <div class="form-grid">
+          <label class="field"><span>應稅銷售額（未稅）</span>${raw(num('s'))}</label>
+          <label class="field"><span>銷項稅額</span>${raw(num('o'))}</label>
+          <label class="field"><span>得扣抵進項稅額：進貨及費用</span>${raw(num('ie'))}</label>
+          <label class="field"><span>得扣抵進項稅額：固定資產</span>${raw(num('ia'))}</label>
+          <label class="field"><span>上期累積留抵稅額</span>${raw(num('pc'))}</label>
+          <label class="field"><span>申報日期</span><input type="date" name="fd" value="${cur.filed_on || ''}"></label>
+        </div>`,
+      onMount: (dlg) => {
+        const set = (n, v) => (dlg.querySelector(`[name=${n}]`).value = v);
+        set('s', cur.platform_sales_ex ?? sm.outputs.salesEx);
+        set('o', cur.platform_output_tax ?? sm.outputs.tax);
+        set('ie', sm.inputs.expense.tax);
+        set('ia', sm.inputs.asset.tax);
+        set('pc', prevCf);
+      },
+      actions: [
+        { label: '取消', value: null },
+        {
+          label: '標記已申報並保存清單',
+          primary: true,
+          value: (dlg) => {
+            const g = (n) => Number(dlg.querySelector(`[name=${n}]`).value) || 0;
+            return { s: g('s'), o: g('o'), ie: g('ie'), ia: g('ia'), pc: g('pc'), fd: dlg.querySelector('[name=fd]').value || today() };
+          },
+        },
+      ],
+    });
+    if (!r) return;
+    const tt = computeTax({ output: r.o, inputExpense: r.ie, inputAsset: r.ia, prevCf: r.pc });
+    const filedNos = new Set(inputs.map((x) => x.invoice_no));
+    const claimed = [...new Set([...(cur.claimed || []), ...inputItems(docs, einvoices).filter((it) => it.invoice_no && filedNos.has(it.invoice_no)).map((it) => it.id)])];
+    await store.put('tax_filings', {
+      ...cur,
+      status: cur.status === 'paid' ? 'paid' : 'filed',
+      filed_on: r.fd,
+      platform_sales_ex: r.s,
+      platform_output_tax: r.o,
+      sales_ex: r.s,
+      output_tax: tt.output,
+      input_tax: tt.inputExpense,
+      input_asset_tax: tt.inputAsset,
+      prev_cf: tt.prevCf,
+      payable: tt.payable,
+      refund: tt.refund,
+      cf: tt.cf,
+      claimed,
+      filed_inputs: inputs,
+      media: { file_name: file.name, imported_at: new Date().toISOString(), summary: sm },
+      updated_at: new Date().toISOString(),
+    });
+    filings = await store.all('tax_filings');
+    toast(`${info.label} 已標記申報：${tt.payable ? `應繳 ${fmt(tt.payable)}` : `累積留抵 ${fmt(tt.cf)}`}；下面列出與系統憑證的核對結果`, 'good', 9000);
+    draw();
   }
 
   async function draw() {
@@ -135,6 +280,7 @@ export async function render(root, ctx) {
       h`<div class="toolbar no-print">
         <label class="field"><span>申報期別</span><select data-act="period">${options(periods.map((p) => [p.key, `${p.label}（${FILED.has(filings.find((x) => x.id === p.key)?.status) ? '已申報' : '未申報'}）`]), f.p)}</select></label>
         <span class="spacer"></span>
+        <button class="btn" data-act="media">匯入已申報媒體檔（TXT）</button>
         <button class="btn" data-act="xlsx">匯出 Excel</button>
         <button class="btn" data-act="print">列印</button>
       </div>
@@ -143,7 +289,7 @@ export async function render(root, ctx) {
         ${info.start < settings.revenue_start && info.end >= settings.revenue_start ? h`<br>營收起算日 ${settings.revenue_start} 之前的銷售與進項不在系統明細內：本期請以電子發票平台數字申報，起算日前的銷項／進項稅額可列入<a href="#/journal">期初開帳</a>（2131、1261），結轉分錄才會一致。` : ''}</p></div>
       <div class="stats">
         ${stat('銷項稅額', '$' + fmt(tax.output), c.platformTax !== null ? '電子發票平台' : '帳上（2131）')}
-        ${stat('得扣抵進項稅額', '$' + fmt(tax.input), `進貨費用 ${fmt(tax.inputExpense)}・固定資產 ${fmt(tax.inputAsset)}`)}
+        ${stat('得扣抵進項稅額', '$' + fmt(tax.input), c.filedTax ? `依申報紀錄；系統帳上 ${fmt(c.sysTax.input)}` : `進貨費用 ${fmt(tax.inputExpense)}・固定資產 ${fmt(tax.inputAsset)}`)}
         ${stat('上期累積留抵', '$' + fmt(tax.prevCf))}
         ${tax.payable ? stat('本期應繳稅額', '$' + fmt(tax.payable), '', 'hero') : stat('本期累積留抵', '$' + fmt(tax.cf), tax.refund ? `另可退稅 ${fmt(tax.refund)}` : '溢付，留待下期扣抵', 'hero')}
       </div>
@@ -218,6 +364,7 @@ export async function render(root, ctx) {
           </ol>
         </div>
       </div>
+      ${reconCard(c)}
       <div class="card">
         <div class="card-head"><h2>本期進項憑證</h2><span class="card-note">${c.items.length} 張・可扣抵 ${c.ok.length} 張${nd.length ? `・不可扣抵 ${nd.length} 張` : ''}</span></div>
         <div id="items"></div>
@@ -237,6 +384,8 @@ export async function render(root, ctx) {
         { key: 'use', label: '類別', fmt: (v) => (v === 'asset' ? '固定資產' : '進貨及費用') },
         { key: 'ex', label: '未稅金額', align: 'num', fmt: (v) => fmt(v) },
         { key: 'tax', label: '稅額', align: 'num', fmt: (v) => fmt(v) },
+        { key: 'tax_type', label: '課稅別', fmt: (v) => `${v} ${TAX_TYPES[v] || ''}` },
+        { key: 'ded_code', label: '扣抵代號', fmt: (v) => h`<span title="${DED_CODES[v] || ''}">${v}</span>` },
         { key: 'check', label: '可否扣抵', sort: (r) => (r.check.ok ? 0 : 1), csv: (v) => (v.ok ? '可扣抵' : '不可扣抵：' + v.reason), fmt: (v) => (v.ok ? status('good', '可扣抵') : status('na', v.reason)) },
       ],
     });
@@ -303,7 +452,7 @@ export async function render(root, ctx) {
     },
     settle: async () => {
       const c = compute();
-      const e0 = settlementEntry(f.p, { bookOutput: c.bookOutput, bookInput: c.tax.input, tax: c.tax });
+      const e0 = settlementEntry(f.p, { bookOutput: c.bookOutput, bookInput: c.filedTax ? c.bookInput : c.tax.input, tax: c.tax });
       // 期末月份已結帳鎖定時，結轉分錄記在申報日（或今天）
       if (isLocked(settings, e0.date)) {
         const alt = [c.filing.filed_on, today()].find((d) => d && d > e0.date && !isLocked(settings, d));
@@ -330,7 +479,7 @@ export async function render(root, ctx) {
         body: h`<div class="form-grid">
           <label class="field"><span>繳納日期</span><input type="date" name="d" value="${today()}"></label>
           <label class="field"><span>金額</span><input type="number" name="a" value="${c.tax.payable}"></label>
-          <label class="field"><span>付款帳戶</span><select name="acc">${options([['1103', '1103 銀行存款'], ['1101', '1101 庫存現金'], ['2191', '2191 業主往來（老闆代墊）']], settings.bank_gl || '1103')}</select></label>
+          <label class="field"><span>付款帳戶</span><select name="acc">${options(payAccountsOf(accounts, settings.bank_gl || '1103'), settings.bank_gl || '1103')}</select></label>
         </div><p class="muted" style="font-size:12.5px;margin-top:8px">分錄：借 2132 應付營業稅／貸 付款帳戶。請先產生結轉分錄（應付營業稅才會有餘額）。</p>`,
         actions: [
           { label: '取消', value: null },
@@ -373,14 +522,15 @@ export async function render(root, ctx) {
         ['帳上銷項稅額（2131 本期）', c.bookOutput],
         ['電子發票平台銷項稅額', c.platformTax ?? ''],
       ];
-      const list = [['日期', '發票號碼', '賣方', '賣方統編', '科目', '類別', '未稅金額', '稅額', '可否扣抵', '說明'], ...c.items.map((x) => [x.date, x.invoice_no, x.vendor, x.vendor_tax_id, `${x.account} ${accMap.get(x.account)?.name || ''}`, x.use === 'asset' ? '固定資產' : '進貨及費用', x.ex, x.tax, x.check.ok ? '可扣抵' : '不可扣抵', x.check.reason + (x.late ? '（延後扣抵）' : '')])];
+      const list = [['日期', '發票號碼', '賣方', '賣方統編', '科目', '類別', '未稅金額', '稅額', '課稅別', '扣抵代號', '可否扣抵', '說明'], ...c.items.map((x) => [x.date, x.invoice_no, x.vendor, x.vendor_tax_id, `${x.account} ${accMap.get(x.account)?.name || ''}`, x.use === 'asset' ? '固定資產' : '進貨及費用', x.ex, x.tax, x.tax_type, x.ded_code, x.check.ok ? '可扣抵' : '不可扣抵', x.check.reason + (x.late ? '（延後扣抵）' : '')])];
       const checks = [['檢查項目', '結果'], ...c.checks.map((k) => [k.text, k.ok ? '通過' : '待處理'])];
       download(`營業稅401工作表_${c.info.label.replace(/\s/g, '')}.xlsx`, makeXlsx([
         { name: '稅額計算', rows: calc, widths: [34, 16], header: 0, bold: [0, 3] },
-        { name: '進項憑證', rows: list, widths: [12, 14, 22, 11, 24, 12, 12, 10, 10, 36] },
+        { name: '進項憑證', rows: list, widths: [12, 14, 22, 11, 24, 12, 12, 10, 8, 8, 10, 36] },
         { name: '申報前檢查', rows: checks, widths: [70, 10] },
       ]));
     },
+    media: () => importMedia(),
     print: () => window.print(),
   });
   draw();

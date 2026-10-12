@@ -29,6 +29,7 @@ export const DEFAULT_SETTINGS = {
   locked_months: [],
   bank_gl: '1103',
   unknown_payment_account: '1101',
+  fee_by_invoice: true, // 金流手續費以綠界／LINE Pay 開的發票入帳（貸 應收帳款－未撥款項），撥款分錄不另計手續費
 };
 
 let settingsCache = null;

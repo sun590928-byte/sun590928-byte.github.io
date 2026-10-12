@@ -109,6 +109,7 @@ export async function render(root) {
         <div class="row" style="margin-top:12px;gap:18px">
           <label class="check"><input type="checkbox" name="vat_confirmed" ${s.vat_confirmed ? raw('checked') : ''}> 已確認營業稅類型</label>
           <label class="check"><input type="checkbox" name="filing_self" ${s.filing_self ? raw('checked') : ''}> 自行申報</label>
+          <label class="check" title="綠界、LINE Pay 從撥款中扣的手續費，用他們開的發票入帳（借 手續費、進項稅額／貸 應收帳款－未撥款項）；撥款分錄只記實撥金額"><input type="checkbox" name="fee_by_invoice" ${s.fee_by_invoice ? raw('checked') : ''}> 金流手續費以發票入帳</label>
           <label class="check"><input type="checkbox" name="has_employees" ${s.has_employees ? raw('checked') : ''}> 有聘僱員工</label>
           <label class="check"><input type="checkbox" name="pays_rent_to_individual" ${s.pays_rent_to_individual ? raw('checked') : ''}> 店租付給個人房東</label>
           <label class="check"><input type="checkbox" name="owns_property" ${s.owns_property ? raw('checked') : ''}> 有自有房地</label>
@@ -221,6 +222,7 @@ export async function render(root) {
         cutoff_hour: Number(g('cutoff_hour').value) || 0,
         bank_gl: g('bank_gl').value.trim() || '1103',
         unknown_payment_account: g('unknown_payment_account').value.trim() || '1101',
+        fee_by_invoice: g('fee_by_invoice').checked,
         gross_margin_est: Number(g('gross_margin_est').value) || 0.7,
         vat_confirmed: g('vat_confirmed').checked,
         filing_self: g('filing_self').checked,
@@ -230,7 +232,7 @@ export async function render(root) {
         has_vehicle: g('has_vehicle').checked,
       };
       if (patch.filing_prep_day > patch.filing_target_day) patch.filing_prep_day = patch.filing_target_day;
-      const needSync = patch.vat_mode !== s.vat_mode || patch.prepaid_vat !== (s.prepaid_vat || 'sale') || patch.revenue_start !== s.revenue_start || patch.bank_gl !== s.bank_gl || patch.unknown_payment_account !== s.unknown_payment_account;
+      const needSync = patch.vat_mode !== s.vat_mode || patch.prepaid_vat !== (s.prepaid_vat || 'sale') || patch.revenue_start !== s.revenue_start || patch.bank_gl !== s.bank_gl || patch.unknown_payment_account !== s.unknown_payment_account || patch.fee_by_invoice !== !!s.fee_by_invoice;
       s = await saveSettings(patch);
       if (needSync) {
         setBusy(true, '重新產生自動分錄…');
