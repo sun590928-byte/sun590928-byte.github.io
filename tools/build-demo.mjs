@@ -50,7 +50,7 @@ swap('<script type="module" src="js/main.js"></script>', `<script type="module">
 // Artifact 版：只要 head 裡的 meta／title／style 與 body 內容（外殼由發佈端提供；CSP 也由發佈端負責）
 const head = /<head>([\s\S]*?)<\/head>/.exec(html)[1].replace(/<meta http-equiv="Content-Security-Policy"[^>]*>\n?/, '').replace(/<meta charset="utf-8">\n?|<meta name="viewport"[^>]*>\n?/g, '');
 const body = /<body>([\s\S]*?)<\/body>/.exec(html)[1];
-const artifact = `${head.trim()}\n${body.trim()}\n`;
+const artifact = `${head.trim().replace('<title>午月營運帳務｜作品集預覽版</title>', '<title>午月營運帳務系統</title>')}\n${body.trim()}\n`;
 
 // ── 安全掃描：不能出現正式環境的金鑰、專案代號、店家真實資料
 const env = await readFile(p('.env'), 'utf8').catch(() => '');
