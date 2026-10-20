@@ -19,3 +19,4 @@ supabase/.temp/
 supabase/.branches/
 .env
 .env.*
+dist-demo/

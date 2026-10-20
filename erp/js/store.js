@@ -549,7 +549,8 @@ class CloudBackend {
 
 const listeners = new Set();
 const cache = new Map();
-const local = new LocalBackend();
+// 作品集預覽版（tools/build-demo.mjs）會在載入前放一個記憶體後端進來；正式版沒有這個全域變數
+const local = globalThis.__ERP_DEMO__?.createBackend?.() || new LocalBackend();
 let backend = local;
 
 export function cloudConfig() {

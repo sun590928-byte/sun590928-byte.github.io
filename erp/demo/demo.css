@@ -1,0 +1,13 @@
+/* 作品集預覽版專用 */
+#lock-btn { display: none; }
+.demo-badge { display: inline-block; margin-left: 4px; padding: 0 7px; border-radius: 999px; font-size: 11px; line-height: 18px; background: var(--terra); color: #fff; vertical-align: 1px; }
+#demo-loading { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; background: var(--paper, #f6f3ee); color: var(--ink, #2e3a4f); font-size: 15px; letter-spacing: .04em; }
+.demo-tour { position: fixed; right: 18px; bottom: 18px; z-index: 80; width: min(360px, calc(100vw - 32px)); max-height: calc(100vh - 36px); overflow: auto; background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 14px 16px 12px; font-size: 13px; }
+.demo-tour-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 14px; }
+.demo-tour p { margin: 0 0 8px; color: var(--text-2); line-height: 1.6; }
+.demo-tour ol { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+.demo-tour li a { font-weight: 600; color: var(--ink); margin-right: 6px; }
+.demo-tour li span { color: var(--mute); }
+.demo-chip { position: fixed; right: 18px; bottom: 18px; z-index: 80; border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 999px; padding: 6px 14px; font-size: 13px; box-shadow: var(--shadow); cursor: pointer; }
+#toasts { bottom: 18px; right: 390px; }
+@media (max-width: 760px) { #toasts { right: 16px; bottom: 90px; } }

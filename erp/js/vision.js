@@ -4,10 +4,13 @@
 // 程式與語言資料都放在本站 vendor/，第一次使用時下載（約 10 MB），之後瀏覽器會快取。
 
 const BASE = new URL('../vendor/', import.meta.url).href;
+// 作品集預覽版（單一 HTML 檔）：QR 程式由建置時打包進來，不從 vendor/ 下載；沒有文字辨識
+const DEMO = globalThis.__ERP_DEMO__;
 
 let zxingP = null;
 function zxing() {
-  zxingP ||= import(BASE + 'zxing/reader.js').then(async (m) => {
+  zxingP ||= (DEMO?.loadZxing ? DEMO.loadZxing() : import(BASE + 'zxing/reader.js')).then(async (m) => {
+    if (DEMO?.loadZxing) return m;
     await m.prepareZXingModule({ overrides: { locateFile: (path, prefix) => (path.endsWith('.wasm') ? BASE + 'zxing/' + path : prefix + path) }, fireImmediately: true });
     return m;
   });
@@ -20,6 +23,7 @@ function zxing() {
 let ocrP = null;
 let ocrIdle = null;
 function ocrWorker() {
+  if (DEMO) return Promise.reject(new Error('預覽版沒有內建文字辨識（正式版會在瀏覽器裡辨識）'));
   ocrP ||= import(BASE + 'tesseract/tesseract.esm.min.js').then(({ default: T }) =>
     T.createWorker(['chi_tra', 'eng'], 1, {
       workerPath: BASE + 'tesseract/worker.min.js',

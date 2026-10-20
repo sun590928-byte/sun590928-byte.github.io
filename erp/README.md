@@ -192,6 +192,8 @@
 node --test tests/*.test.mjs                               # 單元測試（加密、營業稅、帳務引擎、匯入、品項比對…）
 NODE_PATH=$(npm root -g) node tests/e2e.mjs /tmp/shots/    # 以 Chromium 實際操作並截圖（需 playwright）
 node tools/gen-schema.mjs                                  # 修改 erp/js/schema.js 後重新產生 SQL
+NODE_PATH=$(npm root -g) node tools/build-demo.mjs         # 作品集預覽版：dist-demo/午月ERP預覽版.html（單一檔、虛構資料、不連網路；需 esbuild）
+NODE_PATH=$(npm root -g) node tests/demo.mjs               # 預覽版測試（零網路請求、各頁可開、本機辨識）
 deno test -A supabase/functions/erp-mcp/test.ts            # Claude 連接器（金鑰、JSON-RPC、四個工具、拆分與申報代號）
 ```
 
