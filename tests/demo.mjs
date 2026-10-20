@@ -3,7 +3,7 @@
 
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -97,6 +97,19 @@ try {
   await page.waitForSelector('.toast >> text=預覽版沒有', { timeout: 5000 });
   assert(network.length === 0, '有網路請求：' + network.slice(0, 5).join(', '));
   console.log('網路請求：0');
+
+  // 放進別的網頁的框裡（作品集網站、Artifact）：沙盒、不同來源、不能用儲存空間也要能顯示
+  const framed = await browser.newPage({ viewport: { width: 1280, height: 860 } });
+  framed.on('pageerror', (e) => errors.push('iframe pageerror: ' + e.message));
+  await framed.setContent('<!doctype html><title>作品集</title><body style="margin:0"><iframe id="f" sandbox="allow-scripts allow-popups" style="width:100%;height:100vh;border:0"></iframe></body>');
+  const html = await readFile(FILE, 'utf8');
+  await framed.evaluate((h) => (document.querySelector('#f').srcdoc = h), html);
+  const frame = await (await framed.waitForSelector('#f')).contentFrame();
+  await frame.waitForSelector('#nav-links a', { timeout: 30000 });
+  await frame.waitForFunction(() => !document.querySelector('#demo-loading') && document.documentElement.style.display !== 'none', null, { timeout: 30000 });
+  assert((await frame.textContent('#view')).includes('營業收入'), '框裡的儀表板有資料');
+  await framed.screenshot({ path: join(OUT, `${String(++n).padStart(2, '0')}-in-iframe.png`) });
+  console.log('放進框裡（沙盒、無儲存空間）：可正常顯示');
 } catch (e) {
   errors.push('test: ' + e.message);
   await shot('failure', true).catch(() => {});

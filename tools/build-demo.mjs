@@ -31,7 +31,9 @@ const res = await build({
 let js = res.outputFiles[0].text.replace(/<\/script/gi, '<\\/script').replace(/<!--/g, '<\\!--');
 
 const css = (await readFile(p('erp/app.css'), 'utf8')) + '\n' + (await readFile(p('erp/demo/demo.css'), 'utf8'));
-const theme = await readFile(p('erp/js/theme.js'), 'utf8');
+// 正式版的 theme.js 會在被別的網頁框起來時把整頁藏起來（防點擊劫持）；
+// 預覽版就是要放進作品集網站、Artifact 的框裡，所以只保留記住深淺色的部分
+const theme = "(function(){try{var t=localStorage.getItem('wuyue-erp:theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();";
 let html = await readFile(p('erp/index.html'), 'utf8');
 
 // 網路一律不准（只有頁面自己產生的 blob:、data:）
