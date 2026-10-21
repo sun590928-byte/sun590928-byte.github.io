@@ -5,7 +5,6 @@ import { h, raw, mount, bindActions, fmt, toast, confirmBox, modal, badge, statu
 import { store } from '../store.js';
 import { getSettings, getAccounts, getProductIndex, isLocked } from '../state.js';
 import { periodInfo, periodsBetween, periodKeyOf, internalTargets, inputItems, assignPeriods, deductibility, posInvoiceBase, computeTax, settlementEntry, netMovement, taxCodes, docParts, parseMediaFile, summarizeMedia, reconcileMedia, TAX_TYPES, DED_CODES } from '../lib/vat.js';
-import { payAccountsOf } from '../lib/coa.js';
 import { decodeBytes } from '../lib/csv.js';
 import { nextVoucherNo, validateEntry } from '../lib/ledger.js';
 import { accountMap } from '../lib/coa.js';
@@ -14,7 +13,7 @@ import { round2 } from '../lib/money.js';
 import { uid } from '../lib/text.js';
 import { makeXlsx } from '../lib/xlsxw.js';
 import { VOID_REASONS } from '../lib/pos.js';
-import { reportHead } from './_shared.js';
+import { reportHead, payAccountSelect } from './_shared.js';
 
 const md = (ymd) => `${Number(ymd.slice(5, 7))}/${Number(ymd.slice(8))}（${WEEKDAYS[weekdayIndex(ymd)]}）`;
 const FILED = new Set(['filed', 'paid']);
@@ -479,7 +478,7 @@ export async function render(root, ctx) {
         body: h`<div class="form-grid">
           <label class="field"><span>繳納日期</span><input type="date" name="d" value="${today()}"></label>
           <label class="field"><span>金額</span><input type="number" name="a" value="${c.tax.payable}"></label>
-          <label class="field"><span>付款帳戶</span><select name="acc">${options(payAccountsOf(accounts, settings.bank_gl || '1103'), settings.bank_gl || '1103')}</select></label>
+          <label class="field"><span>付款帳戶</span>${payAccountSelect(accounts, settings.bank_gl || '1103', 'name="acc"')}</label>
         </div><p class="muted" style="font-size:12.5px;margin-top:8px">分錄：借 2132 應付營業稅／貸 付款帳戶。請先產生結轉分錄（應付營業稅才會有餘額）。</p>`,
         actions: [
           { label: '取消', value: null },

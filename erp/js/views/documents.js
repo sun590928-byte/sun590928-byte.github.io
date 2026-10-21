@@ -11,10 +11,10 @@ import { uid } from '../lib/text.js';
 import { makeZip } from '../lib/zip.js';
 import { fnv1a } from '../lib/text.js';
 import { deductibility, taxCodes, impliedTax, docParts, FIXED_ASSET_ACCOUNTS, TAX_TYPES, DED_CODES, normalizeInvoiceNo, INVOICE_NO_RE } from '../lib/vat.js';
-import { payAccountsOf, payAccountForFolder, STATEMENT_FOLDER, ASSET_CATEGORIES } from '../lib/coa.js';
+import { payAccountForFolder, STATEMENT_FOLDER, ASSET_CATEGORIES } from '../lib/coa.js';
 import { round2 } from '../lib/money.js';
 import { today } from '../lib/dates.js';
-import { accountSelect } from './_shared.js';
+import { accountSelect, payAccountSelect } from './_shared.js';
 import { syncPayouts, syncDepreciation } from '../sync.js';
 import { createDocuments, archivePatch, pickDocFiles, isDocFile, previewDocument } from '../attach.js';
 import { recognizeDocuments, isRecognizing, stopRecognizing } from '../recognize.js';
@@ -463,7 +463,7 @@ export async function render(root, ctx) {
 
   // 明細拆分：一張照片多張發票（例如訂金＋尾款），或一筆款項分屬多個科目（例如代墊收據 7 張）
   async function editLines(d) {
-    const accs = accounts.filter((a) => ['asset', 'expense', 'cogs', 'nonop_expense', 'liability'].includes(a.type));
+    const accs = accounts; // 全部會計項目都可選
     const start = d.lines?.length
       ? d.lines
       : [{ invoice_no: d.invoice_no || '', account: d.account || '', amount: d.amount_total ?? '', tax: d.tax_amount || '', tax_type: d.tax_type || '', ded_code: d.ded_code || '', memo: d.summary || '' }];
@@ -560,8 +560,8 @@ export async function render(root, ctx) {
           <label>發票號碼<input type="text" name="invoice_no" value="${d.invoice_no || ''}" ${dis}></label>
           <label>稅額（可扣抵）<input type="number" name="tax_amount" value="${d.tax_amount ?? ''}" ${dis}></label>
           <label class="full">摘要（品項）<input type="text" name="summary" value="${d.summary || ''}" ${dis}></label>
-          <label class="full">會計項目${accountSelect(accounts.filter((a) => ['asset', 'expense', 'cogs', 'nonop_expense', 'liability'].includes(a.type)), d.account, `name="account" ${ro ? 'disabled' : ''}`)}</label>
-          <label class="full">付款方式<select name="pay_account" ${dis}>${options(payAccountsOf(accounts, d.pay_account || '1101'), d.pay_account || '1101')}</select></label>
+          <label class="full">會計項目${accountSelect(accounts, d.account, `name="account" ${ro ? 'disabled' : ''}`)}</label>
+          <label class="full">付款方式${payAccountSelect(accounts, d.pay_account || '1101', `name="pay_account" ${ro ? 'disabled' : ''}`)}</label>
           <label class="full check" style="display:flex"><input type="checkbox" name="deductible" ${(d.deductible ?? Number(d.tax_amount) > 0) ? raw('checked') : ''} ${dis}> 三聯式／載明本店統編（進項稅額可扣抵）</label>
           ${d.lines?.length ? '' : h`<label>課稅別<select name="tax_type" ${dis}>${options([['', `自動（${ev.parts[0].tax_type} ${TAX_TYPES[ev.parts[0].tax_type]}）`], ...Object.entries(TAX_TYPES).map(([k, v]) => [k, `${k} ${v}`])], d.tax_type || '')}</select></label>
           <label>扣抵代號<select name="ded_code" ${dis}>${options([['', `自動（${ev.parts[0].ded_code}）`], ...Object.entries(DED_CODES).map(([k, v]) => [k, `${k} ${v}`])], d.ded_code || '')}</select></label>`}
@@ -646,7 +646,7 @@ export async function render(root, ctx) {
         { key: 'items', label: '品項', fmt: (v) => (v || []).map((i) => i.name).slice(0, 4).join('、') },
         { key: 'total', label: '金額', align: 'num', fmt: (v) => fmt(v) },
         { key: 'tax', label: '可扣抵稅額', align: 'num', fmt: (v) => (v ? fmt(v) : '') },
-        { key: 'account', label: '會計項目', nosort: true, fmt: (v, r) => (r.entry_id ? h`${(accounts.find((a) => a.code === (v || r.suggested_account)) || {}).name || ''}` : accountSelect(accounts.filter((a) => ['asset', 'expense', 'cogs'].includes(a.type)), v || r.suggested_account, `data-act="invAcc" data-id="${r.id}"`)) },
+        { key: 'account', label: '會計項目', nosort: true, fmt: (v, r) => (r.entry_id ? h`${(accounts.find((a) => a.code === (v || r.suggested_account)) || {}).name || ''}` : accountSelect(accounts, v || r.suggested_account, `data-act="invAcc" data-id="${r.id}"`)) },
         { key: 'confidence', label: '信心', align: 'num', fmt: (v) => (v ? Math.round(v * 100) + '%' : '') },
         { key: 'entry_id', label: '', nosort: true, fmt: (v, r) => (r.voided ? status('na', '作廢') : v ? status('good', '已入帳') : h`<button class="btn sm" data-act="postInv" data-id="${r.id}">入帳</button>`) },
       ],

@@ -70,6 +70,16 @@ const commit = async () => {
 const assert = (cond, msg) => {
   if (!cond) throw new Error('檢查失敗：' + msg);
 };
+// 會計項目下拉：1 資產 … 8 所得稅 每一類都要能選
+const SAMPLE_CODES = ['1101', '2111', '3101', '3102', '4101', '4191', '5101', '6101', '7101', '7501', '8101'];
+const assertAllAccounts = async (selector, label) => {
+  const lists = await page.$$eval(selector, (sels) => sels.map((s) => [...s.options].map((o) => o.value)));
+  assert(lists.length, `${label}：找不到會計項目下拉選單`);
+  for (const vals of lists) {
+    const miss = SAMPLE_CODES.filter((c) => !vals.includes(c));
+    assert(!miss.length, `${label}：少了 ${miss.join('、')}`);
+  }
+};
 const PASS = '午月咖啡2026';
 const unlock = async (pass = PASS) => {
   await page.waitForSelector('#g-unlock');
@@ -245,8 +255,19 @@ try {
     assert(stillOpen, '選科目時分錄視窗不會自己關掉');
     await page.selectOption('dialog [name=acc] >> nth=0', '6112');
     assert(await page.isVisible('dialog #je-lines'), '選好科目後分錄視窗還在');
+    await assertAllAccounts('dialog [name=acc]', '日記簿分錄的會計項目');
     await page.mouse.click(4, 4); // 真的在背景按下放開才關
     await page.waitForSelector('dialog', { state: 'detached', timeout: 5000 });
+    // 期初開帳：全部會計項目（含 3 權益、4 營業收入）都能填
+    await page.click('[data-act="opening"]');
+    await page.waitForSelector('dialog #op-rows');
+    const opCodes = await page.$$eval('dialog input[data-code][data-side="d"]', (els) => els.map((e) => e.dataset.code));
+    const opMiss = SAMPLE_CODES.filter((c) => !opCodes.includes(c));
+    assert(!opMiss.length, '期初開帳少了 ' + opMiss.join('、'));
+    await page.fill('dialog #op-q', '業主');
+    assert((await page.$$eval('dialog #op-rows tr[data-row]', (trs) => trs.filter((t) => !t.hidden).map((t) => t.dataset.row))).every((r) => r.includes('業主')), '期初開帳搜尋科目');
+    await page.click('dialog .modal-foot .btn'); // 取消
+    await page.waitForSelector('dialog', { state: 'detached' });
   }
   await go('trial?pm=ytd&ym=2026-09');
   assert(await page.isVisible('text=借貸平衡'), '試算表平衡');
@@ -395,6 +416,8 @@ try {
     await page.click('dialog .modal-foot .btn.primary');
     await page.waitForSelector('.doc-card >> text=20260912_設備商_磨豆機訂金及尾款_120000.png');
     const pays = await page.$$eval('.doc-card', (cards) => Object.fromEntries(cards.map((c) => [c.querySelector('.fn').textContent.trim(), c.querySelector('[name=pay_account]').value])));
+    await assertAllAccounts('.doc-card [name=account]', '憑證卡片的會計項目');
+    await assertAllAccounts('.doc-card [name=pay_account]', '憑證卡片的付款方式');
     console.log('付款方式：', pays);
     assert(pays['20260911_大創_小碟5件_245.png'] === '2134' && pays['20260910_蝦皮_吧台抹布_150.png'] === '2134' && pays['20260912_設備商_磨豆機訂金及尾款_120000.png'] === '1103', '依資料夾設定付款方式');
     assert(!Object.keys(pays).some((k) => k.includes('存摺')), '存摺沒有上傳');
@@ -524,6 +547,7 @@ try {
       await page.click('dialog .modal-foot .btn.primary');
       await page.waitForSelector('text=已匯入', { timeout: 15000 });
       await page.waitForSelector('[data-act="bookMany"]');
+      await assertAllAccounts('[data-act="gl"]', '存摺對應會計項目');
       await page.click('[data-act="bookMany"]');
       await page.waitForSelector('dialog >> text=批次補登');
       const sugg = await page.$$eval('dialog tbody tr', (trs) => trs.map((tr) => [tr.children[2].textContent, tr.querySelector('[name=acc]').value]));

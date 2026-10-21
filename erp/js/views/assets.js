@@ -6,19 +6,18 @@ import { store } from '../store.js';
 import { getSettings, getAccounts, isLocked } from '../state.js';
 import { accountBalance } from '../lib/ledger.js';
 import { monthEnd } from '../lib/dates.js';
-import { ASSET_CATEGORIES, payAccountsOf } from '../lib/coa.js';
+import { ASSET_CATEGORIES } from '../lib/coa.js';
 import { assetSummary, schedule, normalizeAsset, defaultResidual } from '../lib/assets.js';
 import { addMonths, today } from '../lib/dates.js';
 import { round2 } from '../lib/money.js';
 import { uid } from '../lib/text.js';
 import { syncDepreciation } from '../sync.js';
-import { reportHead, editEntry, downloadWorkbook } from './_shared.js';
+import { reportHead, editEntry, downloadWorkbook, payAccountSelect } from './_shared.js';
 import { assetsSheet } from '../lib/reportbook.js';
 import { attachmentEditor, previewDocument } from '../attach.js';
 import { FIXED_ASSET_ACCOUNTS } from '../lib/vat.js';
 
 // 付款方式：依科目表（現金、零用金、銀行、應付帳款、代墊、業主往來），另加長期借款（分期購置）
-const payOptions = (accounts, keep) => [...payAccountsOf(accounts, keep), ...accounts.filter((x) => x.code === '2501' && x.code !== keep).map((x) => [x.code, `${x.code} ${x.name}`])];
 
 export async function render(root, ctx) {
   const settings = await getSettings();
@@ -138,7 +137,7 @@ export async function render(root, ctx) {
         <label class="field"><span>進項稅額（發票上的營業稅）</span><input type="number" name="tax_amount" value="${a.tax_amount ?? ''}"></label>
         <label class="field"><span>發票號碼</span><input type="text" name="invoice_no" value="${a.invoice_no || ''}" maxlength="12"></label>
         <label class="field"><span>廠商</span><input type="text" name="supplier" value="${a.supplier || ''}"></label>
-        <label class="field"><span>付款方式</span><select name="pay_account">${options(payOptions(accounts, a.pay_account || settings.bank_gl || '1103'), a.pay_account || settings.bank_gl || '1103')}</select></label>
+        <label class="field"><span>付款方式</span>${payAccountSelect(accounts, a.pay_account || settings.bank_gl || '1103', 'name="pay_account"')}</label>
         <label class="field"><span>耐用年數（空白＝類別建議值）</span><input type="number" name="life_years" value="${a.life_years ?? ''}"></label>
         <label class="field"><span>殘值（空白＝成本÷(年數+1)）</span><input type="number" name="residual" value="${a.residual ?? ''}"></label>
         <label class="field"><span>處分日期（報廢／出售）</span><input type="date" name="disposed_on" value="${a.disposed_on || ''}"></label>
