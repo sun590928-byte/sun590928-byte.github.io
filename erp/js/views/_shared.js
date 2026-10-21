@@ -3,7 +3,7 @@
 import { h, raw, modal, toast, fmt, options } from '../ui.js';
 import { store } from '../store.js';
 import { getAccounts, getSettings, isLocked } from '../state.js';
-import { TYPE_LABELS } from '../lib/coa.js';
+import { TYPE_LABELS, payAccountsOf } from '../lib/coa.js';
 import { validateEntry, entryTotals, nextVoucherNo, voucherKind } from '../lib/ledger.js';
 import { accountMap } from '../lib/coa.js';
 import { uid } from '../lib/text.js';
@@ -19,15 +19,28 @@ export async function downloadWorkbook(fileName, build) {
   download(fileName, makeXlsx(Array.isArray(sheets) ? sheets : [sheets]));
 }
 
-export function accountSelect(accounts, selected, attrs = '') {
-  const groups = {};
-  for (const a of accounts) {
-    if (a.active === false && a.code !== selected) continue;
-    (groups[a.type] ||= []).push(a);
+// 會計項目下拉：全部代號都可選（1 資產 … 8 所得稅，依代號排序、依類別分組）；停用的科目放最後一組，仍可選
+const optionOf = (a, selected) => h`<option value="${a.code}" ${a.code === selected ? raw('selected') : ''}>${a.code} ${a.name}</option>`;
+function accountGroups(accounts, selected, skip = new Set()) {
+  const sorted = [...accounts].filter((a) => !skip.has(a.code)).sort((a, b) => (a.code < b.code ? -1 : 1));
+  const groups = new Map();
+  for (const a of sorted.filter((x) => x.active !== false)) {
+    if (!groups.has(a.type)) groups.set(a.type, []);
+    groups.get(a.type).push(a);
   }
-  return h`<select ${raw(attrs)}><option value="">— 科目 —</option>${Object.entries(groups).map(
-    ([t, list]) => h`<optgroup label="${TYPE_LABELS[t] || t}">${list.map((a) => h`<option value="${a.code}" ${a.code === selected ? raw('selected') : ''}>${a.code} ${a.name}</option>`)}</optgroup>`,
-  )}</select>`;
+  const off = sorted.filter((x) => x.active === false);
+  return h`${[...groups].map(([t, list]) => h`<optgroup label="${TYPE_LABELS[t] || t}">${list.map((a) => optionOf(a, selected))}</optgroup>`)}${off.length ? h`<optgroup label="停用的科目">${off.map((a) => optionOf(a, selected))}</optgroup>` : ''}`;
+}
+
+export function accountSelect(accounts, selected, attrs = '') {
+  return h`<select ${raw(attrs)}><option value="">— 科目 —</option>${accountGroups(accounts, selected)}</select>`;
+}
+
+// 付款方式下拉：常用的付款來源（現金、零用金、銀行、金流未撥款項、應付帳款、代墊、業主往來）放最上面，其餘科目也都可選
+export function payAccountSelect(accounts, selected, attrs = '') {
+  const pays = payAccountsOf(accounts, selected);
+  const codes = new Set(pays.map(([c]) => c));
+  return h`<select ${raw(attrs)}><optgroup label="常用付款方式">${pays.map(([c, label]) => h`<option value="${c}" ${c === selected ? raw('selected') : ''}>${label}</option>`)}</optgroup>${accountGroups(accounts, selected, codes)}</select>`;
 }
 
 export const SOURCE_LABEL = { manual: '手動', pos: 'POS 營收', payout: '撥款入帳', depreciation: '折舊', cogs: '存貨成本', document: '憑證', asset: '資產購置', import: '舊帳匯入', opening: '期初開帳', closing: '年底結帳', bank: '存摺補登', vat: '營業稅結轉', vat_pay: '營業稅繳納' };

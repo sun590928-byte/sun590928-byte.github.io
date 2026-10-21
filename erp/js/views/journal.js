@@ -3,7 +3,7 @@
 import { h, raw, mount, bindActions, fmt, options, toast, confirmBox, modal, badge, downloadCSV, emptyState } from '../ui.js';
 import { store } from '../store.js';
 import { getSettings, getAccounts, saveSettings, isLocked } from '../state.js';
-import { accountMap } from '../lib/coa.js';
+import { accountMap, TYPE_LABELS } from '../lib/coa.js';
 import { entryTotals, voucherKind, nextVoucherNo, renumberMonth, closingEntry } from '../lib/ledger.js';
 import { addDays, monthEnd, today } from '../lib/dates.js';
 import { uid } from '../lib/text.js';
@@ -163,21 +163,46 @@ export async function render(root, ctx) {
     opening: async () => {
       const date = addDays(settings.revenue_start, -1);
       const existing = entries.find((e) => e.source === 'opening');
-      const assetsLike = accounts.filter((a) => ['1101', '1102', '1103', '1111', '1112', '1211', '1212', '1213', '1214', '1215', '1216', '1252', '1261', '1262', '1511', '1521', '1531', '1541', '1811'].includes(a.code));
-      const credits = accounts.filter((a) => ['1512', '1522', '1532', '1542', '2111', '2122', '2131', '2132', '2191', '2501'].includes(a.code));
-      const val = (code) => {
-        const l = existing?.lines.find((x) => x.account === code);
-        return l ? l.debit || l.credit : '';
+      // 全部會計項目（1 資產 … 8 所得稅）都可輸入期初餘額，借、貸各一欄；年度中途開始用系統時，3 權益、4 營業收入等本年累計數也能帶入
+      const sortedAccs = [...accounts].sort((a, b) => (a.code < b.code ? -1 : 1));
+      const val = (code, side) => {
+        const l = existing?.lines.find((x) => x.account === code && (side === 'd' ? x.debit : x.credit));
+        return l ? (side === 'd' ? l.debit : l.credit) : '';
       };
+      const groups = [];
+      for (const a of sortedAccs) {
+        const t = a.active === false ? 'inactive' : a.type;
+        let g = groups.find((x) => x.t === t);
+        if (!g) groups.push((g = { t, label: t === 'inactive' ? '停用的科目' : TYPE_LABELS[t] || t, items: [] }));
+        g.items.push(a);
+      }
+      groups.sort((a, b) => (a.t === 'inactive') - (b.t === 'inactive'));
+      const row = (a) => h`<tr data-row="${a.code} ${a.name}"><td>${a.code} ${a.name}</td><td><input class="cell num" type="number" step="1" data-code="${a.code}" data-side="d" value="${val(a.code, 'd')}" aria-label="${a.code} 借方"></td><td><input class="cell num" type="number" step="1" data-code="${a.code}" data-side="c" value="${val(a.code, 'c')}" aria-label="${a.code} 貸方"></td></tr>`;
       const r = await modal({
         title: `期初開帳（${date}）`,
         wide: true,
-        body: h`<p class="muted">輸入營收起算日（${settings.revenue_start}）前一天的各科目餘額。差額自動列入「3101 資本（業主投資）」。可以之後再修改。</p>
-          <div class="grid-2">
-            <div><h3 style="font-size:14px;margin:8px 0">資產（借方）</h3>${assetsLike.map((a) => h`<label class="field" style="margin-bottom:6px"><span>${a.code} ${a.name}</span><input type="number" step="1" data-code="${a.code}" data-side="d" value="${val(a.code)}"></label>`)}</div>
-            <div><h3 style="font-size:14px;margin:8px 0">累計折舊、負債（貸方）</h3>${credits.map((a) => h`<label class="field" style="margin-bottom:6px"><span>${a.code} ${a.name}</span><input type="number" step="1" data-code="${a.code}" data-side="c" value="${val(a.code)}"></label>`)}
-            <p class="muted" style="font-size:12.5px">固定資產的取得成本與累計折舊可參考「固定資產與折舊」頁的期初數字。起算日所在的營業稅期別（例如 7–8 月）中，起算日前的銷項稅額列 2131、可扣抵進項稅額列 1261，營業稅工作表才能與申報數字一致。</p></div>
-          </div>`,
+        body: h`<p class="muted">輸入營收起算日（${settings.revenue_start}）前一天的各科目餘額，全部會計項目都可填（資產、累計折舊、負債、權益、收入、成本、費用…）。借貸不平時，差額自動列入「3101 業主資本」。可以之後再修改。</p>
+          <div class="row" style="margin:8px 0;gap:10px"><label class="field" style="flex:1"><span>搜尋科目</span><input type="search" id="op-q" placeholder="代號或名稱，例如 3101、業主"></label><span id="op-sum" class="muted"></span></div>
+          <div class="table-wrap" style="max-height:58vh"><table class="grid"><thead><tr><th>會計項目</th><th class="num">借方</th><th class="num">貸方</th></tr></thead>
+          <tbody id="op-rows">${groups.map((g) => h`<tr class="op-g"><td colspan="3"><b>${g.label}</b></td></tr>${g.items.map(row)}`)}</tbody></table></div>
+          <p class="muted" style="font-size:12.5px;margin-top:8px">固定資產的取得成本與累計折舊可參考「固定資產與折舊」頁的期初數字。起算日所在的營業稅期別（例如 7–8 月）中，起算日前的銷項稅額列 2131、可扣抵進項稅額列 1261，營業稅工作表才能與申報數字一致。</p>`,
+        onMount: (dlg) => {
+          const sum = () => {
+            let d = 0;
+            let c = 0;
+            for (const i of dlg.querySelectorAll('input[data-code]')) (i.dataset.side === 'd' ? (d += Number(i.value) || 0) : (c += Number(i.value) || 0));
+            const diff = Math.round((d - c) * 100) / 100;
+            dlg.querySelector('#op-sum').textContent = `借方 ${fmt(d)}｜貸方 ${fmt(c)}｜${diff ? `差額 ${fmt(Math.abs(diff))} 會列入 3101 業主資本（${diff > 0 ? '貸' : '借'}方）` : '借貸平衡 ✓'}`;
+          };
+          sum();
+          dlg.addEventListener('input', (ev) => {
+            if (ev.target.id === 'op-q') {
+              const q = ev.target.value.trim();
+              for (const tr of dlg.querySelectorAll('#op-rows tr[data-row]')) tr.hidden = !!q && !tr.dataset.row.includes(q);
+              for (const tr of dlg.querySelectorAll('#op-rows tr.op-g')) tr.hidden = !!q;
+            } else sum();
+          });
+        },
         actions: [
           { label: '取消', value: null },
           {

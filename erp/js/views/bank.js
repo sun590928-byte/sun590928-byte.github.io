@@ -77,7 +77,7 @@ export async function render(root, ctx) {
       root,
       h`<div class="toolbar no-print">
         <label class="field"><span>存摺帳戶</span><select data-act="acct">${options(acctIds().map((a) => [a, a]), f.acct)}</select></label>
-        <label class="field"><span>對應會計項目</span>${accountSelect(accounts.filter((a) => a.type === 'asset'), f.gl, 'data-act="gl"')}</label>
+        <label class="field"><span>對應會計項目</span>${accountSelect(accounts, f.gl, 'data-act="gl"')}</label>
         <label class="field"><span>對帳截止日</span><input type="date" value="${f.asOf}" data-act="asof"></label>
         <span class="spacer"></span>
         <button class="btn" data-act="photos" title="在這台電腦辨識存摺內頁照片，逐列核對結存後勾選匯入">匯入存摺照片</button>
