@@ -20,6 +20,7 @@ import { createDocuments, archivePatch, pickDocFiles, isDocFile, previewDocument
 import { recognizeDocuments, isRecognizing, stopRecognizing } from '../recognize.js';
 import { canRecognize } from '../vision.js';
 import { SOURCE_LABELS } from '../lib/autoreview.js';
+import { queuePassbookPhotos } from './bank.js';
 import { reviewedAfterAuto } from '../lib/vendorkb.js';
 
 const STATUS = { inbox: ['待覆核', 'medium'], reviewed: ['已覆核', 'accent'], posted: ['已入帳', 'high'], ignored: ['不入帳', 'low'] };
@@ -133,7 +134,8 @@ export async function render(root, ctx) {
   }
 
   // 選整個資料夾：子資料夾名稱決定付款方式（員工代墊支出→員工代墊、負責人代墊支出→負責人代墊、銀行名稱的資料夾→該銀行存款（依科目名稱比對）…）
-  // 已上傳過的同名檔案不重複上傳，只把付款方式更新成資料夾對應的科目；存摺、明細類資料夾略過。
+  // 已上傳過的同名檔案不重複上傳，只把付款方式更新成資料夾對應的科目；明細類資料夾略過；
+  // 「存摺」資料夾的照片送到「銀行存摺對帳」辨識（逐列核對結存、勾選匯入）。
   async function addFolder(all) {
     const files = all.filter(isDocFile);
     if (!files.length) return toast('資料夾裡沒有照片或 PDF', 'info');
@@ -142,9 +144,12 @@ export async function render(root, ctx) {
     const groups = new Map();
     for (const file of files) {
       const folder = folderOf(file);
-      if (!groups.has(folder)) groups.set(folder, { folder, pay: STATEMENT_FOLDER.test(folder) ? null : payAccountForFolder(folder, accounts), statement: STATEMENT_FOLDER.test(folder), add: [], update: [], same: [], posted: [] });
+      if (!groups.has(folder)) groups.set(folder, { folder, pay: STATEMENT_FOLDER.test(folder) ? null : payAccountForFolder(folder, accounts), statement: STATEMENT_FOLDER.test(folder), passbook: [], add: [], update: [], same: [], posted: [] });
       const g = groups.get(folder);
-      if (g.statement) continue;
+      if (g.statement) {
+        if (/存摺/.test(folder) && recognizable(file)) g.passbook.push(file);
+        continue;
+      }
       const d = byName.get(file.name);
       if (!d) g.add.push(file);
       else if (d.status === 'posted') g.posted.push(d);
@@ -155,16 +160,17 @@ export async function render(root, ctx) {
     const accName = (c) => (c ? `${c} ${accounts.find((a) => a.code === c)?.name || ''}` : '未對應（維持預設，請手動選）');
     const nAdd = list.reduce((t, g) => t + g.add.length, 0);
     const nUpd = list.reduce((t, g) => t + g.update.length, 0);
+    const passbook = list.flatMap((g) => g.passbook);
     const ok = await modal({
       title: '依資料夾匯入憑證',
       wide: true,
       body: h`<p>子資料夾名稱決定付款方式；同名檔案已上傳過的不重複上傳，只更新付款方式（已入帳的不動）。</p>
         <div class="table-wrap"><table class="grid"><thead><tr><th>資料夾</th><th>付款方式</th><th class="num">新上傳</th><th class="num">更新付款方式</th><th class="num">已一致</th><th class="num">已入帳</th></tr></thead><tbody>
-        ${list.map((g) => h`<tr><td>${g.folder || '（最上層）'}</td><td>${g.statement ? '對帳單／明細，略過' : accName(g.pay)}</td><td class="num">${g.add.length}</td><td class="num">${g.update.length}</td><td class="num">${g.same.length}</td><td class="num">${g.posted.length}</td></tr>`)}
+        ${list.map((g) => h`<tr><td>${g.folder || '（最上層）'}</td><td>${g.statement ? (g.passbook.length ? `存摺照片 ${g.passbook.length} 張 → 送到「銀行存摺對帳」辨識` : '對帳單／明細，略過') : accName(g.pay)}</td><td class="num">${g.add.length}</td><td class="num">${g.update.length}</td><td class="num">${g.same.length}</td><td class="num">${g.posted.length}</td></tr>`)}
         </tbody></table></div>`,
       actions: [
         { label: '取消', value: null },
-        { label: `確認（新上傳 ${nAdd}、更新 ${nUpd}）`, primary: true, value: true },
+        { label: `確認（新上傳 ${nAdd}、更新 ${nUpd}${passbook.length ? `、存摺照片 ${passbook.length}` : ''}）`, primary: true, value: true },
       ],
     });
     if (!ok) return;
@@ -180,7 +186,9 @@ export async function render(root, ctx) {
     docs = await store.all('documents');
     f.tab = 'inbox';
     draw();
-    toast(`新上傳 ${created.length} 張、更新付款方式 ${nUpd} 張`, 'good', 7000);
+    if (passbook.length) queuePassbookPhotos(passbook);
+    if (!created.length && passbook.length) return ctx.go('bank'); // 只有存摺照片：直接到對帳頁辨識
+    toast(`新上傳 ${created.length} 張、更新付款方式 ${nUpd} 張${passbook.length ? `；存摺照片 ${passbook.length} 張已送到「銀行存摺對帳」，打開那一頁就會辨識` : ''}`, 'good', 9000);
     if (created.length && settings.auto_recognize !== false) recognize(created, { files: fileOf, auto: true });
   }
 

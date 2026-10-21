@@ -110,6 +110,18 @@ export function modal({ title, body, actions = [{ label: '關閉', value: null }
       dlg.remove();
       resolve(v);
     };
+    // 點視窗外的灰色背景才關閉：按下與放開都要在視窗框外。
+    // 下拉選單（例如會計項目）展開時會蓋到背景，選完的那一下 click 的目標是 dialog 本身，
+    // 只看 e.target === dlg 會把正在填的視窗關掉（日記簿選科目時視窗自己跳走的原因）
+    const inner = dlg.querySelector('.modal-inner');
+    const outside = (e) => {
+      const r = inner.getBoundingClientRect();
+      return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+    };
+    let downOutside = false;
+    dlg.addEventListener('pointerdown', (e) => {
+      downOutside = e.target === dlg && outside(e);
+    });
     dlg.addEventListener('click', (e) => {
       const b = e.target.closest('[data-i]');
       if (b) {
@@ -117,7 +129,9 @@ export function modal({ title, body, actions = [{ label: '關閉', value: null }
         const v = typeof a.value === 'function' ? a.value(dlg) : a.value;
         if (v === false) return; // 驗證失敗，保持開啟
         done(v);
-      } else if (e.target.closest('[data-close]') || e.target === dlg) done(null);
+      } else if (e.target.closest('[data-close]')) done(null);
+      else if (e.target === dlg && downOutside && outside(e)) done(null);
+      downOutside = false;
     });
     dlg.addEventListener('cancel', (e) => {
       e.preventDefault();

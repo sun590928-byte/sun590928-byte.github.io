@@ -129,6 +129,93 @@ export async function readText(bmp, { deg = null, onStep } = {}) {
   return tries[0];
 }
 
+// 存摺照片前處理：去掉藍色手寫註記，再做自適應二值化（和周圍區塊平均比較），
+// 把淡色的底紋浮水印（THE TAMSUI CREDIT COOPERATIVE…）濾掉，只留下印的字
+function binarize(bmp, deg = 0, maxSide = 2600) {
+  const c = toCanvasSync(bmp, { maxSide, deg });
+  const W = c.width;
+  const H = c.height;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  const img = g.getImageData(0, 0, W, H);
+  const d = img.data;
+  const lum = new Float32Array(W * H);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    const r = d[i];
+    const gg = d[i + 1];
+    const b = d[i + 2];
+    lum[p] = b - r > 35 && b > gg ? 255 : 0.299 * r + 0.587 * gg + 0.114 * b;
+  }
+  const R = Math.round(Math.max(W, H) / 60);
+  const I = new Float64Array((W + 1) * (H + 1));
+  for (let y = 0; y < H; y++) {
+    let row = 0;
+    for (let x = 0; x < W; x++) {
+      row += lum[y * W + x];
+      I[(y + 1) * (W + 1) + x + 1] = I[y * (W + 1) + x + 1] + row;
+    }
+  }
+  for (let y = 0; y < H; y++) {
+    const y0 = Math.max(0, y - R);
+    const y1 = Math.min(H - 1, y + R);
+    for (let x = 0; x < W; x++) {
+      const x0 = Math.max(0, x - R);
+      const x1 = Math.min(W - 1, x + R);
+      const sum = I[(y1 + 1) * (W + 1) + x1 + 1] - I[y0 * (W + 1) + x1 + 1] - I[(y1 + 1) * (W + 1) + x0] + I[y0 * (W + 1) + x0];
+      const v = lum[y * W + x] < (sum / ((x1 - x0 + 1) * (y1 - y0 + 1))) * 0.72 ? 0 : 255;
+      const o = (y * W + x) * 4;
+      d[o] = d[o + 1] = d[o + 2] = v;
+    }
+  }
+  g.putImageData(img, 0, 0);
+  return c;
+}
+
+function toCanvasSync(bmp, { maxSide, deg }) {
+  const s = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+  const w = Math.round(bmp.width * s);
+  const h = Math.round(bmp.height * s);
+  const rot = deg % 180 !== 0;
+  const c = document.createElement('canvas');
+  c.width = rot ? h : w;
+  c.height = rot ? w : h;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.translate(c.width / 2, c.height / 2);
+  g.rotate((deg * Math.PI) / 180);
+  g.drawImage(bmp, -w / 2, -h / 2, w, h);
+  return c;
+}
+
+/**
+ * 讀存摺照片的文字（整頁單一區塊，讓同一列的日期、金額、結存在同一行）。
+ * @param blob 照片
+ * @param opts { score(text) → 讀到幾列（正放讀不到時再試左右轉）, onStep }
+ * @returns {{ text, confidence, deg }}
+ */
+export async function readPassbook(blob, { score = () => 99, onStep } = {}) {
+  const bmp = await createImageBitmap(blob);
+  try {
+    const w = await ocrWorker();
+    const tries = [];
+    for (const deg of [0, 90, 270]) {
+      onStep?.(deg ? `轉 ${deg}° 再讀一次` : '讀取文字');
+      const c = binarize(bmp, deg);
+      const png = await new Promise((r) => c.toBlob(r, 'image/png'));
+      await w.setParameters({ preserve_interword_spaces: '1' });
+      try {
+        const { data } = await w.recognize(png);
+        tries.push({ deg, text: data.text || '', confidence: data.confidence || 0, rows: score(data.text || '') });
+      } finally {
+        await w.setParameters({ preserve_interword_spaces: '0' });
+      }
+      if (tries[tries.length - 1].rows >= 3) break;
+    }
+    tries.sort((a, b) => b.rows - a.rows || b.confidence - a.confidence);
+    return tries[0];
+  } finally {
+    bmp.close?.();
+  }
+}
+
 /**
  * 辨識一張憑證照片。
  * @param blob 照片
