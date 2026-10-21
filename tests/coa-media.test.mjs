@@ -60,6 +60,11 @@ test('coa: 付款方式依科目表、上傳資料夾對應付款來源', () => 
   // 科目代號改了也找得到（依名稱）
   const swapped = DEFAULT_ACCOUNTS.map((a) => (a.code === '2134' ? { ...a, code: '2135' } : a));
   assert.equal(payAccountForFolder('員工代墊支出', swapped), '2135');
+  // 老闆把 2133 改名「其他應付款-負責人借款」：仍是付款方式（依代號，不靠名稱），資料夾也對得到
+  const renamed = DEFAULT_ACCOUNTS.map((a) => (a.code === '2133' ? { ...a, name: '其他應付款-負責人借款' } : a));
+  assert.ok(payAccountsOf(renamed).some(([c]) => c === '2133'), '改名後的 2133 仍在付款方式');
+  assert.equal(payAccountForFolder('負責人代墊支出', renamed), '2133');
+  assert.ok(!payAccountsOf(DEFAULT_ACCOUNTS).some(([c]) => ['2131', '2132', '2101', '2501'].includes(c)), '稅額、借款科目不是付款來源');
   // 停用的科目不出現，但目前選用中的保留
   const off = DEFAULT_ACCOUNTS.map((a) => (a.code === '1104' ? { ...a, active: false } : a));
   assert.ok(!payAccountsOf(off).some(([c]) => c === '1104'));

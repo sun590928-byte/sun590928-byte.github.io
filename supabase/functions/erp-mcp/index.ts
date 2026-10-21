@@ -11,7 +11,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2.116.0";
 
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
 const PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
 const PENDING = ["inbox", "reviewed"];
@@ -21,7 +21,6 @@ const INVOICE_TYPES = ["電子發票", "三聯式發票", "收銀機發票", "�
 const INVOICE_NO_RE = /^(?:[A-Z]{2}\d{8}|BB[0-9A-Z]{8})$/;
 const TAX_TYPES: Record<string, string> = { "1": "應稅", "2": "零稅率", "3": "免稅" };
 const DED_CODES: Record<string, string> = { "1": "可扣抵之進貨及費用", "2": "可扣抵之固定資產", "3": "不可扣抵之進貨及費用", "4": "不可扣抵之固定資產" };
-const DOC_ACCOUNT_TYPES = new Set(["asset", "expense", "cogs", "nonop_expense", "liability"]);
 const NON_DEDUCTIBLE: Record<string, string> = { "6120": "交際費", "6127": "職工福利" };
 
 // ─────────── 資料層（測試時換成假資料）
@@ -193,14 +192,16 @@ async function getSettings(ctx: Ctx) {
 async function getAccounts(ctx: Ctx) {
   return (ctx.accounts ??= await ctx.db.accounts());
 }
+// 全部啟用中的會計項目都可選（1 資產 … 8 所得稅），和 ERP 的下拉選單一致
 function docAccounts(accounts: Account[]) {
-  return accounts.filter((a) => DOC_ACCOUNT_TYPES.has(a.type) && a.active !== false).sort((a, b) => (a.code < b.code ? -1 : 1));
+  return accounts.filter((a) => a.active !== false).sort((a, b) => (a.code < b.code ? -1 : 1));
 }
 // 付款來源：現金、零用金、銀行存款（110x）、金流未撥款項（111x）、應付帳款、代墊（其他應付款）、業主往來
 function isPayAccount(a: Account) {
   if (a.active === false) return false;
   if (a.type === "asset") return /^11[01]\d$/.test(a.code);
-  if (a.type === "liability") return a.code === "2111" || a.code === "2191" || /代墊/.test(a.name ?? "");
+  // 依代號判斷（老闆會改名，例如 2133 改成「負責人借款」）：2111、2133～2139 其他應付款、2191；名稱有代墊、往來的也算
+  if (a.type === "liability") return ["2111", "2191"].includes(a.code) || /^213[3-9]$/.test(a.code) || /代墊|往來/.test(a.name ?? "");
   return false;
 }
 function payAccounts(accounts: Account[]) {

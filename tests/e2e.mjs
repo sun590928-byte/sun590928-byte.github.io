@@ -71,7 +71,7 @@ const assert = (cond, msg) => {
   if (!cond) throw new Error('檢查失敗：' + msg);
 };
 // 會計項目下拉：1 資產 … 8 所得稅 每一類都要能選
-const SAMPLE_CODES = ['1101', '2111', '3101', '3102', '4101', '4191', '5101', '6101', '7101', '7501', '8101'];
+const SAMPLE_CODES = ['1101', '2111', '2133', '2134', '3101', '3102', '4101', '4191', '5101', '6101', '7101', '7501', '8101'];
 const assertAllAccounts = async (selector, label) => {
   const lists = await page.$$eval(selector, (sels) => sels.map((s) => [...s.options].map((o) => o.value)));
   assert(lists.length, `${label}：找不到會計項目下拉選單`);
