@@ -5,13 +5,14 @@
 // 純計算，可單獨測試。
 
 import { classifyExpense } from './classify.js';
-import { lookupVendor, predictAccount } from './vendorkb.js';
+import { lookupVendor, predictAccount, isCompanyName, shortVendorName } from './vendorkb.js';
 import { parseDocName } from './docname.js';
 import { INVOICE_NO_RE, NON_DEDUCTIBLE_ACCOUNTS, FIXED_ASSET_ACCOUNTS, DED_CODES, TAX_TYPES } from './vat.js';
 import { round2 } from './money.js';
+import { compactKey, levRatio } from './text.js';
 
-export const SOURCE_LABELS = { user: '手動', qr: 'QR 碼', einvoice: '電子發票', filed: '已申報媒體檔', filename: '檔名', ocr: '文字辨識', kb: '廠商資料庫', learned: '以前相似品項', rule: '規則', classify: '品項關鍵字' };
-const QUALITY = { user: 1, qr: 1, einvoice: 1, filed: 0.97, filename: 0.9, ocr: 0.7, kb: 0.85, learned: 0.8, rule: 0.8, classify: 0.7 };
+export const SOURCE_LABELS = { user: '手動', qr: 'QR 碼', einvoice: '電子發票', filed: '已申報媒體檔', filename: '檔名', ocr: '文字辨識', kb: '廠商資料庫', learned: '以前相似品項', rule: '規則', classify: '品項關鍵字', cnamt: '收據大寫金額', fullname: '照片上的公司全名' };
+const QUALITY = { user: 1, qr: 1, einvoice: 1, filed: 0.97, filename: 0.9, ocr: 0.7, kb: 0.85, learned: 0.8, rule: 0.8, classify: 0.7, cnamt: 0.9, fullname: 0.9 };
 
 const GENERAL_STORES = /全聯|家樂福|好市多|costco|大潤發|愛買|頂好|美廉社|7-?11|7-?eleven|統一超商|全家|萊爾富|ok超商|momo|富邦媒體|pchome|網路家庭|蝦皮|shopee|小北|寶雅|大創|daiso|ikea|宜家|屈臣氏|康是美/i;
 // 超商、生活百貨的零星採買（老闆的規則：大創、7-11 等列 6133 雜項費用）；網購平台什麼都賣，不套用
@@ -41,6 +42,27 @@ function summarize(items = []) {
   if (!names.length) return '';
   const first = names[0].slice(0, names.length > 1 ? 7 : 10);
   return names.length > 1 ? `${first}等${names.length}項` : first;
+}
+
+// 發票的公司全名。照片上的公司名稱要與簡稱（檔名、以前的店名）對得上才採用；
+// 照片的字比簡稱短（漏字）或錯一個字時，用簡稱＋照片上的公司型態（「範例電機」＋「有限公司」）
+function fullVendorName({ ein, hit, ocr, short = '', shop = '' }) {
+  if (isCompanyName(ein?.seller_name)) return { name: ein.seller_name.trim(), src: 'einvoice', why: '財政部電子發票的賣方名稱' };
+  if (hit?.entry?.fullName && hit.confidence >= 0.85) return { name: hit.entry.fullName, src: 'kb', why: '以前記過的全名' };
+  const o = String(ocr?.vendor_name?.value || '').trim();
+  if (!isCompanyName(o)) return null;
+  const oShort = shortVendorName(o);
+  const core = compactKey(oShort);
+  const kind = o.slice(oShort.length);
+  if ([...core].length < 2 || (shop && compactKey(shop).includes(core))) return null;
+  for (const name of [short, hit?.name].filter(Boolean)) {
+    const refName = shortVendorName(name);
+    const ref = compactKey(refName);
+    if ([...ref].length < 2) continue;
+    if (core === ref || core.includes(ref)) return { name: o, src: 'fullname', why: '照片上的公司名稱，與店名相符' };
+    if (ref.includes(core) || ([...core].length === [...ref].length && [...ref].length >= 4 && levRatio(core, ref) >= 0.75)) return { name: refName + kind, src: 'fullname', why: `照片上的「${o}」依店名校正` };
+  }
+  return null;
 }
 
 /**
@@ -129,7 +151,9 @@ export function autoReview(doc, ctx = {}) {
   const leadDate = multi ? multi.find((i) => i.date)?.date : q?.date;
   const c2 = choose('doc_date', [leadDate && [leadDate, 'qr'], ein && [ein.date, 'einvoice']], [[o('date'), 'ocr']]);
   if (c2) conflict.push(`日期：${SOURCE_LABELS[c2[1]]}是 ${c2[0]}，欄位是 ${out.doc_date}`);
-  const c3 = choose('amount_total', [multi && [sumOf(multi), leadSrc], q && [q.total, 'qr'], ein && [Number(ein.total), 'einvoice'], fil && [round2(fil.amount + fil.tax), 'filed']], [[o('total'), 'ocr']]);
+  // 收據（沒有發票號碼）的金額以「合計新台幣」大寫金額為準（老闆的規則），優先於檔名；與檔名不同時列入需確認
+  const cnAmt = !manual && !invNo && !multi && !q && ocr?.cn_total?.score >= 5 ? ocr.cn_total.value : null;
+  const c3 = choose('amount_total', [multi && [sumOf(multi), leadSrc], q && [q.total, 'qr'], ein && [Number(ein.total), 'einvoice'], fil && [round2(fil.amount + fil.tax), 'filed'], cnAmt && [cnAmt, 'cnamt']], [[o('total'), 'ocr']]);
   if (c3 && Math.abs(c3[0] - out.amount_total) >= 1) conflict.push(`金額：${SOURCE_LABELS[c3[1]]}是 ${c3[0]}，欄位是 ${out.amount_total}`);
   for (const c of conflict) issues.push(`與手動填的不同－${c}`);
   // 檔名與照片不一致（檔名打錯、或照片拍到別張）
@@ -161,6 +185,19 @@ export function autoReview(doc, ctx = {}) {
   else if (ocr?.vendor_name) [out.vendor_name, sources.vendor_name] = [ocr.vendor_name.value, 'ocr'];
   if (hit) reasons.push(hit.why);
   if (!out.vendor_tax_id && hit?.entry?.taxId && hit.confidence >= 0.85) [out.vendor_tax_id, sources.vendor_tax_id] = [hit.entry.taxId, 'kb'];
+  // 簡稱（檔名、以前的店名）：判斷超商、賣場與品項時仍用它
+  const vendorNames = [current.vendor_name?.[0], hit?.name, out.vendor_name];
+
+  // 發票的廠商用公司全名（老闆的規則，例如「範例電機有限公司」）：電子發票的賣方名稱 > 以前記過的全名 > 照片上的公司名稱
+  const isInv = !!(lead || multi || ein || fil || INVOICE_NO_RE.test(out.invoice_no || '') || /發票/.test(ocr?.invoice_type?.value || ''));
+  if (isInv && sources.vendor_name !== 'user' && !isCompanyName(out.vendor_name)) {
+    const full = fullVendorName({ ein, hit, ocr, short: out.vendor_name, shop: settings.business_name });
+    if (full) {
+      reasons.push(`發票廠商用公司全名「${full.name}」（${full.why}）`);
+      [out.vendor_name, sources.vendor_name] = [full.name, full.src];
+    }
+  }
+  const vendorText = [...new Set([...vendorNames, out.vendor_name].filter(Boolean))].join(' ');
 
   // 憑證種類
   const fmtType = { 21: '三聯式發票', 22: '二聯式收銀機發票', 25: '電子發票' };
@@ -184,12 +221,12 @@ export function autoReview(doc, ctx = {}) {
   // ── 4. 會計項目
   const itemText = [out.summary, ...items.map((i) => i.name)].filter(Boolean).join(' ');
   // 摘要就是品項描述（檔名或 QR），當品項判斷
-  const cls = classifyExpense({ vendor: out.vendor_name || '', items: items.length ? items : out.summary ? [out.summary] : [] });
+  const cls = classifyExpense({ vendor: vendorText, items: items.length ? items : out.summary ? [out.summary] : [] });
   const ruleHit = cls.account !== '6199' && accSet.has(cls.account);
   const nb = predictAccount(kb, itemText);
   const nbOk = nb && accSet.has(nb.account);
   const vend = hit?.entry?.account;
-  const general = GENERAL_STORES.test(out.vendor_name || '');
+  const general = GENERAL_STORES.test(vendorText);
   // 同一家店以前都記同一個科目；但這次品項關鍵字與相似品項都指向別的科目（例如茶行的運費）時不沿用
   const otherwise = ruleHit && cls.confidence >= 0.6 && nbOk && nb.account === cls.account && cls.account !== vend?.value;
   const vendorFixed = vend?.value && accSet.has(vend.value) && hit.confidence >= 0.6 && hit.entry.n >= 2 && vend.share >= 0.8 && !general && !otherwise;
@@ -205,7 +242,7 @@ export function autoReview(doc, ctx = {}) {
   else if (ruleHit && cls.confidence >= 0.6 && nbOk && nb.account === cls.account) pick(cls.account, 0.85, 'learned', `品項關鍵字與以前相似品項都判斷為 ${cls.account} ${accName(cls.account)}`);
   else if (ruleHit && cls.confidence >= 0.6 && !(nbOk && nb.p >= 0.9)) pick(cls.account, 0.7, 'classify', `依品項關鍵字判斷為 ${cls.account} ${cls.label}`);
   else if (nbOk && nb.p >= 0.9 && !ruleHit) pick(nb.account, 0.7, 'learned', `依以前相似品項判斷為 ${nb.account} ${accName(nb.account)}`);
-  else if (SUNDRY_STORES.test(out.vendor_name || '') && !ruleHit && !(nbOk && nb.p >= 0.9) && accSet.has('6133')) pick('6133', 0.7, 'rule', '超商、生活百貨的零星採買列 6133 雜項費用');
+  else if (SUNDRY_STORES.test(vendorText) && !ruleHit && !(nbOk && nb.p >= 0.9) && accSet.has('6133')) pick('6133', 0.7, 'rule', '超商、生活百貨的零星採買列 6133 雜項費用');
   else if (vend?.value && accSet.has(vend.value) && vend.share >= 0.6 && hit.confidence >= 0.6) pick(vend.value, 0.6, 'kb', `這家店以前多半記 ${vend.value} ${accName(vend.value)}`);
   else if (ruleHit) pick(cls.account, 0.5, 'classify');
   else if (nbOk) pick(nb.account, 0.45, 'learned');
@@ -216,7 +253,7 @@ export function autoReview(doc, ctx = {}) {
   else pick(accSet.has('6199') ? '6199' : doc.account || '', 0.2, 'classify');
   // 資本化門檻：未達門檻的設備列 6135 雜項購置；達門檻的設備列固定資產（入帳時自動建立並提列折舊）
   const total = Number(out.amount_total) || 0;
-  const eqText = `${itemText}${out.vendor_name || ''}`;
+  const eqText = `${itemText}${vendorText}`;
   if (sources.account !== 'user') {
     if (FIXED_ASSET_ACCOUNTS.has(account) && total > 0 && total < threshold && accSet.has('6135')) {
       reasons.push(`${account} ${accName(account)} 未達 ${threshold.toLocaleString()} 元資本化門檻，改列 6135 雜項購置`);
@@ -308,6 +345,8 @@ export function autoReview(doc, ctx = {}) {
   if (out.invoice_no && !INVOICE_NO_RE.test(out.invoice_no)) issues.push(`發票號碼 ${out.invoice_no} 格式不對`);
   if (Number(out.tax_amount) > 0 && total > 0 && !near5(total, Number(out.tax_amount)) && !out.lines && sources.tax_amount !== 'filed') issues.push(`稅額 ${out.tax_amount} 不是含稅 ${total} 的 5%`);
   for (const k of ['doc_date', 'amount_total']) if (sources[k] === 'ocr') issues.push(`${k === 'doc_date' ? '日期' : '金額'}只由文字辨識取得，請核對照片`);
+  // 大寫金額沒有檔名、也沒有照片上的阿拉伯數字可對照時，請老闆看一眼
+  if (sources.amount_total === 'cnamt' && !ocr.cn_total.numeric && current.amount_total?.[0] !== cnAmt) issues.push(`金額 ${cnAmt} 由收據大寫金額辨識，照片上沒有對得上的數字，請核對`);
   if (sources.vendor_name === 'ocr') issues.push(`廠商「${out.vendor_name}」由文字辨識取得，可能有錯字`);
   if (!out.vendor_name) issues.push('缺廠商');
   const others = docs.filter((d) => d.id !== doc.id && d.status !== 'ignored');

@@ -88,11 +88,12 @@ const INSTRUCTIONS = `你是「午月咖啡廳」的記帳助理，透過這個�
 規則：
 - 日期用西元 YYYY-MM-DD；民國年請 +1911（115/09/01 → 2026-09-01）。
 - 統一發票號碼＝2 碼英文字軌 + 8 碼數字；收據沒有發票號碼。
-- amount_total 是含稅總額；三聯式或載明買方統編的發票才有可扣抵的 tax_amount；二聯式、收據的稅額不填。
+- vendor_name：發票填賣方的公司全名（例如「範例電機有限公司」，看賣方名稱或統一發票專用章），不要只填簡稱；收據填收據上的店名。
+- amount_total 是含稅總額；收據的金額以「合計新台幣」大寫金額為準（與阿拉伯數字不同時寫在 notes）。三聯式或載明買方統編的發票才有可扣抵的 tax_amount；二聯式、收據的稅額不填。
 - 只有載明本店統編（get_context 會給）的統一發票，deductible 才是 true；交際費（6120）、職工福利（6127）用途一律不可扣抵。
 - summary 是 10 字內的品項摘要，會用在歸檔檔名，例如「鮮乳4瓶」「咖啡豆2kg」。
 - account 只能從 get_context 的清單選：咖啡豆、乳品、茶粉糖漿、甜點原料、包材屬於原料／存貨（12xx）；水電、電信、修繕、文具、運費屬於費用（61xx）；單價 8 萬元以上的設備屬於固定資產（15xx），未達 8 萬的器具列「雜項購置」。
-- pay_account（付款方式）只能從 get_context 的「付款方式」清單選；檔案上傳時所在的資料夾（source_folder）就是付款來源：員工代墊支出→員工代墊、負責人代墊支出→負責人代墊、銀行名稱的資料夾→該銀行存款（依科目名稱比對）。綠界、LINE Pay 的手續費發票由撥款中扣除，付款方式選對應的「應收帳款－…未撥款項」（信用卡 1111、LINE Pay 1112）。
+- pay_account（付款方式）只能從 get_context 的「付款方式」清單選；檔案上傳時所在的資料夾（source_folder）就是付款來源：員工代墊支出→2134 員工代墊、負責人代墊支出→2133（名稱可能已改為負責人借款）、銀行名稱的資料夾→該銀行存款（依科目名稱比對）。綠界、LINE Pay 的手續費發票由撥款中扣除，付款方式選對應的「應收帳款－…未撥款項」（信用卡 1111、LINE Pay 1112）。
 - 收銀機發票載明本店統編但沒有分開印稅額：tax_amount＝總額 ÷ 1.05 × 5%（四捨五入），可扣抵（課稅別 1、扣抵代號 1）。
 - 申報代號：tax_type 課稅別（1 應稅、2 零稅率、3 免稅）、ded_code 扣抵代號（1 可扣抵進貨及費用、2 可扣抵固定資產、3 不可扣抵進貨及費用、4 不可扣抵固定資產）。老闆指定的代號優先；不確定就不要填，ERP 會依發票與科目自動判斷。
 - 一張照片含多張發票（例如訂金＋尾款），或一筆款項分屬多個科目（例如多張代墊收據）時，用 lines 拆分：每行一張發票或一個科目，含稅金額合計要等於 amount_total。
@@ -137,7 +138,7 @@ const TOOLS = [
         kind: { type: "string", enum: ["invoice", "receipt", "other"], description: "invoice＝統一發票、receipt＝收據、other＝其他" },
         invoice_type: { type: "string", enum: INVOICE_TYPES },
         doc_date: { type: "string", description: "西元 YYYY-MM-DD（民國年 +1911）" },
-        vendor_name: { type: "string", description: "賣方名稱（店名）" },
+        vendor_name: { type: "string", description: "賣方名稱：發票填公司全名（例如範例電機有限公司），收據填店名" },
         vendor_tax_id: { type: "string", description: "賣方統一編號 8 碼；沒有則空字串" },
         buyer_tax_id: { type: "string", description: "發票上載明的買方統一編號 8 碼；沒有則空字串" },
         invoice_no: { type: "string", description: "統一發票號碼，2 碼英文 + 8 碼數字；收據則空字串" },

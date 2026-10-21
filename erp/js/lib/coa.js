@@ -194,6 +194,16 @@ export function isPayAccount(a) {
   return false;
 }
 
+/**
+ * 科目下拉的打字篩選：數字＝代號開頭（2 → 2xxx、21 → 21xx、2133），文字＝名稱或類別裡有這個關鍵字（代墊、銀行、費用）。
+ * 空白分開（或數字接文字，如「21代墊」）的條件都要符合；全形數字也可以
+ */
+export function accountQueryMatch(query, code, text) {
+  const terms = String(query || '').normalize('NFKC').toLowerCase().match(/\d+|[^\d\s]+/g) || [];
+  const hay = String(text || '').normalize('NFKC').toLowerCase();
+  return terms.every((t) => (/^\d/.test(t) ? String(code).startsWith(t) : hay.includes(t)));
+}
+
 /** @returns [[code, label]]，依代號排序；保留目前選用中的科目（即使已停用） */
 export function payAccountsOf(accounts, keep = '') {
   const list = accounts.filter((a) => isPayAccount(a) || (keep && a.code === keep)).sort((a, b) => (a.code < b.code ? -1 : 1));

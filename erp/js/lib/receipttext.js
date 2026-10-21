@@ -21,30 +21,49 @@ export function normalizeOcr(text) {
 const NUM = /(?<![\d.])(\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?(?![\d])/g;
 const toNum = (s) => Number(String(s).replace(/,/g, ''));
 
-// 中文大寫金額：壹仟陸佰元 → 1600
-const CN_DIGIT = { 零: 0, 〇: 0, 壹: 1, 一: 1, 貳: 2, 二: 2, 兩: 2, 參: 3, 叁: 3, 三: 3, 肆: 4, 四: 4, 伍: 5, 五: 5, 陸: 6, 六: 6, 柒: 7, 七: 7, 捌: 8, 八: 8, 玖: 9, 九: 9 };
+// 中文大寫金額：壹仟陸佰元 → 1600；收據方格「零拾零萬壹仟陸佰零拾零元」→ 1600（寫了零的格子是 0）
+const CN_DIGIT = { 零: 0, 〇: 0, '○': 0, 壹: 1, 一: 1, 貳: 2, 二: 2, 兩: 2, 參: 3, 叁: 3, 三: 3, 肆: 4, 四: 4, 伍: 5, 五: 5, 陸: 6, 六: 6, 柒: 7, 七: 7, 捌: 8, 八: 8, 玖: 9, 九: 9 };
 const CN_UNIT = { 拾: 10, 十: 10, 佰: 100, 百: 100, 仟: 1000, 千: 1000 };
 export function parseChineseAmount(s) {
+  const chars = [...String(s)].filter((ch) => ch in CN_DIGIT || ch in CN_UNIT || ch === '萬' || ch === '万');
   let total = 0;
   let section = 0;
   let digit = 0;
-  let seen = false;
-  for (const ch of String(s)) {
+  let hasDigit = false;
+  for (const [i, ch] of chars.entries()) {
     if (ch in CN_DIGIT) {
       digit = CN_DIGIT[ch];
-      seen = true;
+      hasDigit = true;
     } else if (ch in CN_UNIT) {
-      section += (digit || 1) * CN_UNIT[ch];
+      // 單位前沒有數字：開頭且後面接數字（「拾伍」、OCR 漏掉「壹」的「仟陸佰」）當 1；其餘是收據上沒填的空格，當 0
+      const implied = i === 0 && chars[i + 1] in CN_DIGIT ? 1 : 0;
+      section += (hasDigit ? digit : implied) * CN_UNIT[ch];
       digit = 0;
-      seen = true;
-    } else if (ch === '萬') {
+      hasDigit = false;
+    } else {
       total += (section + digit) * 10000;
       section = 0;
       digit = 0;
-      seen = true;
+      hasDigit = false;
     }
   }
-  return seen ? total + section + digit : null;
+  return chars.length ? total + section + digit : null;
+}
+
+// 收據的「合計新台幣（大寫）○萬○仟○佰○拾○元整」：方格之間的空白、直線、底線不算
+const CN_AMOUNT_CHARS = '零〇○壹貳參叁肆伍陸柒捌玖拾佰仟萬万';
+const CN_RUN = new RegExp(`([${CN_AMOUNT_CHARS}][${CN_AMOUNT_CHARS}\\s|｜_.、:：]*)[元圓]`, 'g');
+const CN_LABEL = /合計|總計|共計|總額|新[台臺]幣|大寫/;
+function chineseTotals(norm) {
+  const out = [];
+  for (const m of norm.matchAll(CN_RUN)) {
+    const s = m[1].replace(new RegExp(`[^${CN_AMOUNT_CHARS}]`, 'g'), '');
+    const v = [...s].length >= 2 ? parseChineseAmount(s) : null;
+    if (!(v > 0 && v < 100_000_000)) continue;
+    const labeled = CN_LABEL.test(norm.slice(Math.max(0, m.index - 16), m.index));
+    out.push({ value: v, score: labeled ? 5 : 3, why: labeled ? '「合計新台幣」大寫金額' : '中文大寫金額' });
+  }
+  return out;
 }
 
 function pick(cands) {
@@ -145,14 +164,15 @@ export function extractReceiptFields(text, { shopTaxId = '', today = new Date().
       }
     }
   }
-  // 中文大寫總額（OCR 常把「壹」認錯，單位字仍可推回金額）
-  const cn = /([零〇壹貳參叁肆伍陸柒捌玖拾佰仟萬]{2,})元/.exec(norm);
-  const cnVal = cn ? parseChineseAmount(cn[1]) : null;
-  if (cnVal && cnVal > 0) amt.total.push({ value: cnVal, score: 3, why: '中文大寫金額' });
-
-  // 「未稅＋稅額＝總額、稅額約 5%」：要有關鍵字或檔名金額佐證才採用（避免地址、電話等數字湊巧成立）
+  // 中文大寫總額（OCR 常把「壹」認錯，單位字仍可推回金額）；「合計新台幣」後面的最可靠，有好幾個時取最大的
+  const cnList = chineseTotals(norm).sort((a, b) => b.score - a.score || b.value - a.value);
   const nums = [...new Set([...norm.matchAll(NUM)].map((x) => toNum(x[1])).filter((v) => v > 0 && v < 10_000_000))].slice(0, 300);
   const set = new Set(nums);
+  // numeric：照片上也有同樣的阿拉伯數字（例如 NT$1,600），可互相印證
+  const cn_total = cnList[0] ? { ...cnList[0], numeric: set.has(cnList[0].value) } : null;
+  if (cn_total) amt.total.push({ value: cn_total.value, score: cn_total.score, why: cn_total.why });
+
+  // 「未稅＋稅額＝總額、稅額約 5%」：要有關鍵字或檔名金額佐證才採用（避免地址、電話等數字湊巧成立）
   const has = (list, v) => list.some((c) => c.value === v);
   let best = null;
   for (const ex of nums)
@@ -203,6 +223,6 @@ export function extractReceiptFields(text, { shopTaxId = '', today = new Date().
     if (!vendor_name || score > vendor_name.score) vendor_name = { value: m[1], score, why: '公司行號名稱' };
   }
 
-  return { invoice_no, date, total, sales_ex, tax, buyer_tax_id: buyer, seller_tax_id: seller, invoice_type, vendor_name, notes, text: norm };
+  return { invoice_no, date, total, sales_ex, tax, buyer_tax_id: buyer, seller_tax_id: seller, invoice_type, vendor_name, cn_total, notes, text: norm };
 }
 

@@ -4,6 +4,9 @@ import { store } from './store.js';
 import { h, mount, toast, $ } from './ui.js';
 import { ensureAccounts, getSettings } from './state.js';
 import { showGate, startGuards, lockNow } from './gate.js';
+import { installAccountPicker } from './accpick.js';
+
+installAccountPicker(); // 會計項目下拉可打字篩選
 
 export const ROUTES = [
   { group: '總覽', path: 'dashboard', title: '營運儀表板', load: () => import('./views/dashboard.js') },

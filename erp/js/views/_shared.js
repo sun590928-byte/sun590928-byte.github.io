@@ -32,15 +32,16 @@ function accountGroups(accounts, selected, skip = new Set()) {
   return h`${[...groups].map(([t, list]) => h`<optgroup label="${TYPE_LABELS[t] || t}">${list.map((a) => optionOf(a, selected))}</optgroup>`)}${off.length ? h`<optgroup label="停用的科目">${off.map((a) => optionOf(a, selected))}</optgroup>` : ''}`;
 }
 
+// data-acc-pick：點開或打字時跳出可搜尋的清單（accpick.js）
 export function accountSelect(accounts, selected, attrs = '') {
-  return h`<select ${raw(attrs)}><option value="">— 科目 —</option>${accountGroups(accounts, selected)}</select>`;
+  return h`<select data-acc-pick ${raw(attrs)}><option value="">— 科目 —</option>${accountGroups(accounts, selected)}</select>`;
 }
 
 // 付款方式下拉：常用的付款來源（現金、零用金、銀行、金流未撥款項、應付帳款、代墊、業主往來）放最上面，其餘科目也都可選
 export function payAccountSelect(accounts, selected, attrs = '') {
   const pays = payAccountsOf(accounts, selected);
   const codes = new Set(pays.map(([c]) => c));
-  return h`<select ${raw(attrs)}><optgroup label="常用付款方式">${pays.map(([c, label]) => h`<option value="${c}" ${c === selected ? raw('selected') : ''}>${label}</option>`)}</optgroup>${accountGroups(accounts, selected, codes)}</select>`;
+  return h`<select data-acc-pick ${raw(attrs)}><optgroup label="常用付款方式">${pays.map(([c, label]) => h`<option value="${c}" ${c === selected ? raw('selected') : ''}>${label}</option>`)}</optgroup>${accountGroups(accounts, selected, codes)}</select>`;
 }
 
 export const SOURCE_LABEL = { manual: '手動', pos: 'POS 營收', payout: '撥款入帳', depreciation: '折舊', cogs: '存貨成本', document: '憑證', asset: '資產購置', import: '舊帳匯入', opening: '期初開帳', closing: '年底結帳', bank: '存摺補登', vat: '營業稅結轉', vat_pay: '營業稅繳納' };

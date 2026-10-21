@@ -217,3 +217,76 @@ test('自動覆核：老闆覆核過的欄位不覆寫；備註寫「不入帳�
   assert.ok(r.issues.some((x) => x.includes('金額：QR 碼是 2100')));
   assert.ok(r.issues.some((x) => x.includes('不入帳')));
 });
+
+test('文字辨識：收據方格的大寫金額（寫零的格子是 0、沒填的格子不算）', () => {
+  assert.equal(parseChineseAmount('零拾零萬壹仟陸佰零拾零'), 1600);
+  assert.equal(parseChineseAmount('萬壹仟陸佰零拾零'), 1600, '萬的格子沒填');
+  assert.equal(parseChineseAmount('拾萬萬壹仟陸佰零拾零'), 1600, '拾萬、萬的格子都沒填');
+  assert.equal(parseChineseAmount('壹拾貳萬參仟'), 123000);
+  assert.equal(parseChineseAmount('拾伍'), 15);
+});
+
+const RECEIPT = `免用統一發票收據
+測試五金行
+電話 0222345678 地址 12 號
+膠帶 2 35 70
+抹布 10 25 250
+合計新台幣 零 萬 零 仟 參 佰 貳 拾 零 元整
+2026/09/18`;
+
+test('文字辨識：收據金額取「合計新台幣」大寫處', () => {
+  const r = extractReceiptFields(RECEIPT, { today: TODAY });
+  assert.equal(r.total.value, 320);
+  assert.equal(r.cn_total.value, 320);
+  assert.equal(r.cn_total.score, 5);
+  assert.equal(r.cn_total.numeric, false);
+  const r2 = extractReceiptFields(`收 據\n咖啡杯 2 800\n總計 NT$1,600\n合 計 新 臺 幣 壹 仟 陸 佰 元 整`, { today: TODAY });
+  assert.equal(r2.cn_total.value, 1600);
+  assert.equal(r2.cn_total.numeric, true, '照片上的 1,600 可對照');
+});
+
+test('自動覆核：收據金額用大寫金額；與檔名不同、或沒有數字可對照時列入需確認', () => {
+  const kb = buildVendorKB([]);
+  const r = autoReview(baseDoc({ original_name: '20260918_測試五金行_300.jpg' }), { ocr: extractReceiptFields(RECEIPT, { today: TODAY, hints: { amount: 300 } }), kb, accounts, settings, today: TODAY });
+  assert.equal(r.patch.amount_total, 320);
+  assert.equal(r.sources.amount_total, 'cnamt');
+  assert.ok(r.issues.some((x) => x.includes('檔名金額 300 與收據大寫金額 320 不同')), r.issues.join('；'));
+  const r2 = autoReview(baseDoc(), { ocr: extractReceiptFields(RECEIPT, { today: TODAY }), kb, accounts, settings, today: TODAY });
+  assert.equal(r2.patch.amount_total, 320);
+  assert.ok(r2.issues.some((x) => x.includes('由收據大寫金額辨識')));
+  const r3 = autoReview(baseDoc({ original_name: '20260918_測試五金行_320.jpg' }), { ocr: extractReceiptFields(RECEIPT, { today: TODAY, hints: { amount: 320 } }), kb, accounts, settings, today: TODAY });
+  assert.equal(r3.patch.amount_total, 320);
+  assert.ok(!r3.issues.some((x) => x.includes('金額')), r3.issues.join('；'));
+});
+
+test('自動覆核：發票的廠商用公司全名（照片、以前記過的、電子發票）；收據不改', () => {
+  const kb0 = buildVendorKB([]);
+  const qr = assembleInvoices([{ bytes: leftQR({ seller: SELLER2 }) }]);
+  const named = baseDoc({ original_name: '20260915_範例電機_1050.jpg' });
+  // 照片上的公司全名與檔名簡稱相符
+  const ocr = extractReceiptFields(`電子發票證明聯\n賣方 範例電機有限公司\n總計 1,050`, { today: TODAY });
+  const r = autoReview(named, { qr, ocr, kb: kb0, accounts, settings, today: TODAY });
+  assert.equal(r.patch.vendor_name, '範例電機有限公司');
+  assert.equal(r.sources.vendor_name, 'fullname');
+  assert.ok(!r.issues.some((x) => x.includes('廠商')), r.issues.join('；'));
+  // 照片錯一個字：依簡稱校正
+  const typo = extractReceiptFields(`電子發票證明聯\n賣方 範例電杋有限公司`, { today: TODAY });
+  assert.equal(autoReview(named, { qr, ocr: typo, kb: kb0, accounts, settings, today: TODAY }).patch.vendor_name, '範例電機有限公司');
+  // 照片上的公司名稱與店名對不上（例如本店的名稱）就不用
+  const other = extractReceiptFields(`電子發票證明聯\n範例咖啡有限公司`, { today: TODAY });
+  assert.equal(autoReview(named, { qr, ocr: other, kb: kb0, accounts, settings, today: TODAY }).patch.vendor_name, '範例電機');
+  // 以前記過全名：統編相同就用全名（簡稱記得比較多次也一樣）
+  const short = (o = {}) => posted({ vendor_name: '範例電機', vendor_tax_id: SELLER2, account: '6116', ...o });
+  const kb = buildVendorKB([short(), short(), short({ vendor_name: '範例電機有限公司' })]);
+  const r2 = autoReview(baseDoc(), { qr, kb, accounts, settings, today: TODAY });
+  assert.equal(r2.patch.vendor_name, '範例電機有限公司');
+  assert.equal(r2.sources.vendor_name, 'kb');
+  // 財政部電子發票的賣方名稱優先於以前記的簡稱
+  const ein = [{ invoice_no: 'AB12345678', date: '2026-09-15', total: 1050, tax: 50, seller_tax_id: SELLER2, seller_name: '範例電機股份有限公司', buyer_tax_id: SHOP }];
+  const r3 = autoReview(baseDoc({ original_name: '20260915_範例電機_AB12345678_1050.jpg' }), { einvoices: ein, kb: buildVendorKB([short(), short()]), accounts, settings, today: TODAY });
+  assert.equal(r3.patch.vendor_name, '範例電機股份有限公司');
+  assert.equal(r3.sources.vendor_name, 'einvoice');
+  // 收據照舊用簡稱
+  const rc = extractReceiptFields(`收據\n範例電機有限公司\n合計新台幣壹仟元整`, { today: TODAY });
+  assert.equal(autoReview(baseDoc({ original_name: '20260915_範例電機_1000.jpg' }), { ocr: rc, kb: kb0, accounts, settings, today: TODAY }).patch.vendor_name, '範例電機');
+});
