@@ -230,6 +230,24 @@ try {
   // 帳務
   await go('journal?ym=2026-08');
   await shot('journal-aug', false);
+  // 分錄視窗：會計項目下拉選單蓋到灰色背景時，選完的那一下 click 目標是 dialog 本身，不能因此把視窗關掉
+  {
+    await page.click('[data-act="add"]');
+    await page.waitForSelector('dialog #je-lines');
+    const stillOpen = await page.evaluate(() => {
+      const dlg = document.querySelector('dialog[open]');
+      const sel = dlg.querySelector('[name=acc]');
+      const r = sel.getBoundingClientRect();
+      sel.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: r.left + 5, clientY: r.top + 5 }));
+      dlg.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 5, clientY: 5 }));
+      return !!document.querySelector('dialog[open] #je-lines');
+    });
+    assert(stillOpen, '選科目時分錄視窗不會自己關掉');
+    await page.selectOption('dialog [name=acc] >> nth=0', '6112');
+    assert(await page.isVisible('dialog #je-lines'), '選好科目後分錄視窗還在');
+    await page.mouse.click(4, 4); // 真的在背景按下放開才關
+    await page.waitForSelector('dialog', { state: 'detached', timeout: 5000 });
+  }
   await go('trial?pm=ytd&ym=2026-09');
   assert(await page.isVisible('text=借貸平衡'), '試算表平衡');
   await shot('trial');
@@ -347,7 +365,7 @@ try {
   assert((await page.textContent('table.grid')).includes('好市多'), '批次入帳有產生分錄');
   await go('documents?tab=inbox');
 
-  // 依資料夾上傳：子資料夾名稱決定付款方式；已上傳過的同名檔案只更新付款方式；存摺明細略過
+  // 依資料夾上傳：子資料夾名稱決定付款方式；已上傳過的同名檔案只更新付款方式；存摺照片送到「銀行存摺對帳」
   {
     const png = await readFile(FX('20260902_全聯_鮮乳2瓶_356.png'));
     const [c0] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pick"]')]);
@@ -372,7 +390,7 @@ try {
     const row = (f) => rows.find((r) => r[0] === f) || [];
     assert(/2134/.test(row('員工代墊支出')[1]) && row('員工代墊支出')[2] === '1' && row('員工代墊支出')[3] === '1', '員工代墊：新上傳 1、更新 1');
     assert(/1103/.test(row('主要帳戶')[1]), '主要帳戶 → 1103');
-    assert(/略過/.test(row('存摺明細')[1]), '存摺明細略過');
+    assert(/存摺照片 1 張/.test(row('存摺明細')[1]), '存摺照片送到銀行存摺對帳');
     await shot('documents-folder', false);
     await page.click('dialog .modal-foot .btn.primary');
     await page.waitForSelector('.doc-card >> text=20260912_設備商_磨豆機訂金及尾款_120000.png');
@@ -456,6 +474,66 @@ try {
     await rc.locator('[data-act="save"]').click();
     await page.waitForTimeout(500);
     assert(!(await rc.locator('.recog-note').count()), '暫存後不再標需確認');
+    // 存摺照片（合成）：本機辨識 → 用結存逐列核對 → 列出全部讀到的列勾選匯入 → 批次補登建議科目
+    {
+      await go('bank');
+      // 先前選資料夾時送過來的存摺照片（測試用的是發票圖，讀不到明細）：打開這頁會自動辨識，關掉結果
+      await page.waitForSelector('dialog', { timeout: 60000 });
+      await page.click('dialog .modal-foot .btn');
+      await page.waitForSelector('dialog', { state: 'detached' });
+      const pb = await page.evaluate(() => {
+        const c = document.createElement('canvas');
+        c.width = 1500;
+        c.height = 800;
+        const g = c.getContext('2d');
+        g.fillStyle = '#eef3ee';
+        g.fillRect(0, 0, c.width, c.height);
+        g.fillStyle = 'rgba(70,120,90,0.16)';
+        g.font = '15px Arial';
+        for (let y = 18; y < c.height; y += 20) g.fillText('THE DEMO CREDIT COOPERATIVE  '.repeat(6), (y % 40) - 30, y);
+        g.fillStyle = '#111';
+        g.font = 'bold 32px "Microsoft JhengHei", "Noto Sans CJK TC", sans-serif';
+        const rows = [
+          ['', '帳號:9999999-11-0000001', '', '*100,000.00 本數:0'],
+          ['1150901', '網銀 1150831', '*2,500.00 (8月代墊)', '*97,500.00 營業部'],
+          ['1150901', '電匯 (綠界科技股)', '*1,989.00', '*99,489.00'],
+          ['1150902', '現金 (0901銷)', '*3,275.00', '*102,764.00'],
+          ['1150903', '現金 (0902銷)', '*1,590.00', '*104,354.00'],
+          ['1150903', '網銀 (房租)', '*5,000.00', '*99,354.00 營業部'],
+        ];
+        rows.forEach((r, i) => {
+          const y = 110 + i * 100;
+          g.fillText(r[0], 30, y);
+          g.fillText(r[1], 200, y);
+          g.fillText(r[2], 620, y);
+          g.fillText(r[3], 1020, y);
+        });
+        g.fillStyle = '#1d3fbf';
+        g.font = 'italic 34px cursive';
+        g.fillText('9/1', 1400, 330); // 藍筆手寫：前處理要濾掉
+        return c.toDataURL('image/png').split(',')[1];
+      });
+      const [cp] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="photos"]')]);
+      await cp.setFiles([{ name: '20260901-20260903-示範存摺.png', mimeType: 'image/png', buffer: Buffer.from(pb, 'base64') }]);
+      await page.waitForSelector('dialog #pb-rows', { timeout: 120000 });
+      const info = (await page.textContent('dialog .callout')).replace(/\s+/g, ' ');
+      const okRows = Number((/對得上 (\d+)/.exec(info) || [])[1] || 0);
+      console.log('存摺照片：', info.slice(0, 60), '；', await page.textContent('#pb-sum'));
+      assert(okRows >= 4, '合成存摺至少 4 列對得上：' + info);
+      await shot('bank-passbook-review', false);
+      await page.click('dialog .modal-foot .btn.primary');
+      await page.waitForSelector('text=已匯入', { timeout: 15000 });
+      await page.waitForSelector('[data-act="bookMany"]');
+      await page.click('[data-act="bookMany"]');
+      await page.waitForSelector('dialog >> text=批次補登');
+      const sugg = await page.$$eval('dialog tbody tr', (trs) => trs.map((tr) => [tr.children[2].textContent, tr.querySelector('[name=acc]').value]));
+      console.log('補登建議：', sugg.filter(([d]) => /綠界|代墊|銷|房租/.test(d)));
+      assert(sugg.some(([d, a]) => /綠界/.test(d) && a === '1111'), '綠界撥款建議 1111');
+      assert(sugg.some(([d, a]) => /銷/.test(d) && a === '1101'), '現金營收存入建議 1101');
+      await shot('bank-bookmany', false);
+      await page.click('dialog .modal-foot .btn');
+      await page.waitForTimeout(300);
+    }
     await setRecognize(false, '');
     await go('documents?tab=inbox');
   }
