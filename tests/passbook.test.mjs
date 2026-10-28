@@ -57,10 +57,11 @@ test('存摺照片：對不上的列標「需確認」；下一張照片重印�
   const rows = verifyChain([p1, p2]);
   assert.deepEqual(
     rows.map((r) => r.status),
-    ['ok', 'ok', 'duplicate', 'check', 'check', 'ok'],
+    ['ok', 'ok', 'duplicate', 'check', 'ok', 'ok'],
   );
   assert.equal(rows[3].page, 1);
   assert.match(rows[3].note, /對不上/);
+  assert.match(rows[4].note, /與下一列對得上/);
 });
 
 test('存摺明細列：匯入格式、重複偵測、補登建議科目', () => {

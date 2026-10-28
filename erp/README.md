@@ -136,8 +136,10 @@
      supabase secrets set ANTHROPIC_API_KEY=sk-ant-你的金鑰
      supabase secrets set ALLOWED_ORIGINS=https://sun590928-byte.github.io
      supabase functions deploy extract-document
+     supabase functions deploy company-name
      ```
    金鑰只存在 Supabase 伺服器端，網頁與 GitHub 上都不會出現。`ALLOWED_ORIGINS`（選用）限制只有你的網站能呼叫。預設模型 `claude-opus-5`，可用 `CLAUDE_MODEL` 更換。
+   - 廠商登記全名（選用）：再用同樣方式部署 `company-name`（貼上 `supabase/functions/company-name/index.ts`，不需要任何金鑰）。本機辨識發票時會用賣方統編到經濟部「商工登記公示資料」查登記名稱（例：統編 60625898 → 吾月有限公司），一張照片多張發票以第一張的賣方為準；憑證卡片的廠商欄也有「查全名」按鈕。沒部署也能用，廠商名稱就沿用辨識結果。
 6. 打開 ERP → **設定與備份 → 雲端資料庫**：填入 Project URL（`https://xxxx.supabase.co`）與 anon public key（Settings → API）→ 啟用 → 輸入開啟密碼 → 登入雲端帳號。之後這台裝置保持登入（加密保存），每次只要輸入開啟密碼。
 7. 若之前已在本機匯入資料，按「把這台裝置的本機資料上傳到雲端」（照片一起上傳）。
 

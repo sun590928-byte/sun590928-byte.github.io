@@ -57,7 +57,14 @@ export function guessProvider(text) {
 export function normalizePayouts(rawRows, { batchId = '', provider = 'ecpay' } = {}) {
   const out = [];
   const skipped = [];
+  // 每列一筆刷卡（綠界「信用卡撥款明細」：有授權單號／卡號）：依金流、請款日彙總成一筆撥款，和存摺入帳的金額才對得上
+  const perTx = rawRows.some((r) => String(r.tx_id || '').trim());
+  const groups = new Map();
   for (const r of rawRows) {
+    if (Object.values(r).some((v) => /小計|合計|總計/.test(String(v ?? '')))) {
+      skipped.push({ row: r._row, reason: '小計／合計列，不匯入' });
+      continue;
+    }
     const date = parseDate(r.payout_date);
     let gross = parseAmount(r.gross);
     const fee = Math.abs(parseAmount(r.fee) ?? 0);
@@ -70,7 +77,18 @@ export function normalizePayouts(rawRows, { batchId = '', provider = 'ecpay' } =
     if (gross === null) gross = round2(net + fee);
     const prov = guessProvider(r.provider) || provider;
     const ref = String(r.ref || '').trim();
+    if (perTx) {
+      const key = `${prov}|${date}`;
+      const g = groups.get(key) || { batch_id: batchId, provider: prov, payout_date: date, gross: 0, fee: 0, net: 0, period_from: null, period_to: null, tx_count: 0, ref: '', note: '', _row: r._row };
+      g.gross = round2(g.gross + gross);
+      g.fee = round2(g.fee + fee);
+      g.net = round2(g.net + net);
+      g.tx_count++;
+      groups.set(key, g);
+      continue;
+    }
     out.push({
+      _row: r._row,
       id: 'po_' + fnv1a([prov, date, ref, gross, net, fee].join('|')),
       batch_id: batchId,
       provider: prov,
@@ -85,7 +103,19 @@ export function normalizePayouts(rawRows, { batchId = '', provider = 'ecpay' } =
       note: String(r.note || '').trim(),
     });
   }
-  return { rows: out, skipped };
+  for (const g of groups.values()) {
+    g.id = 'po_' + fnv1a([g.provider, g.payout_date, 'tx', g.gross, g.net, g.fee].join('|'));
+    g.note = `${g.tx_count} 筆刷卡彙總`;
+    out.push(g);
+  }
+  // 同一檔案裡完全相同的列（撥款日、金額都一樣）只留一筆：同一主鍵寫兩次會被資料庫拒絕
+  const seen = new Map();
+  for (const r of out) {
+    const { _row, ...row } = r;
+    if (seen.has(row.id)) skipped.push({ row: _row, reason: '與同檔另一列相同（撥款日、金額都一樣）' });
+    else seen.set(row.id, row);
+  }
+  return { rows: [...seen.values()].sort((a, b) => (a.payout_date < b.payout_date ? -1 : a.payout_date > b.payout_date ? 1 : 0)), skipped };
 }
 
 // 每日：POS 刷卡營收 vs 綠界交易

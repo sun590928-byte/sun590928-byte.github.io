@@ -11,8 +11,8 @@ import { INVOICE_NO_RE, NON_DEDUCTIBLE_ACCOUNTS, FIXED_ASSET_ACCOUNTS, DED_CODES
 import { round2 } from './money.js';
 import { compactKey, levRatio } from './text.js';
 
-export const SOURCE_LABELS = { user: '手動', qr: 'QR 碼', einvoice: '電子發票', filed: '已申報媒體檔', filename: '檔名', ocr: '文字辨識', kb: '廠商資料庫', learned: '以前相似品項', rule: '規則', classify: '品項關鍵字', cnamt: '收據大寫金額', fullname: '照片上的公司全名' };
-const QUALITY = { user: 1, qr: 1, einvoice: 1, filed: 0.97, filename: 0.9, ocr: 0.7, kb: 0.85, learned: 0.8, rule: 0.8, classify: 0.7, cnamt: 0.9, fullname: 0.9 };
+export const SOURCE_LABELS = { user: '手動', qr: 'QR 碼', einvoice: '電子發票', filed: '已申報媒體檔', filename: '檔名', ocr: '文字辨識', kb: '廠商資料庫', learned: '以前相似品項', rule: '規則', classify: '品項關鍵字', cnamt: '收據大寫金額', fullname: '照片上的公司全名', registry: '商工登記（統編查全名）' };
+const QUALITY = { user: 1, qr: 1, einvoice: 1, filed: 0.97, filename: 0.9, ocr: 0.7, kb: 0.85, learned: 0.8, rule: 0.8, classify: 0.7, cnamt: 0.9, fullname: 0.9, registry: 1 };
 
 const GENERAL_STORES = /全聯|家樂福|好市多|costco|大潤發|愛買|頂好|美廉社|7-?11|7-?eleven|統一超商|全家|萊爾富|ok超商|momo|富邦媒體|pchome|網路家庭|蝦皮|shopee|小北|寶雅|大創|daiso|ikea|宜家|屈臣氏|康是美/i;
 // 超商、生活百貨的零星採買（老闆的規則：大創、7-11 等列 6133 雜項費用）；網購平台什麼都賣，不套用

@@ -470,9 +470,12 @@ class CloudBackend {
   }
   async putMany(coll, rows) {
     await this.open();
-    for (let i = 0; i < rows.length; i += 500) {
-      const chunk = rows.slice(i, i + 500).map((r) => toRow(coll, r));
-      const { error } = await this.client.from(coll).upsert(chunk, { onConflict: pkOf(coll) });
+    const pk = pkOf(coll);
+    // 同一批裡同主鍵只留最後一筆：upsert 同一列出現兩次會被拒絕（ON CONFLICT DO UPDATE command cannot affect row a second time）
+    const uniq = [...new Map(rows.map((r) => toRow(coll, r)).map((r) => [r[pk], r])).values()];
+    for (let i = 0; i < uniq.length; i += 500) {
+      const chunk = uniq.slice(i, i + 500);
+      const { error } = await this.client.from(coll).upsert(chunk, { onConflict: pk });
       if (error) throw new Error(`${SCHEMA[coll].label}寫入失敗：${error.message}`);
     }
   }

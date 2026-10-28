@@ -462,7 +462,7 @@ try {
     const fillRow = async (i, inv, acc, amt, tax) => {
       const tr = page.locator('dialog #ln tr').nth(i);
       await tr.locator('[name=inv]').fill(inv);
-      await tr.locator('[name=acc]').selectOption(acc);
+      await tr.locator('[name=acc]').fill(acc); // 打代號即可，離開格子會換成「代號 名稱」
       await tr.locator('[name=amt]').fill(String(amt));
       await tr.locator('[name=tax]').fill(String(tax));
     };
