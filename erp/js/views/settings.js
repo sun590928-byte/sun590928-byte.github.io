@@ -1,6 +1,7 @@
 // 設定與備份：店家資料、營業稅與申報、作廢規則、會員等級、安全性（開啟密碼、自動上鎖）、雲端資料庫、加密備份還原。
 
 import { h, raw, mount, bindActions, toast, confirmBox, download, pickFiles, options, setBusy, status, modal } from '../ui.js';
+import { lookupCompanyName } from '../lib/companyname.js';
 import { store, cloudConfig, saveCloudConfig } from '../store.js';
 import { getSettings, saveSettings } from '../state.js';
 import { VOID_REASONS, DEFAULT_VOID_RULES, reapplyVoids } from '../lib/pos.js';
@@ -70,6 +71,7 @@ function showRecoveryCode(code) {
 export async function render(root) {
   let s = await getSettings();
   const mcpFn = () => (s.mcp_function || 'erp-mcp').trim();
+  const coFn = () => (s.company_function || 'company-name').trim();
   const mcpUrl = () => `${(cloudConfig() || {}).url || ''}/functions/v1/${mcpFn()}`;
 
   // 連接器金鑰：24 bytes 隨機 → base64url 32 字，存在雲端設定（settings.value.mcp_token），Edge Function 以此驗證
@@ -183,6 +185,14 @@ export async function render(root) {
               <div class="row" style="margin-top:10px"><button class="btn primary" data-act="mcpTest">測試連線</button><button class="btn" data-act="mcpCopy">複製 claude.ai 網址</button><button class="btn danger" data-act="mcpRotate">重新產生金鑰（舊的立即失效）</button></div>`
             : h`<div class="row"><button class="btn primary" data-act="mcpGen">產生連接器金鑰</button></div>`}
         <p class="muted" style="font-size:12.5px;margin-top:8px">部署一次即可：Supabase 後台 → Edge Functions → Deploy a new function → Via editor，名稱建議 <code>erp-mcp</code>（用別的名稱也可以，上面欄位填一樣的），貼上 <code>supabase/functions/erp-mcp/index.ts</code> → Deploy；再到該函式的設定把「Verify JWT」關掉。連上後在 Claude 對話框說「幫我覆核待處理的憑證」即可。</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>廠商登記全名（統編查商工登記）</h2>${store.mode !== 'cloud' ? status('na', '需要雲端模式') : status('info', '函式 ' + coFn())}</div>
+        <p class="muted" style="font-size:13.5px">本機辨識發票時，用賣方統編到經濟部「商工登記公示資料」查登記名稱當廠商名稱（例：60625898 → 吾月有限公司）；憑證卡片的廠商欄也有「查全名」。要先在 Supabase 部署函式（Edge Functions → Deploy a new function → Via editor，貼上 <code>supabase/functions/company-name/index.ts</code>，不需要金鑰）；沒部署時會安靜略過。</p>
+        ${store.mode === 'cloud'
+          ? h`<div class="row" style="gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:8px"><label class="field" style="flex:1;min-width:260px"><span>Supabase 上的函式名稱（部署時若沒改名會是自動取的，例如 smooth-task，照函式頁面上的網址結尾填）</span><input type="text" value="${coFn()}" data-act="coFn" spellcheck="false"></label><button class="btn primary" data-act="coTest">測試（查 60625898）</button></div>`
+          : ''}
       </div>
 
       <div class="card">
@@ -313,6 +323,26 @@ export async function render(root) {
       if (!/^[a-z0-9][a-z0-9_-]*$/i.test(v)) return toast('函式名稱只能有英數字、減號、底線', 'error');
       s = await saveSettings({ mcp_function: v });
       draw();
+    },
+    coFn: async (el) => {
+      const v = el.value.trim().replace(/^.*\/functions\/v1\//, '').replace(/\/.*$/, '');
+      if (!/^[a-z0-9][a-z0-9_-]*$/i.test(v)) return toast('函式名稱只能有英數字、減號、底線', 'error');
+      s = await saveSettings({ company_function: v });
+      draw();
+    },
+    coTest: async () => {
+      setBusy(true, '查商工登記…');
+      try {
+        const r = await lookupCompanyName('60625898', { force: true });
+        if (r?.name) toast(`成功：60625898 ＝ ${r.name}${r.status ? `（${r.status}）` : ''}`, 'good', 9000);
+        else toast('函式有回應但查不到名稱：請確認貼的是最新的 index.ts', 'error', 9000);
+      } catch (e) {
+        if (e?.status === 404) toast(`找不到函式 ${coFn()}（請確認 Supabase 上的函式名稱，或尚未部署）`, 'error', 9000);
+        else if (e?.status === 401) toast('函式回 401：請確認已登入雲端帳號；這個函式的「Verify JWT」要保持開啟', 'error', 9000);
+        else toast(`查詢失敗：${e.message || e}`, 'error', 12000);
+      } finally {
+        setBusy(false);
+      }
     },
     mcpRotate: async () => {
       if (!(await confirmBox('重新產生金鑰？claude.ai 與 Claude Code 上舊的連接器會失效，要重新貼一次網址。', { ok: '重新產生', danger: true }))) return;

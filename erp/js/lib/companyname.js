@@ -3,6 +3,7 @@
 // 只有連線雲端時查得到；函式沒部署（404）或離線時安靜略過，廠商名稱就沿用辨識結果。
 
 import { store } from '../store.js';
+import { getSettings } from '../state.js';
 
 const mem = new Map();
 let missing = false; // 函式尚未部署：這次開著就不再試
@@ -30,10 +31,12 @@ export async function lookupCompanyName(ban, { force = false, maxAge = 180 * DAY
     mem.set(ban, old);
     return old;
   }
+  if (force) missing = false; // 使用者按「測試」或「查全名」：重新試一次（可能剛部署好、或改了函式名稱）
   if (!canLookupCompany()) return old || null;
+  const fn = String((await getSettings()).company_function || 'company-name').trim();
   let r;
   try {
-    r = await store.backend.invoke('company-name', { ban });
+    r = await store.backend.invoke(fn, { ban });
   } catch (e) {
     if (e?.status === 404) missing = true;
     throw e;
