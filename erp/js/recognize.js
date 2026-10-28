@@ -10,6 +10,7 @@ import { buildVendorKB, lookupVendor } from './lib/vendorkb.js';
 import { autoReview } from './lib/autoreview.js';
 import { parseDocName } from './lib/docname.js';
 import { today } from './lib/dates.js';
+import { lookupCompanyName, canLookupCompany, isBan } from './lib/companyname.js';
 
 let running = null;
 
@@ -68,6 +69,23 @@ export async function recognizeDocuments(list, { files = new Map(), onProgress, 
         }
         const qr = assembleInvoices(codes);
         const r = autoReview(doc, { qr, ocr, einvoices: purchase, filed, kb, accounts, settings, docs: all, today: today() });
+        // 廠商名稱：用賣方統編到商工登記查登記全名（一張照片多張發票時以第一張的賣方為準）；手動填過的不動；要連雲端才查得到
+        const ban = r.patch.vendor_tax_id || doc.vendor_tax_id;
+        if (isBan(ban) && r.sources.vendor_name !== 'user' && canLookupCompany()) {
+          step('查商工登記全名');
+          try {
+            const reg = await lookupCompanyName(ban);
+            if (reg?.name && reg.name !== r.patch.vendor_name) {
+              r.patch.vendor_name = reg.name;
+              r.sources.vendor_name = 'registry';
+              r.reasons.push(`商工登記：統編 ${ban} 的登記名稱是「${reg.name}」${reg.status && reg.status !== '核准設立' ? `（${reg.status}）` : ''}`);
+              r.issues = r.issues.filter((x) => !/^廠商「.*」由文字辨識取得/.test(x));
+              r.clean = !r.issues.length && r.confidence >= 0.5;
+            } else if (reg?.name) r.reasons.push(`商工登記：統編 ${ban} 登記名稱相符`);
+          } catch (e) {
+            if (e?.status !== 404) r.reasons.push(`商工登記查詢失敗：${e.message || e}`);
+          }
+        }
         const status = doc.status === 'inbox' && r.clean ? 'reviewed' : doc.status;
         const upd = {
           ...doc,

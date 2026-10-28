@@ -6,6 +6,11 @@ import { compactKey, levRatio } from './text.js';
 // 公司型態與分店字尾：「範例商行股份有限公司信義分公司」→「範例商行」
 const SUFFIX = /(股份有限公司|有限公司|企業社|商行|工作室|公司)(.{0,8}(分公司|門市|分店|店))?$/;
 
+/** 公司（行號）全名：結尾是公司型態，例如「範例電機有限公司」；「範例電機」是簡稱 */
+export const isCompanyName = (name) => SUFFIX.test(String(name || '').normalize('NFKC').trim());
+/** 去掉公司型態（與分店）的簡稱 */
+export const shortVendorName = (name) => String(name || '').normalize('NFKC').trim().replace(SUFFIX, '');
+
 /** 店名的比對鍵（可能有好幾個）：全名、去公司型態、括號內外各一 */
 export function vendorAliases(name) {
   const s = String(name || '').normalize('NFKC');
@@ -109,6 +114,8 @@ export function buildVendorKB(docs = [], einvoices = []) {
   const done = entries.map((e) => ({
     taxId: e.taxId,
     name: top(e.names).value || '',
+    // 以前記過的公司全名（發票的廠商用全名）
+    fullName: top([...e.names].filter(([n]) => isCompanyName(n))).value || '',
     account: top(e.accounts),
     pay: top(e.pays),
     summary: e.summaries[e.summaries.length - 1] || '',

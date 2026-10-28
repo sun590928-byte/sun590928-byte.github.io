@@ -5,8 +5,9 @@ import { h, raw, mount, bindActions, dataTable, fmt, stat, status, toast, modal,
 import { store } from '../store.js';
 import { getSettings, getAccounts, isLocked } from '../state.js';
 import { bookLines, autoMatch, reconciliation } from '../lib/bank.js';
-import { parsePassbookText, verifyChain, toBankLine, alreadyImported, suggestBankAccount, bankHistory } from '../lib/passbook.js';
+import { parsePassbookText, tableToPage, verifyChain, toBankLine, alreadyImported, suggestBankAccount, bankHistory } from '../lib/passbook.js';
 import { readPassbook, releaseOcr } from '../vision.js';
+import { readPassbookTable } from '../passbookvision.js';
 import { nextVoucherNo } from '../lib/ledger.js';
 import { monthEnd, today } from '../lib/dates.js';
 import { uid } from '../lib/text.js';
@@ -160,11 +161,25 @@ export async function render(root, ctx) {
     try {
       for (const [i, file] of files.entries()) {
         const range = rangeOf(file.name);
-        setBusy(true, `辨識存摺照片 ${i + 1}/${files.length}…（每張約 5 秒，在這台電腦辨識）`);
+        const busy = (what) => setBusy(true, `辨識存摺照片 ${i + 1}/${files.length}：${what}（在這台電腦辨識，每張約 5～15 秒）`);
+        busy('讀取照片');
         try {
-          const r = await readPassbook(file, { score: (t) => parsePassbookText(t, range).rows.length });
-          const page = parsePassbookText(r.text, range);
-          if (!page.rows.length) failed.push(`${file.name}：沒有讀到存摺明細列（照片請拍正、對焦清楚、整頁入鏡）`);
+          // 先用表格辨識：找表格線、攤平、逐列切開讀，每列附照片縮圖；找不到表格線再退回整頁文字辨識
+          let page = null;
+          let why = '';
+          try {
+            const t = await readPassbookTable(file, { onStep: busy });
+            if (t.ok && t.rows.length) page = tableToPage(t, range);
+            else why = t.why || '';
+          } catch (e) {
+            why = e.message || String(e);
+          }
+          if (!page?.rows.length) {
+            busy('整頁文字辨識');
+            const r = await readPassbook(file, { score: (t) => parsePassbookText(t, range).rows.length });
+            page = parsePassbookText(r.text, range);
+          }
+          if (!page.rows.length) failed.push(`${file.name}：沒有讀到存摺明細列（照片請拍正、對焦清楚、整頁入鏡）${why ? `；${why}` : ''}`);
           pages.push({ ...page, file });
         } catch (e) {
           failed.push(`${file.name}：${e.message || e}`);
@@ -209,16 +224,18 @@ export async function render(root, ctx) {
       const [tone, label] = STATUS_CHIP[r.imported ? 'imported' : r.status] || STATUS_CHIP.check;
       return status(tone, label);
     };
-    const rowHtml = (r, k) => h`<tr data-k="${k}" data-page="${r.page}" class="${r.status === 'duplicate' || r.imported ? 'void' : ''}">
+    // 每列：上面一條照片裁下來的那一列（表格辨識才有），下面是可修改的欄位
+    const dim = (r) => r.status === 'duplicate' || r.imported;
+    const rowHtml = (r, k) => h`${r.thumb ? h`<tr class="pb-thumb"><td colspan="8" style="padding:10px 6px 0;border-bottom:0"><img src="${r.thumb}" alt="存摺照片上的這一列" style="display:block;width:100%;max-width:1000px;border-radius:4px;${dim(r) ? 'opacity:.45' : ''}"></td></tr>` : ''}<tr data-k="${k}" data-page="${r.page}" class="${dim(r) ? 'void' : ''}">
       <td><input type="checkbox" name="on" ${defaultOn(r) ? raw('checked') : ''} aria-label="匯入這一列"></td>
-      <td class="pb-chip">${chip(r)}</td>
+      <td class="pb-chip" style="white-space:nowrap">${chip(r)}</td>
       <td><input type="date" name="d" value="${r.date || ''}" class="cell"></td>
       <td><input type="text" name="s" value="${r.summary || ''}" class="cell" style="width:150px"></td>
       <td><input name="w" inputmode="decimal" class="cell num" value="${r.withdrawal || ''}" style="width:96px"></td>
       <td><input name="dep" inputmode="decimal" class="cell num" value="${r.deposit || ''}" style="width:96px"></td>
       <td><input name="b" inputmode="decimal" class="cell num" value="${r.balance ?? ''}" style="width:110px"></td>
-      <td class="muted pb-note" style="font-size:12px;max-width:260px">${r.note || ''}</td>
-    </tr>`;
+      <td><input type="text" name="rm" value="${r.remark || ''}" class="cell" style="width:72px" aria-label="備註"></td>
+    </tr>${r.note ? h`<tr class="pb-noterow"><td colspan="8" class="muted pb-note" style="font-size:12px;padding:0 10px 10px;border-top:0">${r.note}</td></tr>` : ''}`;
     const counts = {};
     for (const r of rows) {
       const k = r.imported ? 'imported' : r.status;
@@ -227,7 +244,7 @@ export async function render(root, ctx) {
     const groups = pages.map((p, pi) => ({ p, pi, rows: rows.map((r, k) => [r, k]).filter(([r]) => r.page === pi) }));
     let nextK = rows.length;
     const body = h`<div class="callout" style="margin-bottom:10px"><p>照片 ${pages.length} 張、讀到 ${rows.length} 列：${['ok', 'corrected', 'inferred', 'check', 'duplicate', 'imported'].filter((k) => counts[k]).map((k) => `${STATUS_CHIP[k][1]} ${counts[k]}`).join('、')}。
-        每列都用「上一列結存 ± 金額 ＝ 結存」核對；<b>需確認</b>的請點照片對照、修正數字（改完會即時重新核對），沒讀到的列可「＋ 新增一列」。只會匯入打勾的列，已匯入過的會自動略過。</p></div>
+        每列都用「上一列結存 ± 金額 ＝ 結存」核對，每列上方附照片裁下來的那一列，請逐列對照；<b>需確認</b>、<b>推算</b>的請修正數字（改完會即時重新核對），沒讀到的列可「＋ 新增一列」。只會匯入打勾的列，已匯入過的會自動略過。</p></div>
       ${failed.length ? h`<div class="callout warn" style="margin-bottom:10px"><p>${failed.join('；')}</p></div>` : ''}
       <div class="row" style="margin-bottom:8px;gap:8px;flex-wrap:wrap">
         <label class="field" style="flex-direction:row;align-items:center;gap:6px"><span>存摺帳戶代號</span><input type="text" id="pb-acct" value="${f.acct}" style="width:110px"></label>
@@ -236,14 +253,14 @@ export async function render(root, ctx) {
         <button type="button" class="btn sm" data-sel="new">全選未匯入</button>
         <button type="button" class="btn sm" data-sel="none">全不選</button>
       </div>
-      <div class="table-wrap" style="max-height:60vh"><table class="grid"><thead><tr><th></th><th>核對</th><th>日期</th><th>摘要</th><th class="num">支出</th><th class="num">存入</th><th class="num">結存</th><th>說明</th></tr></thead>
+      <div class="table-wrap" style="max-height:60vh"><table class="grid"><thead><tr><th></th><th>核對</th><th>日期</th><th>摘要</th><th class="num">支出</th><th class="num">存入</th><th class="num">結存</th><th>備註</th></tr></thead>
       <tbody id="pb-rows">${groups.map((g) => h`<tr class="pb-head"><td colspan="8"><b>照片 ${g.pi + 1}</b>　${g.p.file.name}　<a href="${urls[g.pi]}" target="_blank" rel="noopener">開啟照片對照</a>　<button type="button" class="btn sm ghost" data-addrow="${g.pi}">＋ 新增一列</button></td></tr>${g.rows.map(([r, k]) => rowHtml(r, k))}`)}</tbody></table></div>
       <p class="muted" id="pb-sum" style="margin-top:8px"></p>`;
     const collect = (dlg) =>
       [...dlg.querySelectorAll('#pb-rows tr[data-k]')].map((tr) => {
         const v = (n) => tr.querySelector(`[name=${n}]`).value.trim();
         const k = Number(tr.dataset.k);
-        return { tr, k, on: tr.querySelector('[name=on]').checked, page: Number(tr.dataset.page), date: v('d'), summary: v('s'), withdrawal: num(v('w')), deposit: num(v('dep')), balance: v('b') === '' ? null : num(v('b')), orig: rows[k] };
+        return { tr, k, on: tr.querySelector('[name=on]').checked, page: Number(tr.dataset.page), date: v('d'), summary: v('s'), withdrawal: num(v('w')), deposit: num(v('dep')), balance: v('b') === '' ? null : num(v('b')), remark: v('rm'), orig: rows[k] };
       });
     // 依畫面上的數字重新核對結存（略過標重複、已匯入的列）
     const recheck = (dlg) => {
@@ -312,7 +329,7 @@ export async function render(root, ctx) {
             const bad = list.find((x) => !/^\d{4}-\d{2}-\d{2}$/.test(x.date) || (!x.withdrawal && !x.deposit) || (x.withdrawal && x.deposit));
             if (bad) return toast(`第 ${list.indexOf(bad) + 1} 個勾選的列：日期要填，支出或存入要擇一填金額`, 'error', 6000), false;
             const acct = dlg.querySelector('#pb-acct').value.trim() || 'main';
-            return { acct, rows: list.map(({ date, summary, withdrawal, deposit, balance, orig }) => ({ date, summary, withdrawal, deposit, balance, memo: orig?.memo || '' })) };
+            return { acct, rows: list.map(({ date, summary, withdrawal, deposit, balance, remark, orig }) => ({ date, summary, withdrawal, deposit, balance, remark, memo: orig?.memo || '' })) };
           },
         },
       ],

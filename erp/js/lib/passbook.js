@@ -9,6 +9,15 @@ import { fnv1a } from './text.js';
 const DIGIT_LIKE = { O: '0', o: '0', Q: '0', D: '0', d: '0', p: '0', U: '0', l: '1', I: '1', '|': '1', i: '1', S: '5', s: '5', B: '8', Z: '2', z: '2' };
 const asDigits = (s) => String(s).replace(/[OoQDdpUlI|iSsBZz]/g, (c) => DIGIT_LIKE[c]);
 const near = (a, b) => Math.abs(a - b) < 0.5;
+// 兩個數字只差一個數字（326,539 vs 324,539）
+const oneDigitOff = (x, y) => {
+  const a = String(Math.round(x));
+  const b = String(Math.round(y));
+  if (a.length !== b.length || a.length < 4) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i] && ++d > 1) return false;
+  return d === 1;
+};
 
 // 帳號（1200034-11-0955840；辨識時分隔號常被讀成 }、空白）不是金額
 const ACCOUNT_NO = /\d{5,8}\s*[-－}\])|]?\s*\d{1,3}\s*[-－]\s*\d{5,8}/;
@@ -22,7 +31,7 @@ const ROC_DATE_TOKEN = /^(?:1?1)?5(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{0,4}$/;
  * 存摺金額一律印成「*N,NNN.00」，所以結尾的 2～3 位常是角分（或被讀錯的 .00）。
  */
 export function moneyCandidates(token) {
-  const t = asDigits(String(token).replace(/^[^\d]+/, '')).replace(/\s/g, '').replace(/[.,]+$/, '');
+  const t = asDigits(String(token).replace(/^[^\d]+/, '')).replace(/\s/g, '').replace(/[^\d,.]/g, '').replace(/[.,]+$/, '');
   const digits = t.replace(/\D/g, '');
   if (!digits) return [];
   const out = new Set();
@@ -66,10 +75,11 @@ function lineDate(line, year) {
 }
 
 const KIND = [
-  ['網銀', /網銀|綱銀|網鋇|網報/],
-  ['電匯', /電匯|匯/],
-  ['現金', /現金|現全|晨金|趨金|耽金|理金/],
-  ['轉帳', /轉帳|轉入|轉出/],
+  ['網銀', /網銀|綱銀|網鋇|網報|網|銀/],
+  ['電匯', /電匯|匯|電/],
+  ['現金', /現金|現全|晨金|趨金|耽金|理金|現|金/],
+  ['轉帳', /轉帳|轉入|轉出|轉/],
+  ['CD', /\bC ?D\b/],
   ['利息', /利息/],
   ['手續費', /手續費|匯費/],
   ['提款', /提款|ATM/i],
@@ -126,11 +136,82 @@ export function parsePassbookText(text, { year = new Date().getFullYear(), from 
 
 const DEPOSIT_HINT = /現金|電匯|存入|利息|轉入|綠界|LINE|撥款|銷/;
 
+// ─────────── 表格辨識（passbookvision.readPassbookTable）的結果 → 頁面列
+
+/** 日期：數字串裡找民國年月日（1150921；開頭的 1 常漏掉或多出列號），找不到就只找月日 */
+export function parseRocDate(text, { year = null } = {}) {
+  const d = String(text || '').replace(/\D/g, '');
+  const MD = '(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])';
+  if (year) {
+    // 先找檔名年份的民國年（115MMDD），再找漏掉開頭 1 的（15MMDD）
+    const roc = String(year - 1911);
+    for (const pre of [roc, roc.slice(1)]) {
+      const m = new RegExp(pre + MD).exec(d);
+      if (m) return year + '-' + m[1] + '-' + m[2];
+    }
+  }
+  const m = new RegExp('1(\\d{2})' + MD).exec(d);
+  if (m) return 1911 + Number('1' + m[1]) + '-' + m[2] + '-' + m[3];
+  const md = new RegExp(MD + '$').exec(d);
+  if (md && year) return year + '-' + md[1] + '-' + md[2];
+  return null;
+}
+
+/**
+ * @param table readPassbookTable 的結果（rows：cells、side、thumb）
+ * @param opts { year, from, to } 檔名上的期間
+ * @returns {{ opening: number[]|null, rows: [...] }}（rows 可直接交給 verifyChain）
+ */
+export function tableToPage(table, { year = new Date().getFullYear(), from = null, to = null } = {}) {
+  const rows = [];
+  let opening = null;
+  let lastDate = null;
+  for (const r of table.rows || []) {
+    const c = r.cells || {};
+    const union = (...texts) => [...new Set(texts.filter(Boolean).flatMap((t) => String(t).split(/\s+/)).filter(Boolean).flatMap((t) => moneyCandidates(t)))].sort((x, y) => x - y);
+    const b = union(c.bal_num, stripMoney(c.bal), c.bal_alt);
+    const a = union(c.amount_num, stripMoney(c.amount), c.amount_alt);
+    const memoText = c.memo || '';
+    // 表頭「帳號：…」列：承前頁結存
+    const headText = (c.memo || '') + ' ' + (c.amount || '') + ' ' + (c.summary || '') + ' ' + (c.raw || '');
+    if (!rows.length && /帳號|帳 號|本數|\d{7}[- ]\d{2}[- ]\d{7}/.test(headText) && b.length) {
+      opening = b;
+      continue;
+    }
+    if (!b.length && !a.length) continue;
+    let date = parseRocDate(c.date_num || c.date, { year });
+    if (date && ((from && date < from) || (to && date > to) || (lastDate && date < lastDate))) date = null;
+    const s = summaryOf(`${c.summary_kind || c.summary || ''} ${memoText}`);
+    rows.push({
+      date: date || lastDate || from,
+      dateGuessed: !date,
+      summary: s.text,
+      kind: s.kind,
+      memo: s.memo,
+      note: (c.note || '').replace(/[^\p{Script=Han}A-Za-z0-9/－-]/gu, ''),
+      a,
+      b,
+      side: r.side,
+      sideSure: !!r.sideSure,
+      tokens: b.length ? (a.length ? [a, b] : [b]) : [a],
+      noBal: !b.length,
+      raw: c.raw || '',
+      thumb: r.thumb || null,
+      conf: r.conf || {},
+    });
+    if (date) lastDate = date;
+  }
+  return { opening, rows };
+}
+
+const stripMoney = (t) => String(t || '').replace(/[^\d,.]/g, '');
+
 // 一列的可能讀法：結存取最後一個或倒數第二個數字的候選值；金額是其他數字的候選值
 function readStates(row) {
+  if (row.noBal) return []; // 表格辨識沒讀到結存：只能由上一列推算
   const n = row.tokens.length;
   const out = [];
-  for (const bi of [n - 1, n - 2]) {
+  for (const bi of row.b ? [n - 1] : [n - 1, n - 2]) {
     if (bi < 0) continue;
     const amounts = row.tokens.filter((_, i) => i !== bi).flat();
     for (const b of row.tokens[bi]) if (b >= 1) out.push({ b, amounts, src: 'read', pref: bi === n - 1 ? 0.1 : 0 });
@@ -154,24 +235,52 @@ export function verifyChain(pages) {
     if (p.opening?.length) items.push({ kind: 'open', page: pi, cands: p.opening });
     const tail = lastRows.slice(-6);
     for (const r of p.rows) {
-      const lastTok = r.tokens[r.tokens.length - 1] || [];
-      const dup = tail.find((x) => x.date === r.date && lastTok.some((v) => v >= 1000 && (x.tokens[x.tokens.length - 1] || []).includes(v)));
+      const lastTok = r.noBal ? [] : r.tokens[r.tokens.length - 1] || [];
+      const dup = tail.find((x) => !x.noBal && x.date === r.date && lastTok.some((v) => v >= 1000 && (x.tokens[x.tokens.length - 1] || []).includes(v)));
       items.push({ kind: 'row', page: pi, row: r, dupOf: dup || null });
     }
     lastRows.push(...p.rows);
   }
-  const seq = items.filter((x) => !x.dupOf);
-  // Viterbi
-  const layers = [];
+  const solve = (seq) => {
+    // Viterbi
+    const layers = [];
   for (const [i, it] of seq.entries()) {
     const prevLayer = layers[i - 1] || [];
     let states;
-    if (it.kind === 'open') states = it.cands.map((b) => ({ b, src: 'open', amounts: [], pref: 0 }));
+    if (it.kind === 'open') {
+      states = it.cands.map((b) => ({ b, src: 'open', amounts: [], pref: 0 }));
+      // 表頭的承前結存和前一張對不上（讀錯、或把重印的列誤當表頭）：可以略過，結存沿用上一列
+      for (const [pk, ps] of prevLayer.entries()) states.push({ b: ps.b, src: 'skip', parent: pk, amounts: [], pref: -0.5 });
+    }
     else {
       states = readStates(it.row);
-      // 結存沒讀清楚：由上一列的每個可能結存 ± 本列任一數字推出
+      const reads = it.row.b || (it.row.noBal ? [] : it.row.tokens[it.row.tokens.length - 1] || []);
+      // 結存前幾位沒讀到（332,015 讀成 32,015）：用上一列結存的前幾位補齊，當另一種讀法
+      const partial = [];
+      for (const s of states.slice()) {
+        const L = String(Math.round(s.b)).length;
+        if (L < 4 || L > 6) continue; // 太短（3 位以下）補不出來，太長不必補
+        const unit = 10 ** L;
+        for (const ps of prevLayer.slice(0, 3)) {
+          if (ps.b < unit) continue;
+          const base = ps.b - (ps.b % unit);
+          for (const k of [-1, 0, 1]) {
+            const b = base + k * unit + s.b;
+            if (b > 0 && !near(b, s.b)) partial.push({ b, src: 'read', amounts: s.amounts, pref: -0.2, partial: s.b });
+          }
+        }
+      }
+      states.push(...partial);
+      // 結存沒讀清楚：由上一列的每個可能結存 ± 本列任一數字推出；推出來的值和讀到的只差一個數字時比較可信
       const ts = [...new Set(it.row.tokens.flat())];
-      for (const [pk, ps] of prevLayer.entries()) for (const t of ts) for (const b of [ps.b + t, ps.b - t]) if (b > 0) states.push({ b, src: 'derived', parent: pk, t, amounts: [t], pref: -0.4 });
+      for (const [pk, ps] of prevLayer.entries())
+        for (const t of ts)
+          for (const b of [ps.b + t, ps.b - t])
+            if (b > 0) {
+              const nearRead = reads.find((v) => oneDigitOff(v, b));
+              // 推算值和讀到的只差一個數字：比一般推算可信，但仍略低於照片讀到的（要靠後面的列證實才會勝出）
+              states.push({ b, src: 'derived', parent: pk, t, amounts: [t], pref: nearRead ? 0.05 : -0.4, nearRead });
+            }
       // 只有一個數字的行可能是雜訊（手寫、底紋）：允許略過，結存沿用上一列
       if (it.row.tokens.length <= 1) for (const [pk, ps] of prevLayer.entries()) states.push({ b: ps.b, src: 'skip', parent: pk, amounts: [], pref: -0.5 });
     }
@@ -186,7 +295,7 @@ export function verifyChain(pages) {
         let gain = 0;
         if (s.src === 'open') gain = near(s.b, ps.b) ? 2 : 0;
         else if (s.src === 'derived' || s.src === 'skip') gain = s.parent === pk ? 0 : -Infinity; // 推算的結存本身不算證據，要靠下一列對上才划算
-        else gain = s.amounts.some((t) => t > 0 && near(Math.abs(s.b - ps.b), t)) ? 2 : 0;
+        else gain = (s.amounts.some((t) => t > 0 && near(Math.abs(s.b - ps.b), t)) ? 2 : 0) - 0.03 * Math.abs(Math.log10(s.b) - Math.log10(ps.b));
         const v = ps.score + gain + s.pref;
         if (v > s.score) {
           s.score = v;
@@ -198,21 +307,64 @@ export function verifyChain(pages) {
     const best = new Map();
     for (const s of states) if (s.score > -Infinity && (!best.has(s.b) || s.score > best.get(s.b).score)) best.set(s.b, s);
     if (it.kind === 'row' && it.row.tokens.length <= 1) for (const s of states) if (s.src === 'skip' && s.score > -Infinity && best.get(s.b) !== s && s.score >= (best.get(s.b)?.score ?? -Infinity)) best.set(s.b, s);
-    layers.push([...best.values()].sort((a, b) => b.score - a.score).slice(0, 40));
+    layers.push([...best.values()].sort((a, b) => b.score - a.score).slice(0, 60));
   }
   // 回溯
-  const path = new Array(seq.length);
-  let k = layers.length ? 0 : -1;
-  for (let i = layers.length - 1; i >= 0; i--) {
-    const s = layers[i][k];
-    path[i] = s;
-    if (i > 0) k = s.from;
+    const path = new Array(seq.length);
+    let k = layers.length ? 0 : -1;
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const s = layers[i][k];
+      path[i] = s;
+      if (i > 0) k = s.from;
+    }
+    return path;
+  };
+  let seq = items.filter((x) => !x.dupOf);
+  let path = solve(seq);
+  // 第二輪：用核對後的結存再找一次重印的列（結存前幾位沒讀到、靠帳鏈補齊的列，第一輪用讀到的數字比不到）
+  let more = false;
+  for (const [i, it] of seq.entries()) {
+    if (it.kind !== 'row' || it.page === 0) continue;
+    const first = seq.findIndex((x) => x.kind === 'row' && x.page === it.page);
+    if (i - first >= 6) continue;
+    const prevTail = seq.map((x, j) => [x, j]).filter(([x]) => x.kind === 'row' && x.page < it.page).slice(-6);
+    for (const [x, j] of prevTail) {
+      if (x.row.date !== it.row.date || path[i].b < 1000 || !near(path[j].b, path[i].b)) continue;
+      const amountOk = !it.row.a?.length || !x.row.a?.length || it.row.a.some((v) => x.row.a.includes(v));
+      if (!amountOk) continue;
+      it.dupOf = x.row;
+      more = true;
+      break;
+    }
   }
+  if (more) {
+    seq = items.filter((x) => !x.dupOf);
+    path = solve(seq);
+  }
+  // path[i] 的結存往後 depth 列內有對得上的列（中間都是讀到的結存，沒有推算的）；下一張照片表頭的承前結存相同也算
+  // 金額沒讀到（或只讀到雜訊）
+  const unreadable = (st) => !st.amounts.some((t) => t >= 100);
+  const anchoredWithin = (i, depth) => {
+    for (let j = i + 1; j <= i + depth && j < seq.length; j++) {
+      const nj = path[j];
+      if (!nj) return false;
+      if (seq[j].kind === 'open') {
+        if (nj.src === 'open') return near(nj.b, path[j - 1].b);
+        continue; // 被略過的表頭
+      }
+      if (nj.src !== 'read') return false;
+      const diff = Math.abs(nj.b - path[j - 1].b);
+      if (nj.amounts.some((t) => t > 0 && near(diff, t))) return true;
+      // 中間那列有讀到金額卻對不上（也不是只差一個數字）：不能跳過它
+      if (!unreadable(nj) && !nj.amounts.some((t) => oneDigitOff(t, diff))) return false;
+    }
+    return false;
+  };
   const out = [];
   let reliable = false; // 上一列結存可信（照片表頭、或已對上的列）
   for (const [i, it] of seq.entries()) {
     if (it.kind === 'open') {
-      reliable = true;
+      if (path[i].src === 'open') reliable = true;
       continue;
     }
     const s = path[i];
@@ -221,14 +373,15 @@ export function verifyChain(pages) {
     const r = it.row;
     const nx = path[i + 1] && seq[i + 1]?.kind === 'row' ? path[i + 1] : null;
     const matchedPrev = p && (s.src === 'derived' ? true : s.amounts.some((t) => t > 0 && near(Math.abs(s.b - p.b), t)));
-    const matchedNext = nx && (nx.src === 'derived' || nx.amounts.some((t) => t > 0 && near(Math.abs(nx.b - s.b), t)));
+    // 本列金額沒讀到時，容許下一列也沒讀到、靠再下一列（或下一張照片的承前結存）對上
+    const matchedNext = (nx && nx.src === 'derived') || anchoredWithin(i, unreadable(s) ? 2 : 1);
     let status;
     let amount;
     let note = '';
     if (s.src === 'derived') {
       status = 'corrected';
       amount = s.t;
-      note = '結存沒讀清楚，依上一列結存與本列金額推算';
+      note = s.nearRead ? `結存沒讀清楚（照片讀成 ${s.nearRead}），依上一列結存與本列金額推算` : '結存沒讀清楚，依上一列結存與本列金額推算';
     } else if (matchedPrev) {
       status = 'ok';
       amount = Math.abs(s.b - p.b);
@@ -236,6 +389,19 @@ export function verifyChain(pages) {
       status = 'inferred';
       amount = Math.abs(s.b - p.b);
       note = `金額沒讀清楚（照片讀成 ${s.amounts.slice(0, 3).join('／') || '—'}），依前後結存推算`;
+    } else if (p && matchedNext && s.amounts.length) {
+      // 前一列對不上（多半是前一列讀錯），但本列的結存和下一列對得上：本列的結存可信
+      const diff = Math.abs(s.b - p.b);
+      if (s.amounts.some((t) => oneDigitOff(t, diff))) {
+        // 讀到的金額和結存差只差一個數字：是金額讀錯，依結存推算
+        status = 'inferred';
+        amount = diff;
+        note = `金額沒讀清楚（照片讀成 ${s.amounts.slice(0, 3).join('／')}），依前後結存推算`;
+      } else {
+        status = 'ok';
+        amount = s.amounts.find((t) => near(diff, t)) ?? s.amounts[s.amounts.length - 1];
+        note = '與下一列對得上（上一列的結存可能讀錯）';
+      }
     } else if (!p) {
       // 第一列：存摺開戶（金額＝結存）或沒有承前頁結存
       const own = s.amounts.find((t) => near(t, s.b));
@@ -247,16 +413,20 @@ export function verifyChain(pages) {
       amount = s.amounts.length ? s.amounts[s.amounts.length - 1] : Math.abs(s.b - p.b);
       note = '金額或結存對不上，請對照照片修正';
     }
-    const dep = p && !near(s.b, p.b) && status !== 'check' ? s.b > p.b : !p && status === 'ok' ? true : DEPOSIT_HINT.test(r.summary);
+    if (s.partial && status !== 'check') {
+      if (status === 'ok') status = 'corrected';
+      note = [note, `結存前幾位沒讀到（照片讀成 ${s.partial}），依上一列補齊`].filter(Boolean).join('；');
+    }
+    const dep = p && !near(s.b, p.b) && status !== 'check' ? s.b > p.b : !p && status === 'ok' ? true : r.side ? r.side === 'in' : DEPOSIT_HINT.test(r.summary);
     amount = Math.round(amount * 100) / 100;
     reliable = status !== 'check';
-    out.push({ page: it.page, date: r.date, dateGuessed: r.dateGuessed, summary: r.summary, kind: r.kind, memo: r.memo, withdrawal: dep ? 0 : amount, deposit: dep ? amount : 0, balance: s.b, status, note: [note, r.dateGuessed ? '日期沒讀到，沿用上一列' : ''].filter(Boolean).join('；'), raw: r.raw });
+    out.push({ page: it.page, date: r.date, dateGuessed: r.dateGuessed, summary: r.summary, kind: r.kind, memo: r.memo, remark: r.note || '', withdrawal: dep ? 0 : amount, deposit: dep ? amount : 0, balance: s.b, status, note: [note, r.dateGuessed ? '日期沒讀到，沿用上一列' : ''].filter(Boolean).join('；'), raw: r.raw, thumb: r.thumb || null });
   }
   // 重複的列放回它所在照片的開頭，方便對照
   for (const it of items.filter((x) => x.dupOf)) {
     const twin = out.find((o) => o.raw === it.dupOf.raw);
     const at = out.findIndex((o) => o.page === it.page);
-    out.splice(at < 0 ? out.length : at, 0, { ...(twin || {}), page: it.page, status: 'duplicate', note: '和前一張照片的同一列重複（存摺補登時重印）', raw: it.row.raw });
+    out.splice(at < 0 ? out.length : at, 0, { ...(twin || {}), page: it.page, status: 'duplicate', note: '和前一張照片的同一列重複（存摺補登時重印）', raw: it.row.raw, thumb: it.row.thumb || null });
   }
   return out;
 }
@@ -273,7 +443,7 @@ export function toBankLine(r, { bankAccountId = 'main', batchId = '' } = {}) {
     withdrawal: r.withdrawal,
     deposit: r.deposit,
     balance: r.balance,
-    note: r.memo || '',
+    note: [r.memo, r.remark].filter(Boolean).join('；'),
     counterparty: '',
     match_key: null,
     source: 'passbook_photo',

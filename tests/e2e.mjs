@@ -71,7 +71,7 @@ const assert = (cond, msg) => {
   if (!cond) throw new Error('檢查失敗：' + msg);
 };
 // 會計項目下拉：1 資產 … 8 所得稅 每一類都要能選
-const SAMPLE_CODES = ['1101', '2111', '3101', '3102', '4101', '4191', '5101', '6101', '7101', '7501', '8101'];
+const SAMPLE_CODES = ['1101', '2111', '2133', '2134', '3101', '3102', '4101', '4191', '5101', '6101', '7101', '7501', '8101'];
 const assertAllAccounts = async (selector, label) => {
   const lists = await page.$$eval(selector, (sels) => sels.map((s) => [...s.options].map((o) => o.value)));
   assert(lists.length, `${label}：找不到會計項目下拉選單`);
@@ -256,6 +256,39 @@ try {
     await page.selectOption('dialog [name=acc] >> nth=0', '6112');
     assert(await page.isVisible('dialog #je-lines'), '選好科目後分錄視窗還在');
     await assertAllAccounts('dialog [name=acc]', '日記簿分錄的會計項目');
+    // 科目下拉打字篩選：點開 → 打「21」只剩 21xx → 再打「33」Enter 選 2133
+    const accVal = (i) => page.$$eval('dialog [name=acc]', (s, i) => s[i].value, i);
+    await page.click('dialog [name=acc] >> nth=1');
+    await page.waitForSelector('dialog .acc-pop .acc-q');
+    await page.keyboard.type('21');
+    const shown21 = await page.$$eval('dialog .acc-pop .acc-o .acc-c', (els) => els.map((e) => e.textContent));
+    assert(shown21.length > 1 && shown21.every((c) => c.startsWith('21')), '打 21 只剩 21xx：' + shown21.join(','));
+    await shot('acc-pick', false);
+    await page.keyboard.type('33');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('.acc-pop', { state: 'detached' });
+    assert((await accVal(1)) === '2133', '打 2133 按 Enter 選到 2133');
+    // 下拉有焦點時直接打字：第一個字帶進搜尋框；Esc 只關清單，不關分錄視窗、不改科目
+    await page.focus('dialog [name=acc] >> nth=0');
+    await page.keyboard.press('6');
+    await page.waitForSelector('dialog .acc-pop');
+    assert((await page.inputValue('dialog .acc-q')) === '6', '第一個字帶進搜尋框');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('.acc-pop', { state: 'detached' });
+    assert(await page.isVisible('dialog #je-lines'), 'Esc 只關清單，分錄視窗還在');
+    assert((await accVal(0)) === '6112', 'Esc 不改科目');
+    // 真的點第一列、第二列的欄位：列的 data-i 不能被當成底部按鈕（第一列＝取消會把視窗關掉）
+    await page.click('dialog #je-lines tr[data-i="0"] input >> nth=0');
+    await page.click('dialog #je-lines tr[data-i="1"] input >> nth=0');
+    assert(await page.isVisible('dialog #je-lines'), '點分錄第一列、第二列的欄位，視窗不會關掉');
+    // 打中文名稱，點選清單項目
+    await page.click('dialog [name=acc] >> nth=0');
+    await page.keyboard.type('代墊');
+    const shownCn = await page.$$eval('dialog .acc-pop .acc-o', (els) => els.map((e) => e.textContent));
+    assert(shownCn.length && shownCn.every((t) => t.includes('代墊')), '打「代墊」篩選名稱：' + shownCn.join(','));
+    await page.click('dialog .acc-pop .acc-o >> nth=0');
+    await page.waitForSelector('.acc-pop', { state: 'detached' });
+    assert(/^213/.test(await accVal(0)) && (await page.isVisible('dialog #je-lines')), '點選清單項目，分錄視窗還在');
     await page.mouse.click(4, 4); // 真的在背景按下放開才關
     await page.waitForSelector('dialog', { state: 'detached', timeout: 5000 });
     // 期初開帳：全部會計項目（含 3 權益、4 營業收入）都能填
@@ -429,7 +462,7 @@ try {
     const fillRow = async (i, inv, acc, amt, tax) => {
       const tr = page.locator('dialog #ln tr').nth(i);
       await tr.locator('[name=inv]').fill(inv);
-      await tr.locator('[name=acc]').selectOption(acc);
+      await tr.locator('[name=acc]').fill(acc); // 打代號即可，離開格子會換成「代號 名稱」
       await tr.locator('[name=amt]').fill(String(amt));
       await tr.locator('[name=tax]').fill(String(tax));
     };

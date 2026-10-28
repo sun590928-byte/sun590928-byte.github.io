@@ -19,7 +19,7 @@ function zxing() {
 
 let ocrP = null;
 let ocrIdle = null;
-function ocrWorker() {
+export function ocrWorker() {
   ocrP ||= import(BASE + 'tesseract/tesseract.esm.min.js').then(({ default: T }) =>
     T.createWorker(['chi_tra', 'eng'], 1, {
       workerPath: BASE + 'tesseract/worker.min.js',

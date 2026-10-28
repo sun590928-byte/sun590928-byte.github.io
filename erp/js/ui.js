@@ -123,7 +123,8 @@ export function modal({ title, body, actions = [{ label: '關閉', value: null }
       downOutside = e.target === dlg && outside(e);
     });
     dlg.addEventListener('click', (e) => {
-      const b = e.target.closest('[data-i]');
+      // 只認底部的按鈕：內容裡的表格列也常用 data-i（分錄明細、存摺勾選），點第一列會被當成「取消」把視窗關掉
+      const b = e.target.closest('.modal-foot [data-i]');
       if (b) {
         const a = actions[Number(b.dataset.i)];
         const v = typeof a.value === 'function' ? a.value(dlg) : a.value;

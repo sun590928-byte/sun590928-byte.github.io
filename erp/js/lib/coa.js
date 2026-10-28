@@ -188,8 +188,20 @@ export function findAccountByName(accounts, name) {
 export function isPayAccount(a) {
   if (!a || a.active === false) return false;
   if (a.type === 'asset') return /^11[01]\d$/.test(a.code);
-  if (a.type === 'liability') return a.code === '2111' || a.code === '2191' || /代墊/.test(a.name || '');
+  // 依代號判斷，不靠名稱（老闆會改名，例如 2133 改成「其他應付款-負責人借款」）：
+  // 2111 應付帳款、2133～2139 其他應付款（2131 銷項稅額、2132 應付稅捐除外）、2191 業主往來；名稱有代墊、往來的也算
+  if (a.type === 'liability') return ['2111', '2191'].includes(a.code) || /^213[3-9]$/.test(a.code) || /代墊|往來/.test(a.name || '');
   return false;
+}
+
+/**
+ * 科目下拉的打字篩選：數字＝代號開頭（2 → 2xxx、21 → 21xx、2133），文字＝名稱或類別裡有這個關鍵字（代墊、銀行、費用）。
+ * 空白分開（或數字接文字，如「21代墊」）的條件都要符合；全形數字也可以
+ */
+export function accountQueryMatch(query, code, text) {
+  const terms = String(query || '').normalize('NFKC').toLowerCase().match(/\d+|[^\d\s]+/g) || [];
+  const hay = String(text || '').normalize('NFKC').toLowerCase();
+  return terms.every((t) => (/^\d/.test(t) ? String(code).startsWith(t) : hay.includes(t)));
 }
 
 /** @returns [[code, label]]，依代號排序；保留目前選用中的科目（即使已停用） */

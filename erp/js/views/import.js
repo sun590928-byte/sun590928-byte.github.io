@@ -370,7 +370,7 @@ export async function render(root, ctx) {
     if (cur.target === 'journal' && p.unresolved.length) {
       const accOpts = [['', '— 選擇科目 —'], ...p.accounts.map((a) => [a.code, `${a.code} ${a.name}`])];
       parts.push(h`<div class="callout warn" style="margin-bottom:10px"><p><b>以下科目在系統中找不到，請指定對應的會計項目：</b></p>
-        <div class="map-grid">${p.unresolved.map(([label, n]) => h`<label><b>${label || '(空白)'}</b><span class="muted">${n} 行</span><select data-act="accMap" data-label="${label}">${options(accOpts, cur.accountOverrides[label] || '')}</select></label>`)}</div></div>`);
+        <div class="map-grid">${p.unresolved.map(([label, n]) => h`<label><b>${label || '(空白)'}</b><span class="muted">${n} 行</span><select data-acc-pick data-act="accMap" data-label="${label}">${options(accOpts, cur.accountOverrides[label] || '')}</select></label>`)}</div></div>`);
     }
     if (p.skipped.length) parts.push(h`<details style="margin-bottom:10px"><summary class="muted">查看無法辨識的列</summary><ul>${p.skipped.slice(0, 50).map((s) => h`<li>${s.row ? `第 ${s.row} 列：` : ''}${s.reason}</li>`)}</ul></details>`);
     parts.push(h`<div id="preview-table" class="preview"></div>`);

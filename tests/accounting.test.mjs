@@ -354,3 +354,22 @@ test('pnl: 固定／變動成本、健康度、損益兩平', () => {
   assert.equal(p.ratios.prime, 0.55);
   assert.ok(Math.abs(p.breakEven - 45000 / 0.65) < 1e-6);
 });
+
+test('撥款明細：每列一筆刷卡的檔案依請款日彙總；小計列不匯入；重複列只留一筆', () => {
+  // 綠界「信用卡撥款明細」：每列一筆刷卡（有授權單號），每天一列「每日小計」沒有日期
+  const perTx = [
+    { payout_date: '2026-09-01', tx_id: 'A1', gross: '145', fee: '5', net: '140', _row: 2 },
+    { payout_date: '2026-09-01', tx_id: 'A2', gross: '160', fee: '5', net: '155', _row: 3 },
+    { payout_date: '', tx_id: '2筆', gross: '305', fee: '10', net: '295', _row: 4 },
+    { payout_date: '2026-09-02', tx_id: 'A3', gross: '160', fee: '5', net: '155', _row: 5 },
+    { payout_date: '', tx_id: '3筆', gross: '465', fee: '15', net: '450', note: '合計:', _row: 6 },
+  ];
+  const { rows, skipped } = normalizePayouts(perTx, { provider: 'ecpay' });
+  assert.deepEqual(rows.map((r) => [r.payout_date, r.gross, r.fee, r.net, r.tx_count]), [['2026-09-01', 305, 10, 295, 2], ['2026-09-02', 160, 5, 155, 1]]);
+  assert.equal(skipped.length, 2, '小計、合計列不匯入');
+  assert.equal(new Set(rows.map((r) => r.id)).size, 2, '主鍵不重複');
+  // 每列一筆撥款的檔案：完全相同的兩列只留一筆（同一主鍵寫兩次會被雲端資料庫拒絕）
+  const dup = normalizePayouts([{ payout_date: '2026-09-03', net: '1000', fee: '0', _row: 1 }, { payout_date: '2026-09-03', net: '1000', fee: '0', _row: 2 }], { provider: 'ecpay' });
+  assert.equal(dup.rows.length, 1);
+  assert.match(dup.skipped[0].reason, /相同/);
+});

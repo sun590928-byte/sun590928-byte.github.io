@@ -1,7 +1,7 @@
 // 科目表匯入、付款方式（依科目表／資料夾）、憑證拆分入帳、申報代號、申報媒體檔解析與核對（全為合成資料）
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_ACCOUNTS, parseAccountsRows, diffAccounts, payAccountsOf, payAccountForFolder, STATEMENT_FOLDER, accountMap } from '../erp/js/lib/coa.js';
+import { DEFAULT_ACCOUNTS, parseAccountsRows, diffAccounts, payAccountsOf, payAccountForFolder, STATEMENT_FOLDER, accountMap, accountQueryMatch, TYPE_LABELS } from '../erp/js/lib/coa.js';
 import { parseCSV } from '../erp/js/lib/csv.js';
 import { documentJournal, payoutJournal } from '../erp/js/lib/autojournal.js';
 import { normalizePayment } from '../erp/js/lib/pos.js';
@@ -60,10 +60,29 @@ test('coa: 付款方式依科目表、上傳資料夾對應付款來源', () => 
   // 科目代號改了也找得到（依名稱）
   const swapped = DEFAULT_ACCOUNTS.map((a) => (a.code === '2134' ? { ...a, code: '2135' } : a));
   assert.equal(payAccountForFolder('員工代墊支出', swapped), '2135');
+  // 老闆把 2133 改名「其他應付款-負責人借款」：仍是付款方式（依代號，不靠名稱），資料夾也對得到
+  const renamed = DEFAULT_ACCOUNTS.map((a) => (a.code === '2133' ? { ...a, name: '其他應付款-負責人借款' } : a));
+  assert.ok(payAccountsOf(renamed).some(([c]) => c === '2133'), '改名後的 2133 仍在付款方式');
+  assert.equal(payAccountForFolder('負責人代墊支出', renamed), '2133');
+  assert.ok(!payAccountsOf(DEFAULT_ACCOUNTS).some(([c]) => ['2131', '2132', '2101', '2501'].includes(c)), '稅額、借款科目不是付款來源');
   // 停用的科目不出現，但目前選用中的保留
   const off = DEFAULT_ACCOUNTS.map((a) => (a.code === '1104' ? { ...a, active: false } : a));
   assert.ok(!payAccountsOf(off).some(([c]) => c === '1104'));
   assert.ok(payAccountsOf(off, '1104').some(([c]) => c === '1104'));
+});
+
+test('coa: 科目下拉打字篩選（數字＝代號開頭、文字＝名稱或類別）', () => {
+  const pick = (q) => DEFAULT_ACCOUNTS.filter((a) => accountQueryMatch(q, a.code, `${a.code} ${a.name} ${TYPE_LABELS[a.type]}`)).map((a) => a.code);
+  assert.ok(pick('2').length && pick('2').every((c) => c.startsWith('2')), '2 → 全部 2xxx');
+  assert.ok(pick('21').every((c) => c.startsWith('21')) && pick('21').includes('2133'));
+  assert.deepEqual(pick('2133'), ['2133']);
+  assert.deepEqual(pick('２１３３'), ['2133'], '全形數字');
+  assert.ok(!pick('1').includes('2111'), '數字只比代號開頭，不比中間');
+  assert.ok(pick('代墊').length && pick('代墊').every((c) => /代墊/.test(DEFAULT_ACCOUNTS.find((a) => a.code === c).name)));
+  assert.ok(pick('21代墊').every((c) => c.startsWith('21')) && pick('21代墊').length, '數字接文字');
+  assert.ok(pick('權益').every((c) => c.startsWith('3')), '依類別名稱');
+  assert.deepEqual(pick('找不到的字'), []);
+  assert.equal(pick('').length, DEFAULT_ACCOUNTS.length, '沒打字全部顯示');
 });
 
 test('pos／撥款: 台灣Pay、外送平台對應新的應收科目', () => {

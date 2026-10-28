@@ -321,6 +321,18 @@ dialog.modal::backdrop { background: rgba(20, 24, 32, 0.45); }
 .modal-body { padding: 8px 20px 12px; overflow: auto; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px 16px; border-top: 1px solid var(--line-soft); }
 
+/* 會計項目下拉的打字篩選清單（accpick.js） */
+.acc-pop { position: fixed; z-index: 95; display: flex; flex-direction: column; background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 18px 40px -18px rgba(0, 0, 0, 0.45); overflow: hidden; font-size: 14px; }
+.acc-pop .acc-q { margin: 8px 8px 4px; min-height: 34px; }
+.acc-list { position: relative; list-style: none; margin: 0; padding: 0 4px 4px; overflow-y: auto; min-height: 0; flex: 1 1 auto; }
+.acc-g { position: sticky; top: 0; padding: 7px 8px 3px; font-size: 12px; font-weight: 600; color: var(--mute); background: var(--card); }
+.acc-o { padding: 6px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acc-o.hi { background: var(--accent-tint); }
+.acc-o.cur { font-weight: 600; }
+.acc-c { display: inline-block; min-width: 3.2em; margin-right: 6px; font-variant-numeric: tabular-nums; }
+.acc-none { padding: 10px 8px; color: var(--mute); white-space: normal; }
+.acc-foot { padding: 6px 12px 8px; font-size: 12px; color: var(--mute); border-top: 1px solid var(--line-soft); }
+
 /* 匯入 */
 .drop {
   border: 2px dashed var(--line); border-radius: 14px; padding: 30px 20px; text-align: center; background: var(--card);

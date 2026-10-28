@@ -4,6 +4,9 @@ import { store } from './store.js';
 import { h, mount, toast, $ } from './ui.js';
 import { ensureAccounts, getSettings } from './state.js';
 import { showGate, startGuards, lockNow } from './gate.js';
+import { installAccountPicker } from './accpick.js';
+
+installAccountPicker(); // 會計項目下拉可打字篩選
 
 export const ROUTES = [
   { group: '總覽', path: 'dashboard', title: '營運儀表板', load: () => import('./views/dashboard.js') },
@@ -121,6 +124,15 @@ function closeNav() {
 }
 
 async function boot() {
+  // 滑鼠滾輪不改數字欄位的值：捲頁時滑過有焦點的金額欄會被滾壞而不自覺（憑證歸檔的金額、稅額等）
+  document.addEventListener(
+    'wheel',
+    (e) => {
+      const el = document.activeElement;
+      if (el instanceof HTMLInputElement && el.type === 'number' && el === e.target) el.blur();
+    },
+    { passive: true, capture: true },
+  );
   $('#menu-btn').addEventListener('click', () => {
     $('#nav').classList.add('open');
     $('#nav-scrim').classList.add('open');

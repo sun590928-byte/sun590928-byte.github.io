@@ -115,7 +115,7 @@ Deno.test("get_context 與 list_pending_documents", async () => {
   const ctx = await call(h, "get_context");
   const t = ctx.content[0].text!;
   assert(t.includes("12345675") && t.includes("6111 租金支出") && t.includes("1212 存貨－乳品｜鮮奶、燕麥奶"));
-  assert(!t.includes("4101"), "收入科目不列");
+  assert(t.includes("4101"), "全部啟用中的科目都列（含收入）");
   assert(!t.includes("6199"), "停用科目不列");
   assert(t.includes("待覆核憑證：2 張"));
   const list = JSON.parse((await call(h, "list_pending_documents")).content[0].text!);
@@ -147,10 +147,10 @@ Deno.test("get_document_image：圖片回傳 base64；PDF、已入帳、不存�
 Deno.test("update_document：驗證、扣抵規則、只改待覆核", async () => {
   const db = fakeDb();
   const h = createHandler(db);
-  const bad = await call(h, "update_document", { id: "doc_1", invoice_no: "ABC123", account: "4101", doc_date: "2026/13/01" });
+  const bad = await call(h, "update_document", { id: "doc_1", invoice_no: "ABC123", account: "9999", doc_date: "2026/13/01" });
   assert(bad.isError);
   assertMatch(bad.content[0].text!, /invoice_no/);
-  assertMatch(bad.content[0].text!, /account 4101/);
+  assertMatch(bad.content[0].text!, /account 9999/);
   assertMatch(bad.content[0].text!, /doc_date/);
   assertEquals(db.docs[0].status, "inbox", "驗證失敗不更新");
 
