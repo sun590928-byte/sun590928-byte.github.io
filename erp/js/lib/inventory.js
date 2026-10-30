@@ -1,5 +1,5 @@
 // 原物料進銷存（Inventory_Ledger）：進貨、耗用（POS × 配方）、報廢、盤點調整、安全庫存預警。
-// 品項：{ id, sku, name, unit, category, gl_account, safety_stock, reorder_qty, supplier_id }
+// 品項：{ id, sku, name, unit, category, gl_account, safety_stock, reorder_qty, supplier_id, pack_type, pack_size, last_purchase_date, last_unit_price … }（進貨相關欄位見 lib/purchases.js）
 // 異動：{ id, item_id, date, type: 'opening'|'purchase'|'consume'|'scrap'|'adjust', qty, amount, supplier_id, order_date, yield_score, note }
 // 配方：{ product_id, item_id, qty }（每售出一份產品的耗用量）
 
@@ -13,7 +13,17 @@ export const INVENTORY_CATEGORIES = {
   bakery: { label: '甜點輕食原料', gl: '1214', unit: 'g' },
   packaging: { label: '包材耗材', gl: '1215', unit: '個' },
   retail: { label: '零售商品', gl: '1216', unit: '包' },
+  other: { label: '其他／待分類', gl: '1215', unit: '個' },
 };
+
+const SKU_PREFIX = { beans: 'BN', dairy: 'DY', tea_syrup: 'TS', bakery: 'BK', packaging: 'PK', retail: 'RT', other: 'OT' };
+
+// 物品編號：分類字首 + 流水號（BN-001、DY-002…）
+export function suggestSku(cat, items) {
+  const p = SKU_PREFIX[cat] || 'IT';
+  const used = items.map((i) => /^([A-Z]+)-(\d+)$/i.exec(String(i.sku || ''))).filter((m) => m && m[1].toUpperCase() === p).map((m) => Number(m[2]));
+  return `${p}-${String((used.length ? Math.max(...used) : 0) + 1).padStart(3, '0')}`;
+}
 
 export const MOVE_TYPES = { opening: '期初', purchase: '進貨', consume: '耗用', scrap: '報廢', adjust: '盤點調整' };
 

@@ -700,8 +700,114 @@ try {
   const onHand = await page.$$eval('table.grid tbody tr', (trs) => trs.map((tr) => [...tr.children].map((td) => td.textContent.trim())));
   console.log('庫存水位：', onHand[0]);
   await shot('inventory', false);
+
+  // 供應商：基本資料＋付款條件（匯款銀行、戶名、帳號）
   await go('suppliers');
+  await page.click('[data-act="addSup"]');
+  await page.fill('dialog [name=short_name]', '鮮乳坊');
+  await page.fill('dialog [name=name]', '鮮乳坊股份有限公司');
+  await page.fill('dialog [name=tax_id]', '12345678');
+  await page.fill('dialog [name=contact]', '王小明');
+  await page.fill('dialog [name=mobile]', '0912-345-678');
+  await page.fill('dialog [name=terms]', '月結 30 天');
+  await page.fill('dialog [name=bank_branch]', '台灣銀行－城中分行');
+  await page.fill('dialog [name=bank_code]', '004');
+  await page.fill('dialog [name=account_name]', '鮮乳坊股份有限公司');
+  await page.fill('dialog [name=account_number]', '0123456789012');
+  await page.click('dialog .modal-foot .btn.primary');
+  await page.waitForSelector('#sup-table table');
+  const supRow = await page.textContent('#sup-table tbody tr');
+  assert(supRow.includes('鮮乳坊') && supRow.includes('0123456789012'), '供應商名單含簡稱與匯款帳號：' + supRow);
   await shot('suppliers', false);
+
+  // 進貨紀錄：新增進貨單（新品名自動建檔 + 既有品項帶入單位）→ 原物料主檔 → 進銷存
+  await go('purchases');
+  await page.click('[data-act="addDoc"]');
+  await page.fill('dialog [name=supplier]', '鮮乳坊');
+  await page.fill('dialog [name=invoice_no]', 'AB12345678');
+  await page.fill('dialog [name=invoice_date]', '2026-09-05');
+  const cell = (i, n) => `dialog #po-lines tr:nth-child(${i}) [name=${n}]`;
+  await page.fill(cell(1, 'name'), '鮮乳 936ml');
+  await page.fill(cell(1, 'unit'), '瓶');
+  await page.fill(cell(1, 'qty'), '12');
+  await page.fill(cell(1, 'price'), '85');
+  await page.fill(cell(2, 'name'), '花季配方豆');
+  await page.dispatchEvent(cell(2, 'name'), 'change');
+  assert((await page.inputValue(cell(2, 'unit'))) === 'g', '既有品項帶入庫存單位');
+  await page.fill(cell(2, 'qty'), '1000');
+  await page.fill(cell(2, 'price'), '1.1');
+  await page.press(cell(2, 'price'), 'Enter');
+  assert(await page.evaluate(() => document.activeElement?.name === 'amount'), 'Enter 跳到下一格');
+  const bar = await page.textContent('dialog #po-bar');
+  assert(bar.includes('2,120') && bar.includes('自動建檔 1 項'), '進貨單合計與自動建檔提示：' + bar);
+  await shot('purchase-editor', false);
+  await page.click('dialog .modal-foot .btn.primary');
+  await page.waitForFunction(() => document.querySelector('#po-body tbody')?.textContent.includes('AB12345678'), null, { timeout: 15000 });
+  const poRow = await page.textContent('#po-body tbody tr');
+  assert(poRow.includes('AB12345678') && poRow.includes('2,120'), '進貨單列表：' + poRow);
+  await shot('purchases', false);
+  await page.click('[data-act="tab"][data-tab="items"]');
+  await page.waitForTimeout(300);
+  const master = await page.textContent('#po-body table');
+  assert(master.includes('鮮乳 936ml') && master.includes('乳品') && master.includes('DY-001'), '原物料主檔有自動建檔的鮮乳（乳品、DY-001）');
+  await shot('purchases-items', false);
+  // 原物料主檔：改包裝折合量（1 瓶＝936 ml）→ 進貨行重算成庫存單位
+  await page.click('#po-body [data-act="editItem"]:not([data-id=""])');
+  await page.waitForSelector('dialog [name=pack_size]');
+  if ((await page.inputValue('dialog [name=name]')) !== '鮮乳 936ml') {
+    await page.click('dialog [data-close]');
+    const btns = await page.$$('#po-body [data-act="editItem"]');
+    for (const b of btns) {
+      const tr = await b.evaluateHandle((el) => el.closest('tr'));
+      if ((await tr.evaluate((el) => el.textContent)).includes('鮮乳 936ml')) {
+        await b.click();
+        break;
+      }
+    }
+    await page.waitForSelector('dialog [name=pack_size]');
+  }
+  await page.fill('dialog [name=unit]', 'ml');
+  await page.fill('dialog [name=pack_size]', '936');
+  await page.fill('dialog [name=safety_stock]', '5000');
+  await page.click('dialog .modal-foot .btn.primary');
+  await page.waitForTimeout(400);
+  await go('inventory');
+  const invRows = await page.$$eval('table.grid tbody tr', (trs) => trs.map((tr) => [...tr.children].map((td) => td.textContent.trim())));
+  const milkRow = invRows.find((r) => r[1].includes('鮮乳 936ml'));
+  assert(milkRow && milkRow[5].replace(/,/g, '') === '11232', '進貨 12 瓶 × 936 ml 折合庫存 11,232：' + JSON.stringify(milkRow));
+
+  // 匯入中心：供應商資料、進貨紀錄（頁面帶 ?target= 固定類型）
+  await page.goto(BASE + '#/import?target=suppliers');
+  await page.waitForSelector('[data-act="pick"]');
+  {
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pick"]')]);
+    await chooser.setFiles(FX('synthetic-suppliers.csv'));
+    await page.waitForSelector('[data-act="commit"]');
+    assert((await page.$eval('[data-act="target"]', (el) => el.value)) === 'suppliers', '匯入類型固定為供應商');
+    const prep = await page.textContent('#prep');
+    assert(/新增 2 家、更新既有資料 1 家/.test(prep), '供應商匯入預覽：' + prep);
+    await shot('import-suppliers');
+    console.log('供應商：', await commit());
+  }
+  await page.goto(BASE + '#/import?target=purchases');
+  await page.waitForSelector('[data-act="pick"]');
+  {
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pick"]')]);
+    await chooser.setFiles(FX('synthetic-purchases.csv'));
+    await page.waitForSelector('[data-act="commit"]');
+    const prep = await page.textContent('#prep');
+    assert(/合成 2 張進貨單/.test(prep) && prep.includes('自動建檔 5 項'), '進貨匯入預覽：' + prep);
+    assert((await page.$eval('[data-act="map"][data-field="qty"]', (el) => el.value)) !== '', '數量欄已自動對應');
+    assert((await page.$eval('[data-act="map"][data-field="invoice_no"]', (el) => el.value)) !== '', '發票號碼欄已自動對應');
+    await shot('import-purchases');
+    console.log('進貨：', await commit());
+  }
+  await go('purchases');
+  const poCount = await page.$$eval('#po-body tbody tr', (trs) => trs.length);
+  assert(poCount === 4, '手動 1 張＋進銷存登記 1 筆＋匯入 2 張＝4：' + poCount);
+  await go('suppliers');
+  const supCount = await page.$$eval('#sup-table tbody tr', (trs) => trs.length);
+  assert(supCount === 3, '供應商 3 家：' + supCount);
   await go('customers');
   await shot('customers', false);
   // 行銷活動：關鍵字「燕麥」

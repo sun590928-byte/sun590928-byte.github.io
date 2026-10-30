@@ -1,6 +1,6 @@
 // 匯入中心：拖入 CSV／XLSX → 自動判斷種類與欄位 → 預覽 → 匯入（重複列自動略過）。
 
-import { h, raw, mount, bindActions, dataTable, toast, pickFiles, confirmBox, options, fmt, setBusy, badge } from '../ui.js';
+import { h, raw, mount, bindActions, dataTable, toast, pickFiles, confirmBox, options, fmt, setBusy, badge, downloadCSV } from '../ui.js';
 import { store } from '../store.js';
 import { getSettings, getAccounts } from '../state.js';
 import { decodeBytes, parseCSV } from '../lib/csv.js';
@@ -16,19 +16,24 @@ import { parseAmount, round2 } from '../lib/money.js';
 import { nextVoucherNo } from '../lib/ledger.js';
 import { sha256Hex, uid, compactKey } from '../lib/text.js';
 import { INVENTORY_CATEGORIES } from '../lib/inventory.js';
+import { normalizePurchaseRows, normalizeSupplierRows, templateCSV, supplierLabel, VAT_RATE } from '../lib/purchases.js';
 import { ASSET_CATEGORIES } from '../lib/coa.js';
 import { PROVIDERS } from '../lib/autojournal.js';
 import { syncAll, describeSync } from '../sync.js';
 
-const TARGET_STORE = { sales: 'sales_lines', ecpay_tx: 'payment_tx', payouts: 'payouts', bank: 'bank_lines', journal: 'journal_entries', purchases: 'inventory_moves', assets: 'fixed_assets', customers: 'customers', einvoice: 'einvoices' };
+const TARGET_STORE = { sales: 'sales_lines', ecpay_tx: 'payment_tx', payouts: 'payouts', bank: 'bank_lines', journal: 'journal_entries', suppliers: 'suppliers', purchases: 'inventory_moves', assets: 'fixed_assets', customers: 'customers', einvoice: 'einvoices' };
+// 供應商、進貨紀錄頁的「從匯入中心匯入」會帶 ?target=，這裡先固定資料類型並提供範本
+const TEMPLATE_NAME = { suppliers: '供應商資料範本.csv', purchases: '進貨紀錄範本.csv' };
 const IMAGE = /\.(jpe?g|png|heic|heif|webp|gif|pdf)$/i;
 
 export async function render(root, ctx) {
   let queue = [];
   let cur = null; // 目前處理中的檔案
   let prepared = null;
+  const forced = TARGETS[ctx.params.target] ? ctx.params.target : null;
 
   const settings = await getSettings();
+  const vatRate = settings.vat_mode === 'general' ? VAT_RATE : 0;
 
   async function loadFile(file) {
     const buf = new Uint8Array(await file.arrayBuffer());
@@ -51,7 +56,7 @@ export async function render(root, ctx) {
       }
       f.rows = parseCSV(text);
     }
-    f.target = guessTarget(f.rows, file.name);
+    f.target = forced || guessTarget(f.rows, file.name);
     await applyProfileOrAuto(f);
     return f;
   }
@@ -109,7 +114,8 @@ export async function render(root, ctx) {
       const fresh = tagged.filter((e) => !existing.has(e.source_ref));
       return { rows: fresh, all: tagged, dup: tagged.length - fresh.length, skipped: errors.map((m) => ({ row: '', reason: m })), unresolved, accounts, dates: tagged.map((e) => e.date) };
     }
-    if (t === 'purchases') return preparePurchases(raw);
+    if (t === 'purchases') return preparePurchases(raw, f);
+    if (t === 'suppliers') return prepareSuppliers(raw, f);
     if (t === 'assets') {
       const rows = raw
         .map((r) => ({ id: 'fa_' + compactKey(r.name + (r.acquired_on || '')).slice(0, 24), name: r.name, category: guessAssetCategory(r.category, r.name), acquired_on: parseDate(r.acquired_on), cost: parseAmount(r.cost), life_years: parseAmount(r.life_years) || null, residual: parseAmount(r.residual), note: r.note || '' }))
@@ -134,45 +140,33 @@ export async function render(root, ctx) {
     return { rows: fresh, all: rows, dup: rows.length - fresh.length, skipped, dates: dates.filter(Boolean) };
   }
 
-  async function preparePurchases(raw) {
+  async function preparePurchases(raw, f) {
     const [items, suppliers] = await Promise.all([store.all('inventory_items'), store.all('suppliers')]);
-    const itemBy = new Map(items.map((i) => [compactKey(i.name), i]));
-    const supBy = new Map(suppliers.map((s) => [compactKey(s.name), s]));
-    const newItems = new Map();
-    const newSups = new Map();
-    const rows = [];
-    const skipped = [];
-    for (const r of raw) {
-      const date = parseDate(r.date);
-      const qty = parseAmount(r.qty) ?? 1;
-      const price = parseAmount(r.unit_price);
-      const amount = parseAmount(r.amount) ?? (price !== null ? round2(price * qty) : null);
-      if (!date || !r.item || amount === null) {
-        skipped.push({ row: r._row, reason: '缺日期、品項或金額' });
-        continue;
-      }
-      const ik = compactKey(r.item);
-      let item = itemBy.get(ik) || newItems.get(ik);
-      if (!item) {
-        item = { id: uid('it_'), name: r.item, unit: r.unit || '單位', category: guessInvCategory(r.item), safety_stock: 0, active: true };
-        item.gl_account = INVENTORY_CATEGORIES[item.category].gl;
-        newItems.set(ik, item);
-      }
-      let sup = null;
-      if (r.supplier) {
-        const sk = compactKey(r.supplier);
-        sup = supBy.get(sk) || newSups.get(sk);
-        if (!sup) {
-          sup = { id: uid('sp_'), name: r.supplier };
-          newSups.set(sk, sup);
-        }
-      }
-      rows.push({ id: 'mv_' + compactKey([date, r.item, qty, amount, r.supplier || ''].join('|')).slice(0, 40), item_id: item.id, date, type: 'purchase', qty, amount, supplier_id: sup?.id || null, order_date: parseDate(r.order_date), yield_score: parseAmount(r.yield_score), invoice_no: r.invoice_no || '', note: r.note || '' });
-    }
-    const res = await withDupes('purchases', rows, skipped, rows.map((r) => r.date));
-    res.newItems = [...newItems.values()];
-    res.newSups = [...newSups.values()];
+    const batchId = 'b_' + f.hash.slice(0, 12);
+    const r = normalizePurchaseRows(raw, { items, suppliers, sourceFile: f.name, batchId, vatRate });
+    const res = await withDupes('purchases', r.rows, r.skipped, r.rows.map((x) => x.date));
+    const fresh = new Set(res.rows.map((x) => x.item_id));
+    res.newItems = r.newItems.filter((it) => fresh.has(it.id));
+    res.updatedItems = r.updatedItems.filter((it) => fresh.has(it.id));
+    const usedSup = new Set(res.rows.map((x) => x.supplier_id));
+    res.newSups = r.newSups.filter((x) => usedSup.has(x.id));
+    res.docs = r.docs;
+    const itemBy = new Map([...items, ...r.newItems].map((i) => [i.id, i]));
+    const supBy = new Map([...suppliers, ...r.newSups].map((x) => [x.id, x]));
+    const newItem = new Set(r.newItems.map((i) => i.id));
+    const newSup = new Set(r.newSups.map((x) => x.id));
+    res.preview = r.rows.map((m) => {
+      const it = itemBy.get(m.item_id);
+      return { ...m, itemName: it?.name || '', itemNew: newItem.has(m.item_id), category: it?.category || '', autoCat: !!it?.auto_category, supplierName: supplierLabel(supBy.get(m.supplier_id)), supNew: newSup.has(m.supplier_id) };
+    });
     return res;
+  }
+
+  async function prepareSuppliers(raw, f) {
+    const suppliers = await store.all('suppliers');
+    const batchId = 'b_' + f.hash.slice(0, 12);
+    const r = normalizeSupplierRows(raw, { suppliers, batchId, sourceFile: f.name });
+    return { rows: r.rows, all: r.preview, preview: r.preview, dup: r.unchanged, skipped: r.skipped, dates: [], added: r.preview.filter((x) => x._state === 'new').length, updated: r.preview.filter((x) => x._state === 'update').length };
   }
 
   async function commit() {
@@ -199,6 +193,7 @@ export async function render(root, ctx) {
       }
       if (t === 'purchases') {
         if (p.newItems.length) await store.put('inventory_items', p.newItems);
+        if (p.updatedItems?.length) await store.put('inventory_items', p.updatedItems);
         if (p.newSups.length) await store.put('suppliers', p.newSups);
       }
       await store.put(TARGET_STORE[t], rows);
@@ -222,7 +217,8 @@ export async function render(root, ctx) {
         const headers = f.rows[f.headerIndex] || [];
         await store.put('import_profiles', { id: 'pf_' + t + '_' + headerSignature(headers), target: t, signature: headerSignature(headers), header_index: f.headerIndex, mapping: f.mapping, headers, name: f.name, updated_at: new Date().toISOString() });
       }
-      let msg = `已匯入 ${fmt(rows.length)} 筆${p.dup ? `，略過重複 ${fmt(p.dup)} 筆` : ''}`;
+      let msg = t === 'suppliers' ? `已新增 ${fmt(p.added)} 家、更新 ${fmt(p.updated)} 家供應商${p.dup ? `，${fmt(p.dup)} 家資料相同未變動` : ''}` : `已匯入 ${fmt(rows.length)} 筆${p.dup ? `，略過重複 ${fmt(p.dup)} 筆` : ''}`;
+      if (t === 'purchases') msg += `；進貨單 ${fmt(new Set(rows.map((r) => r.purchase_id)).size)} 張${p.newItems.length ? `、自動建檔原物料 ${fmt(p.newItems.length)} 項` : ''}${p.newSups.length ? `、新供應商 ${fmt(p.newSups.length)} 家` : ''}，已載入原物料進銷存`;
       if (['sales', 'payouts', 'assets'].includes(t)) {
         const r = await syncAll();
         msg += '。' + describeSync(r);
@@ -301,9 +297,14 @@ export async function render(root, ctx) {
   }
 
   function dropZone() {
-    return h`<div class="drop" id="drop">
+    const back = { suppliers: ['suppliers', '供應商'], purchases: ['purchases', '進貨紀錄'] }[forced];
+    return h`${
+      forced
+        ? h`<div class="callout" style="margin-bottom:12px"><p><b>匯入「${TARGETS[forced].label}」</b>：${TARGETS[forced].hint}。欄位順序不限，表頭文字相近即可自動對應。${TEMPLATE_NAME[forced] ? h` <button class="btn sm" data-act="template" data-target="${forced}">下載範本 CSV</button>` : ''}${back ? h` <a class="btn sm ghost" href="#/${back[0]}">回${back[1]}</a>` : ''}</p></div>`
+        : ''
+    }<div class="drop" id="drop">
       <h3>把檔案拖到這裡</h3>
-      <p class="muted">支援 POS 銷售明細、綠界刷卡明細／撥款明細、銀行存摺、電子發票、舊帳 XLSX；照片與 PDF 會轉到「憑證歸檔」。<br>檔案只在這台電腦的瀏覽器裡解析${store.mode === 'cloud' ? '，匯入後存到你的 Supabase 雲端資料庫' : '，不會上傳到任何伺服器'}。</p>
+      <p class="muted">支援 POS 銷售明細、綠界刷卡明細／撥款明細、銀行存摺、電子發票、舊帳 XLSX、供應商資料、進貨／採購紀錄；照片與 PDF 會轉到「憑證歸檔」。<br>檔案只在這台電腦的瀏覽器裡解析${store.mode === 'cloud' ? '，匯入後存到你的 Supabase 雲端資料庫' : '，不會上傳到任何伺服器'}。</p>
       <div class="row" style="justify-content:center"><button class="btn primary" data-act="pick">選擇檔案</button><button class="btn" data-act="pickDir">選擇整個資料夾</button></div>
       <p class="muted" style="margin-top:12px;font-size:13px">營收自 <b>${settings.revenue_start}</b> 起計算；「老闆測試／老闆招待／報廢」金額一律作廢（可在設定頁調整）。</p>
     </div>`;
@@ -367,6 +368,13 @@ export async function render(root, ctx) {
       const before = p.all.filter((l) => l.date < settings.revenue_start).length;
       parts.push(h`<div class="callout" style="margin-bottom:10px"><p>作廢（金額計 0）：老闆測試 ${voids.filter((l) => l.void_reason === 'boss_test').length} 筆、老闆招待 ${voids.filter((l) => l.void_reason === 'boss_treat').length} 筆、報廢 ${voids.filter((l) => l.void_reason === 'scrap').length} 筆、POS 作廢 ${voids.filter((l) => l.void_reason === 'pos_void').length} 筆。${before ? ` ${settings.revenue_start} 以前的 ${fmt(before)} 筆會保留供品項比對，但不計入營收。` : ''}</p></div>`);
     }
+    if (cur.target === 'purchases') {
+      const docs = p.docs || [];
+      parts.push(h`<div class="callout" style="margin-bottom:10px"><p>合成 <b>${fmt(docs.length)}</b> 張進貨單（同發票號碼的多行為一張）。匯入後每行進貨自動載入「原物料進銷存」：${p.newItems.length ? h`沒見過的品名會自動建檔 <b>${fmt(p.newItems.length)}</b> 項（${p.newItems.slice(0, 8).map((i) => `${i.name}→${INVENTORY_CATEGORIES[i.category]?.label || i.category}`).join('、')}${p.newItems.length > 8 ? '…' : ''}），分類依品名自動判斷，之後可在「進貨紀錄 → 原物料主檔」修改並設定安全庫存、進貨包裝折合量；` : '品名都已建檔；'}${p.newSups.length ? h`新供應商 <b>${p.newSups.map((x) => x.name).join('、')}</b> 會一併建立（可到「供應商」補統編與匯款資料）。` : ''}</p></div>`);
+    }
+    if (cur.target === 'suppliers') {
+      parts.push(h`<div class="callout" style="margin-bottom:10px"><p>新增 <b>${fmt(p.added)}</b> 家、更新既有資料 <b>${fmt(p.updated)}</b> 家${p.dup ? `、${fmt(p.dup)} 家資料相同不變動` : ''}。以統一編號或發票抬頭／簡稱比對既有供應商；匯入檔裡空白的欄位不會蓋掉原本的資料。</p></div>`);
+    }
     if (cur.target === 'journal' && p.unresolved.length) {
       const accOpts = [['', '— 選擇科目 —'], ...p.accounts.map((a) => [a.code, `${a.code} ${a.name}`])];
       parts.push(h`<div class="callout warn" style="margin-bottom:10px"><p><b>以下科目在系統中找不到，請指定對應的會計項目：</b></p>
@@ -376,7 +384,7 @@ export async function render(root, ctx) {
     parts.push(h`<div id="preview-table" class="preview"></div>`);
     mount(el, h`${parts}`);
     const cols = previewColumns(cur.target);
-    dataTable(el.querySelector('#preview-table'), { rows: p.all.slice(0, 200), columns: cols, pageSize: 50, rowClass: (r) => (r.void_reason ? 'void' : '') });
+    dataTable(el.querySelector('#preview-table'), { rows: (p.preview || p.all).slice(0, 200), columns: cols, pageSize: 50, rowClass: (r) => (r.void_reason ? 'void' : '') });
   }
 
   function wireDrop() {
@@ -401,6 +409,7 @@ export async function render(root, ctx) {
 
   const unbind = bindActions(root, {
     pick: async () => handleFiles(await pickFiles({ accept: '.csv,.txt,.xlsx,.xls,image/*,.pdf' })),
+    template: (el) => downloadCSV(TEMPLATE_NAME[el.dataset.target] || '範本.csv', templateCSV(el.dataset.target)),
     pickDir: async () => handleFiles(await pickFiles({ directory: true })),
     skip: () => next(),
     commit: () => commit(),
@@ -479,16 +488,6 @@ function colName(i) {
   return s;
 }
 
-function guessInvCategory(name) {
-  const s = String(name);
-  if (/豆|bean|烘焙/i.test(s)) return 'beans';
-  if (/奶|乳|milk|cream/i.test(s)) return 'dairy';
-  if (/杯|蓋|吸管|袋|盒|濾紙|紙/.test(s)) return 'packaging';
-  if (/茶|粉|糖|漿|syrup|可可/i.test(s)) return 'tea_syrup';
-  if (/麵粉|奶油|蛋|起司|水果|餅/.test(s)) return 'bakery';
-  return 'tea_syrup';
-}
-
 function guessAssetCategory(cat, name) {
   const s = `${cat || ''} ${name || ''}`;
   if (/裝潢|工程|改良|木作|水電/.test(s)) return 'leasehold';
@@ -550,10 +549,26 @@ function previewColumns(t) {
       ];
     case 'purchases':
       return [
-        { key: 'date', label: '日期' },
-        { key: 'item_id', label: '品項' },
-        { key: 'qty', label: '數量', align: 'num' },
-        { key: 'amount', label: '金額', align: 'num', fmt: m },
+        { key: 'invoice_date', label: '發票日期' },
+        { key: 'invoice_no', label: '發票號碼' },
+        { key: 'supplierName', label: '供應商', fmt: (v, r) => h`${v || '—'}${r.supNew ? h` ${badge('新', 'accent')}` : ''}` },
+        { key: 'itemName', label: '品名', fmt: (v, r) => h`${v}${r.itemNew ? h` ${badge('新建檔', 'accent')}` : ''}` },
+        { key: 'unit', label: '單位' },
+        { key: 'pack_qty', label: '數量', align: 'num', fmt: m },
+        { key: 'unit_price', label: '單價（含稅）', align: 'num', fmt: m },
+        { key: 'amount', label: '含稅金額', align: 'num', fmt: m },
+        { key: 'category', label: '分類', fmt: (v, r) => h`${INVENTORY_CATEGORIES[v]?.label || v || ''}${r.autoCat ? h` ${badge('待確認', 'medium')}` : ''}` },
+      ];
+    case 'suppliers':
+      return [
+        { key: 'short_name', label: '簡稱' },
+        { key: 'name', label: '發票抬頭' },
+        { key: 'tax_id', label: '統編' },
+        { key: 'phone', label: '公司電話' },
+        { key: 'contact', label: '聯絡人', fmt: (v, r) => [v, r.mobile].filter(Boolean).join(' ') },
+        { key: 'terms', label: '付款條件' },
+        { key: 'bank_branch', label: '匯款銀行', fmt: (v, r) => [v, r.bank_code ? `(${r.bank_code})` : '', r.account_number].filter(Boolean).join(' ') },
+        { key: '_state', label: '', fmt: (v) => (v === 'new' ? badge('新增', 'accent') : v === 'update' ? badge('更新', 'medium') : badge('不變')) },
       ];
     case 'assets':
       return [

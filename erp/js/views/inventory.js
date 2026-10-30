@@ -4,15 +4,15 @@
 import { h, raw, mount, bindActions, dataTable, modal, confirmBox, toast, stat, badge, status, options, fmt, pct, emptyState } from '../ui.js';
 import { store } from '../store.js';
 import { getSettings, getProductIndex, getAccounts, revenueLines } from '../state.js';
-import { INVENTORY_CATEGORIES, MOVE_TYPES, theoreticalUsage, averageCosts, stockLevels, productCosts } from '../lib/inventory.js';
+import { INVENTORY_CATEGORIES, MOVE_TYPES, theoreticalUsage, averageCosts, stockLevels, productCosts, suggestSku } from '../lib/inventory.js';
 import { CATEGORIES } from '../lib/pos.js';
 import { uid } from '../lib/text.js';
 import { today, daysBetween } from '../lib/dates.js';
 import { round2 } from '../lib/money.js';
+import { toStockQty, unitMatches } from '../lib/purchases.js';
 
 // 庫存狀態：[status() 種類, 文字, 排序]
 const STATUS = { out: ['bad', '缺貨', 0], low: ['bad', '低於安全量', 1], watch: ['warn', '接近安全量', 2], unset: ['na', '未設安全量', 3], ok: ['good', '正常', 4] };
-const SKU_PREFIX = { beans: 'BN', dairy: 'DY', tea_syrup: 'TS', bakery: 'BK', packaging: 'PK', retail: 'RT' };
 const MOVE_HINT = {
   opening: '期初：營收起算日當天盤點的數量與總價值；金額留白時以標準成本計算。',
   purchase: '進貨：填訂購日可計算供應商交貨天數；良率評分記錄這批貨的品質（100＝全數可用）。',
@@ -42,12 +42,6 @@ export function itemLabel(it) {
 export function sortItems(items) {
   const order = Object.keys(INVENTORY_CATEGORIES);
   return [...items].sort((a, b) => order.indexOf(a.category) - order.indexOf(b.category) || String(a.sku || a.name).localeCompare(String(b.sku || b.name), 'zh-Hant'));
-}
-
-function suggestSku(cat, items) {
-  const p = SKU_PREFIX[cat] || 'IT';
-  const used = items.map((i) => /^([A-Z]+)-(\d+)$/i.exec(String(i.sku || ''))).filter((m) => m && m[1].toUpperCase() === p).map((m) => Number(m[2]));
-  return `${p}-${String((used.length ? Math.max(...used) : 0) + 1).padStart(3, '0')}`;
 }
 
 const statusKey = (r) => (r.status === 'ok' && !(Number(r.item.safety_stock) > 0) ? 'unset' : r.status);
@@ -135,6 +129,109 @@ export async function editMove(move, { items, suppliers, type = null, itemId = n
   if (!r) return null;
   await store.put('inventory_moves', r);
   toast(`已儲存${MOVE_TYPES[r.type]}紀錄`, 'good');
+  return r;
+}
+
+/**
+ * 目前的庫存快照（供其他頁面用）：各品項現有數量、狀態、移動平均成本。
+ */
+export async function stockSnapshot({ asOf = null } = {}) {
+  const idx = await getProductIndex();
+  const lines = await revenueLines();
+  const [items, moves, recipes] = await Promise.all(['inventory_items', 'inventory_moves', 'recipes'].map((c) => store.all(c)));
+  const lastSale = lines.reduce((m, l) => (l.date > m ? l.date : m), '');
+  const day = asOf || (lastSale > today() ? lastSale : today());
+  const usage = theoreticalUsage(lines, recipes, (l) => idx.of(l).id, { to: day });
+  const levels = stockLevels(items, moves, usage, { asOf: day });
+  return { asOf: day, items, moves, recipes, levels: new Map(levels.map((r) => [r.item.id, r])), costs: averageCosts(items, moves, { asOf: day }) };
+}
+
+/**
+ * 新增／修改原物料品項並儲存（含進貨包裝折合量；改了折合量會重算該品項進貨行的庫存數量）。
+ * 回傳儲存後的品項、'deleted'，或取消時 null。
+ */
+export async function editItem(item, { items, moves, recipes, suppliers, accName }) {
+  const isNew = !item;
+  const it = item || { sku: '', name: '', category: 'beans', unit: INVENTORY_CATEGORIES.beans.unit, safety_stock: null, reorder_qty: null, std_cost: null, supplier_id: '', pack_type: '', pack_size: 1, note: '', active: true };
+  const used = !isNew && (moves.some((m) => m.item_id === it.id) || recipes.some((r) => r.item_id === it.id));
+  const others = items.filter((x) => x.id !== it.id);
+  const glHint = (cat) => (INVENTORY_CATEGORIES[cat] ? `入帳科目：${INVENTORY_CATEGORIES[cat].gl} ${accName.get(INVENTORY_CATEGORIES[cat].gl) || ''}` : '');
+  const lastInfo = it.last_purchase_date ? `最近進貨 ${it.last_purchase_date}${it.last_unit_price !== null && it.last_unit_price !== undefined ? `，含稅單價 ${fmtUnitCost(it.last_unit_price)}／${it.last_price_unit || it.unit || '單位'}` : ''}${it.source_file ? `（來源：${it.source_file}）` : ''}` : '';
+  const r = await modal({
+    title: isNew ? '新增原物料品項' : `修改品項：${it.name}`,
+    body: h`<div class="form-grid">
+        <label class="field"><span>物品編號（留白自動編號）</span><input type="text" name="sku" value="${it.sku || ''}" placeholder="${suggestSku(it.category, others)}"></label>
+        <label class="field"><span>品名</span><input type="text" name="name" value="${it.name || ''}" placeholder="例如：衣索比亞淺焙豆"></label>
+        <label class="field"><span>分類${it.auto_category ? '（自動判斷，請確認）' : ''}</span><select name="category">${options(Object.entries(INVENTORY_CATEGORIES).map(([k, c]) => [k, c.label]), it.category)}</select><span data-gl>${glHint(it.category)}</span></label>
+        <label class="field"><span>庫存單位</span><input type="text" name="unit" value="${it.unit || ''}" placeholder="g、ml、個"></label>
+        <label class="field"><span>安全庫存（預警線）</span><input type="number" name="safety_stock" min="0" step="any" value="${it.safety_stock ?? ''}"></label>
+        <label class="field"><span>建議叫貨量</span><input type="number" name="reorder_qty" min="0" step="any" value="${it.reorder_qty ?? ''}"></label>
+        <label class="field"><span>進貨包裝（發票上的單位）</span><input type="text" name="pack_type" value="${it.pack_type || ''}" placeholder="箱、瓶、包、kg"></label>
+        <label class="field"><span>每 1 包裝折合幾個庫存單位</span><input type="number" name="pack_size" min="0" step="any" value="${it.pack_size ?? ''}" placeholder="例：1 瓶 ＝ 936 ml 填 936"></label>
+        <label class="field"><span>標準成本（每庫存單位，選填）</span><input type="number" name="std_cost" min="0" step="any" value="${it.std_cost ?? ''}"></label>
+        <label class="field"><span>主要供應商（選填）</span><select name="supplier_id">${options([['', '—'], ...[...suppliers].sort(byName).map((s) => [s.id, s.short_name || s.name])], it.supplier_id || '')}</select></label>
+        <label class="field" style="grid-column:1/-1"><span>備註</span><input type="text" name="note" value="${it.note || ''}"></label>
+      </div>
+      <p class="muted" style="font-size:12.5px;margin:10px 0 0">庫存單位請與配方用量一致（咖啡豆用 g、鮮奶用 ml、杯蓋用個）；進貨單上的單位若是包裝（箱、瓶、包），填每一包裝折合幾個庫存單位，進貨數量就會自動換算成庫存。現有庫存低於安全庫存就會提醒叫貨；標準成本在還沒有進貨紀錄時當作平均成本。</p>
+      ${lastInfo ? h`<p class="muted" style="font-size:12.5px;margin:6px 0 0">${lastInfo}</p>` : ''}
+      ${used ? h`<p class="muted" style="font-size:12.5px;margin:6px 0 0">此品項已有異動或配方：變更庫存單位不會換算既有數量（改包裝折合量會重算進貨行），也無法刪除。</p>` : ''}`,
+    actions: [
+      ...(isNew || used ? [] : [{ label: '刪除品項', danger: true, value: 'delete' }]),
+      { label: '取消', value: null },
+      {
+        label: '儲存',
+        primary: true,
+        value: (dlg) => {
+          const g = (n) => dlg.querySelector(`[name=${n}]`).value.trim();
+          const name = g('name');
+          const category = g('category');
+          if (!name) return fail('請輸入品名');
+          const sku = g('sku') || suggestSku(category, others);
+          if (others.some((x) => String(x.sku || '').toLowerCase() === sku.toLowerCase())) return fail(`物品編號 ${sku} 已被其他品項使用`);
+          if (others.some((x) => String(x.name || '').trim() === name)) return fail('已有同名的品項');
+          const vals = {};
+          for (const k of ['safety_stock', 'reorder_qty', 'std_cost', 'pack_size']) {
+            vals[k] = num(g(k));
+            if (vals[k] !== null && !(vals[k] >= 0)) return fail('安全庫存、叫貨量、成本與折合量需為 0 以上的數字');
+          }
+          if (vals.pack_size === 0) vals.pack_size = null;
+          const cat = INVENTORY_CATEGORIES[category];
+          return { ...it, id: it.id || uid('it_'), sku, name, category, unit: g('unit') || cat.unit, gl_account: category !== it.category || !it.gl_account ? cat.gl : it.gl_account, ...vals, pack_type: g('pack_type'), note: g('note'), supplier_id: g('supplier_id') || null, auto_category: false, active: it.active ?? true };
+        },
+      },
+    ],
+    onMount: (dlg) => {
+      const cat = dlg.querySelector('[name=category]');
+      const unit = dlg.querySelector('[name=unit]');
+      let prev = cat.value;
+      cat.addEventListener('change', () => {
+        const u = unit.value.trim();
+        if (!used && (!u || u === INVENTORY_CATEGORIES[prev]?.unit)) unit.value = INVENTORY_CATEGORIES[cat.value].unit;
+        dlg.querySelector('[data-gl]').textContent = glHint(cat.value);
+        dlg.querySelector('[name=sku]').placeholder = suggestSku(cat.value, others);
+        prev = cat.value;
+      });
+    },
+  });
+  if (r === 'delete') {
+    if (!(await confirmBox(`刪除品項「${it.name}」？`, { ok: '刪除', danger: true }))) return null;
+    await store.remove('inventory_items', it.id);
+    toast('已刪除品項', 'good');
+    return 'deleted';
+  }
+  if (!r) return null;
+  await store.put('inventory_items', r);
+  // 包裝折合量或單位改了：以發票數量重算進貨行的庫存數量
+  const packChanged = !isNew && (r.pack_size !== it.pack_size || !unitMatches(r.pack_type, it.pack_type) || !unitMatches(r.unit, it.unit));
+  if (packChanged) {
+    const fix = moves.filter((m) => m.item_id === r.id && m.type === 'purchase' && m.pack_qty !== null && m.pack_qty !== undefined && m.unit).map((m) => ({ ...m, qty: toStockQty(r, m.unit, m.pack_qty) })).filter((m, i, arr) => m.qty !== moves.find((x) => x.id === m.id)?.qty);
+    if (fix.length) {
+      await store.put('inventory_moves', fix);
+      toast(`已儲存「${r.name}」，並依新的包裝折合量重算 ${fix.length} 行進貨的庫存數量`, 'good', 6000);
+      return r;
+    }
+  }
+  toast(`已儲存「${r.name}」`, 'good');
   return r;
 }
 
@@ -318,7 +415,7 @@ export async function render(root, ctx) {
 
   function draw() {
     if (!items.length) {
-      mount(root, h`<div class="card">${emptyState('還沒有原物料品項', '新增咖啡豆、鮮奶、杯蓋等原物料並設定安全庫存，再到「配方（BOM）」設定各品項的用量，系統就會依 POS 銷售自動推算耗用與庫存。進貨紀錄也可以從匯入中心批次匯入（會自動建立品項）。', h`<div class="row" style="justify-content:center"><button class="btn primary" data-act="addItem">＋ 新增品項</button><a class="btn" href="#/import">前往匯入中心</a></div>`)}</div>`);
+      mount(root, h`<div class="card">${emptyState('還沒有原物料品項', '新增咖啡豆、鮮奶、杯蓋等原物料並設定安全庫存，再到「配方（BOM）」設定各品項的用量，系統就會依 POS 銷售自動推算耗用與庫存。也可以直接到「進貨紀錄」登記或匯入進貨單，沒見過的品名會自動建檔。', h`<div class="row" style="justify-content:center"><button class="btn primary" data-act="addItem">＋ 新增品項</button><a class="btn" href="#/purchases">前往進貨紀錄</a></div>`)}</div>`);
       return;
     }
     const tabs = [['stock', '庫存水位'], ['moves', `異動紀錄（${fmt(moves.length)}）`], ['bom', '配方（BOM）']];
@@ -330,6 +427,7 @@ export async function render(root, ctx) {
         <span class="spacer"></span>
         <button class="btn primary" data-act="addItem">＋ 新增品項</button>
         <button class="btn" data-act="addMove">登記異動</button>
+        <a class="btn ghost" href="#/purchases">進貨紀錄</a>
       </div>
       <div id="inv-top"></div>
       <div class="card">
@@ -345,70 +443,7 @@ export async function render(root, ctx) {
   }
 
   async function itemModal(item) {
-    const isNew = !item;
-    const it = item || { sku: '', name: '', category: 'beans', unit: INVENTORY_CATEGORIES.beans.unit, safety_stock: null, reorder_qty: null, std_cost: null, supplier_id: '', active: true };
-    const used = !isNew && (moves.some((m) => m.item_id === it.id) || recipes.some((r) => r.item_id === it.id));
-    const others = items.filter((x) => x.id !== it.id);
-    const glHint = (cat) => (INVENTORY_CATEGORIES[cat] ? `入帳科目：${INVENTORY_CATEGORIES[cat].gl} ${accName.get(INVENTORY_CATEGORIES[cat].gl) || ''}` : '');
-    const r = await modal({
-      title: isNew ? '新增原物料品項' : `修改品項：${it.name}`,
-      body: h`<div class="form-grid">
-          <label class="field"><span>物品編號（留白自動編號）</span><input type="text" name="sku" value="${it.sku || ''}" placeholder="${suggestSku(it.category, others)}"></label>
-          <label class="field"><span>品名</span><input type="text" name="name" value="${it.name || ''}" placeholder="例如：衣索比亞淺焙豆"></label>
-          <label class="field"><span>分類</span><select name="category">${options(Object.entries(INVENTORY_CATEGORIES).map(([k, c]) => [k, c.label]), it.category)}</select><span data-gl>${glHint(it.category)}</span></label>
-          <label class="field"><span>庫存單位</span><input type="text" name="unit" value="${it.unit || ''}" placeholder="g、ml、個"></label>
-          <label class="field"><span>安全庫存（預警線）</span><input type="number" name="safety_stock" min="0" step="any" value="${it.safety_stock ?? ''}"></label>
-          <label class="field"><span>建議叫貨量</span><input type="number" name="reorder_qty" min="0" step="any" value="${it.reorder_qty ?? ''}"></label>
-          <label class="field"><span>標準成本（每單位，選填）</span><input type="number" name="std_cost" min="0" step="any" value="${it.std_cost ?? ''}"></label>
-          <label class="field"><span>主要供應商（選填）</span><select name="supplier_id">${options([['', '—'], ...[...suppliers].sort(byName).map((s) => [s.id, s.name])], it.supplier_id || '')}</select></label>
-        </div>
-        <p class="muted" style="font-size:12.5px;margin:10px 0 0">庫存單位請與配方用量、進貨數量一致（咖啡豆用 g、鮮奶用 ml、杯蓋用個）。現有庫存低於安全庫存就會提醒叫貨；標準成本在還沒有進貨紀錄時當作平均成本。</p>
-        ${used ? h`<p class="muted" style="font-size:12.5px;margin:6px 0 0">此品項已有異動或配方：變更單位不會換算既有數量，也無法刪除。</p>` : ''}`,
-      actions: [
-        ...(isNew || used ? [] : [{ label: '刪除品項', danger: true, value: 'delete' }]),
-        { label: '取消', value: null },
-        {
-          label: '儲存',
-          primary: true,
-          value: (dlg) => {
-            const g = (n) => dlg.querySelector(`[name=${n}]`).value.trim();
-            const name = g('name');
-            const category = g('category');
-            if (!name) return fail('請輸入品名');
-            const sku = g('sku') || suggestSku(category, others);
-            if (others.some((x) => String(x.sku || '').toLowerCase() === sku.toLowerCase())) return fail(`物品編號 ${sku} 已被其他品項使用`);
-            const vals = {};
-            for (const k of ['safety_stock', 'reorder_qty', 'std_cost']) {
-              vals[k] = num(g(k));
-              if (vals[k] !== null && !(vals[k] >= 0)) return fail('安全庫存、叫貨量與成本需為 0 以上的數字');
-            }
-            const cat = INVENTORY_CATEGORIES[category];
-            return { ...it, id: it.id || uid('it_'), sku, name, category, unit: g('unit') || cat.unit, gl_account: category !== it.category || !it.gl_account ? cat.gl : it.gl_account, ...vals, supplier_id: g('supplier_id') || null, active: it.active ?? true };
-          },
-        },
-      ],
-      onMount: (dlg) => {
-        const cat = dlg.querySelector('[name=category]');
-        const unit = dlg.querySelector('[name=unit]');
-        let prev = cat.value;
-        cat.addEventListener('change', () => {
-          const u = unit.value.trim();
-          if (!used && (!u || u === INVENTORY_CATEGORIES[prev]?.unit)) unit.value = INVENTORY_CATEGORIES[cat.value].unit;
-          dlg.querySelector('[data-gl]').textContent = glHint(cat.value);
-          dlg.querySelector('[name=sku]').placeholder = suggestSku(cat.value, others);
-          prev = cat.value;
-        });
-      },
-    });
-    if (r === 'delete') {
-      if (!(await confirmBox(`刪除品項「${it.name}」？`, { ok: '刪除', danger: true }))) return;
-      await store.remove('inventory_items', it.id);
-      toast('已刪除品項', 'good');
-    } else if (r) {
-      await store.put('inventory_items', r);
-      toast(`已儲存「${r.name}」`, 'good');
-    } else return;
-    await reload();
+    if (await editItem(item, { items, moves, recipes, suppliers, accName })) await reload();
   }
 
   async function recipeModal(p) {

@@ -100,23 +100,49 @@ export const TARGETS = {
     ],
     validate: (m) => (m.date === undefined ? '請指定「日期」欄' : m.account_code === undefined && m.account_name === undefined ? '請指定「科目代號」或「科目名稱」' : m.debit === undefined && m.credit === undefined && m.amount === undefined ? '請指定「借方／貸方」或「金額」欄' : null),
   },
+  suppliers: {
+    label: '供應商資料',
+    hint: '每列一家供應商：簡稱、發票抬頭、統編、公司電話、聯絡人與手機、付款條件、匯款銀行／戶名／帳號；已有的供應商（統編或名稱相同）會更新資料',
+    fields: [
+      f('short_name', '簡稱', ['簡稱', '供應商簡稱', '廠商簡稱', '短名', 'shortname', 'alias']),
+      f('name', '發票抬頭（全名）', ['發票抬頭', '抬頭', '公司名稱', '供應商名稱', '廠商名稱', '全名', '名稱', '供應商', '廠商', 'invoicetitle', 'name', 'company', 'supplier', 'vendor'], { required: true }),
+      f('tax_id', '統一編號', ['統一編號', '統編', '公司統編', '營利事業統一編號', 'taxid', 'ban']),
+      f('phone', '公司電話', ['公司電話', '電話', '聯絡電話', '市話', 'phone', 'tel']),
+      f('contact', '聯絡人（業務）', ['聯絡人業務', '聯絡人', '業務', '業務聯絡人', '窗口', '負責業務', 'contact', 'sales']),
+      f('mobile', '聯絡人手機', ['聯絡人手機', '手機', '行動電話', '業務手機', '手機號碼', 'mobile', 'cell']),
+      f('terms', '付款條件', ['付款條件', '付款方式', '結帳方式', '月結', 'terms', 'paymentterms']),
+      f('bank_branch', '匯款銀行－分行', ['匯款銀行分行', '匯款銀行', '銀行分行', '銀行名稱', '銀行', '分行', 'bank', 'bankbranch']),
+      f('bank_code', '銀行代號', ['銀行代號', '銀行代碼', '分行代號', '總行代號', 'bankcode']),
+      f('account_name', '戶名', ['戶名', '帳戶名稱', '受款人', '受款戶名', 'accountname']),
+      f('account_number', '匯款帳號', ['匯款帳號', '帳號', '銀行帳號', '帳戶', '帳戶號碼', 'accountnumber', 'account']),
+      f('pay_note', '付款備註', ['付款備註', '匯款備註', '付款說明', 'paynote']),
+      f('note', '備註', ['備註', '說明', '註記', 'note', 'remark', 'memo']),
+    ],
+    validate: (m) => (m.name === undefined && m.short_name === undefined ? '請指定「發票抬頭」或「簡稱」欄' : null),
+  },
   purchases: {
     label: '進貨／採購紀錄',
-    hint: '每列一筆進貨：日期、供應商、品項、數量、單價',
+    hint: '每列一行進貨品項：發票號碼、發票日期、供應商、品名、單位、單價、數量、含稅金額；同一張發票的多行會合成一張進貨單，沒見過的品名與供應商會自動建檔',
     fields: [
-      f('date', '進貨/到貨日', ['到貨日', '到貨日期', '進貨日期', '交貨日期', '收貨日期', '日期', 'date'], { required: true }),
+      f('invoice_no', '發票號碼', ['發票號碼', '發票字軌號碼', '字軌號碼', '發票號', '發票', '單據號碼', '單號', 'invoiceno', 'invoice']),
+      f('invoice_date', '發票日期', ['發票日期', '開立日期', '日期', '進貨日期', '採購日期', '交易日期', 'invoicedate', 'date'], { required: true }),
+      f('date', '到貨日', ['到貨日', '到貨日期', '交貨日期', '收貨日期', '入庫日', '入庫日期', 'arrivaldate', 'received']),
       f('order_date', '訂購日', ['訂購日', '訂購日期', '下單日期', '叫貨日期', 'orderdate']),
-      f('supplier', '供應商', ['供應商', '廠商', '廠商名稱', '供應商名稱', '進貨廠商', 'supplier', 'vendor']),
-      f('item', '品項', ['品項', '品名', '原物料', '材料', '商品', '項目', 'item', 'material']),
-      f('qty', '數量', ['數量', '進貨量', '進貨數量', 'qty', 'quantity']),
-      f('unit', '單位', ['單位', 'unit']),
-      f('unit_price', '單價', ['單價', '採購單價', '進價', 'price', 'unitprice']),
-      f('amount', '金額', ['金額', '小計', '總價', '總金額', '進貨金額', 'amount', 'total']),
+      f('supplier', '供應商', ['供應商', '廠商', '廠商名稱', '供應商名稱', '進貨廠商', '賣方名稱', '賣方', '發票抬頭', '簡稱', 'supplier', 'vendor', 'seller']),
+      f('supplier_tax_id', '供應商統編', ['供應商統編', '賣方統編', '賣方統一編號', '廠商統編', '統一編號', '統編', 'sellerid', 'taxid']),
+      f('item', '品名', ['品名', '品項', '品項名稱', '商品名稱', '原物料', '材料', '商品', '項目', '名稱', 'item', 'itemname', 'material', 'product'], { required: true }),
+      f('unit', '單位', ['單位', '計量單位', '包裝單位', '包裝', 'unit']),
+      f('qty', '數量', ['數量', '進貨量', '進貨數量', '數', 'qty', 'quantity', 'count']),
+      f('unit_price', '單價（含稅）', ['單價', '含稅單價', '採購單價', '進價', '進貨單價', 'unitprice', 'price']),
+      f('amount', '含稅金額', ['含稅金額', '金額', '小計', '總價', '總金額', '進貨金額', '含稅小計', '合計', 'amount', 'total', 'subtotal']),
+      f('amount_ex', '未稅金額', ['未稅金額', '未稅', '銷售額', '未稅小計', '未稅價', 'netamount']),
+      f('tax', '稅額', ['稅額', '營業稅', '營業稅額', 'tax']),
+      f('category', '分類（選填）', ['分類', '類別', '原料分類', '科目', '會計科目', '會計項目', 'category']),
       f('yield_score', '良率評分(%)', ['良率', '良率評分', '品質評分', '評分', 'yield', 'quality']),
-      f('invoice_no', '發票號碼', ['發票號碼', '發票', '單據號碼', 'invoice']),
-      f('note', '備註', ['備註', '說明', 'note']),
+      f('note', '備註', ['備註', '說明', '規格', 'note', 'remark']),
     ],
-    validate: (m) => (m.item === undefined ? '請指定「品項」欄' : m.amount === undefined && m.unit_price === undefined ? '請指定「金額」或「單價」欄' : null),
+    validate: (m) =>
+      m.item === undefined ? '請指定「品名」欄' : m.invoice_date === undefined && m.date === undefined ? '請指定「發票日期」或「到貨日」欄' : m.amount === undefined && m.unit_price === undefined && m.amount_ex === undefined ? '請指定「含稅金額」、「未稅金額」或「單價」欄' : null,
   },
   assets: {
     label: '固定資產清單',
@@ -238,6 +264,8 @@ export function guessTarget(rows, fileName = '') {
   const name = fileName.normalize('NFKC');
   if (/撥款/.test(name)) return 'payouts';
   if (/綠界|ecpay|刷卡/i.test(name)) return 'ecpay_tx';
+  if (/供應商|廠商/.test(name)) return 'suppliers';
+  if (/進貨|採購|purchase/i.test(name)) return 'purchases';
   if (/存摺|銀行|對帳單|交易明細.*帳戶/.test(name)) return 'bank';
   if (/發票/.test(name)) return 'einvoice';
   if (/銷售|pos|品項|訂單/i.test(name)) return 'sales';
