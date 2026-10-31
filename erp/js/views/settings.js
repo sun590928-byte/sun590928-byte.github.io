@@ -205,6 +205,7 @@ export async function render(root) {
           <button class="btn primary" data-act="backup">下載加密備份</button>
           <button class="btn" data-act="restore">從備份還原…</button>
           <button class="btn" data-act="resync">重新產生全部自動分錄</button>
+          <button class="btn" data-act="cash1105" title="POS 現金營收、現金存入銀行的分錄，從 1101 零用金-門市收銀改記 1105 現金（已鎖定月份不動）">舊分錄現金 1101 → 1105</button>
           <span class="spacer"></span>
           <button class="btn danger" data-act="wipe">清除全部資料…</button>
         </div>
@@ -234,7 +235,7 @@ export async function render(root) {
         filing_target_day: day('filing_target_day', 12),
         cutoff_hour: Number(g('cutoff_hour').value) || 0,
         bank_gl: g('bank_gl').value.trim() || '1103',
-        unknown_payment_account: g('unknown_payment_account').value.trim() || '1101',
+        unknown_payment_account: g('unknown_payment_account').value.trim() || '1105',
         fee_by_invoice: g('fee_by_invoice').checked,
         auto_recognize: g('auto_recognize').checked,
         ocr_enabled: g('ocr_enabled').checked,
@@ -463,6 +464,33 @@ export async function render(root) {
         }
         toast('已還原', 'good');
         setTimeout(() => location.reload(), 600);
+      } finally {
+        setBusy(false);
+      }
+    },
+    // 老闆 2026-11 決定：營業收到的現金記 1105 現金，1101 只做找零備用金。
+    // POS 營收分錄重新產生即改成 1105；現金存入銀行的補登／手動分錄（借 銀行存款／貸 1101）把貸方改成 1105。已鎖定月份不動。
+    cash1105: async () => {
+      const entries = await store.all('journal_entries');
+      const locked = new Set(s.locked_months || []);
+      const isLocked = (e) => locked.has(String(e.date || '').slice(0, 7));
+      const isBank = (code) => /^110[34]$/.test(code) || code === s.bank_gl;
+      const fix = [];
+      for (const e of entries) {
+        if (e.source === 'pos' || isLocked(e)) continue;
+        const lines = e.lines || [];
+        if (!lines.some((l) => isBank(l.account) && Number(l.debit) > 0) || !lines.some((l) => l.account === '1101' && Number(l.credit) > 0)) continue;
+        fix.push({ ...e, lines: lines.map((l) => (l.account === '1101' && Number(l.credit) > 0 ? { ...l, account: '1105' } : l)) });
+      }
+      const pos = entries.filter((e) => e.source === 'pos' && !isLocked(e) && (e.lines || []).some((l) => l.account === '1101')).length;
+      if (!fix.length && !pos) return toast('沒有需要改的分錄：營業現金都已記在 1105 現金', 'info', 5000);
+      if (!(await confirmBox(`把營業現金從 1101 零用金-門市收銀改記 1105 現金：重新產生 ${pos} 張 POS 營收分錄，並把 ${fix.length} 張「現金存入銀行」分錄的貸方 1101 改成 1105（已鎖定月份不動）。要繼續嗎？`, { ok: '改成 1105' }))) return;
+      setBusy(true, '更新分錄…');
+      try {
+        if (fix.length) await store.put('journal_entries', fix);
+        const r = await syncAll();
+        toast(`已把 ${fix.length} 張存入分錄的貸方改成 1105；${describeSync(r)}`, 'good', 8000);
+        draw();
       } finally {
         setBusy(false);
       }

@@ -586,7 +586,7 @@ try {
       const sugg = await page.$$eval('dialog tbody tr', (trs) => trs.map((tr) => [tr.children[2].textContent, tr.querySelector('[name=acc]').value]));
       console.log('補登建議：', sugg.filter(([d]) => /綠界|代墊|銷|房租/.test(d)));
       assert(sugg.some(([d, a]) => /綠界/.test(d) && a === '1111'), '綠界撥款建議 1111');
-      assert(sugg.some(([d, a]) => /銷/.test(d) && a === '1101'), '現金營收存入建議 1101');
+      assert(sugg.some(([d, a]) => /銷/.test(d) && a === '1105'), '現金營收存入建議 1105 現金');
       await shot('bank-bookmany', false);
       await page.click('dialog .modal-foot .btn');
       await page.waitForTimeout(300);
@@ -751,6 +751,12 @@ try {
   const master = await page.textContent('#po-body table');
   assert(master.includes('鮮乳 936ml') && master.includes('乳品') && master.includes('DY-001'), '原物料主檔有自動建檔的鮮乳（乳品、DY-001）');
   await shot('purchases-items', false);
+  await page.click('[data-act="tab"][data-tab="lines"]');
+  await page.waitForTimeout(300);
+  const detail = await page.textContent('#po-body table');
+  assert(detail.includes('AB12345678') && detail.includes('鮮乳 936ml') && detail.includes('瓶') && detail.includes('1,020'), '進貨明細分頁：發票號碼、品名、單位、含稅金額：' + detail.slice(0, 200));
+  await page.click('[data-act="tab"][data-tab="items"]');
+  await page.waitForTimeout(300);
   // 原物料主檔：改包裝折合量（1 瓶＝936 ml）→ 進貨行重算成庫存單位
   await page.click('#po-body [data-act="editItem"]:not([data-id=""])');
   await page.waitForSelector('dialog [name=pack_size]');

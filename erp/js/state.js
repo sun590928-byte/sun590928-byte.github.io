@@ -28,7 +28,7 @@ export const DEFAULT_SETTINGS = {
   tiers: DEFAULT_TIERS,
   locked_months: [],
   bank_gl: '1103',
-  unknown_payment_account: '1101',
+  unknown_payment_account: '1105',
   fee_by_invoice: true, // 金流手續費以綠界／LINE Pay 開的發票入帳（貸 應收帳款－未撥款項），撥款分錄不另計手續費
   auto_recognize: true, // 上傳憑證後自動在瀏覽器裡辨識（QR 碼、文字），不使用外部 AI
   ocr_enabled: true, // 讀不到 QR 碼時做文字辨識（第一次使用會下載約 10 MB 的辨識資料）
@@ -42,6 +42,8 @@ export async function getSettings() {
   const rows = await store.all('settings');
   const main = rows.find((r) => r.id === 'main');
   settingsCache = { ...DEFAULT_SETTINGS, ...(main?.value || {}) };
+  // 2026-11 老闆決定：營業收到的現金記 1105 現金，1101 零用金-門市收銀只做找零備用金；舊設定還停在 1101 的一律視為 1105
+  if (settingsCache.unknown_payment_account === '1101') settingsCache.unknown_payment_account = '1105';
   return settingsCache;
 }
 
@@ -57,13 +59,19 @@ store.on((coll) => {
   if (['products', 'product_aliases', '*'].includes(coll)) productIndex = null;
 });
 
-// 首次使用：寫入咖啡業會計項目
+// 首次使用：寫入咖啡業會計項目；之後版本才加入、分錄一定會用到的科目（1105 現金）若缺少也補上
+const REQUIRED_CODES = ['1105'];
 export async function ensureAccounts() {
   const accs = await store.all('accounts');
-  if (accs.length) return accs;
-  const rows = DEFAULT_ACCOUNTS.map((a) => ({ ...a, active: true }));
-  await store.put('accounts', rows);
-  return rows;
+  if (!accs.length) {
+    const rows = DEFAULT_ACCOUNTS.map((a) => ({ ...a, active: true }));
+    await store.put('accounts', rows);
+    return rows;
+  }
+  const have = new Set(accs.map((a) => a.code));
+  const missing = DEFAULT_ACCOUNTS.filter((a) => REQUIRED_CODES.includes(a.code) && !have.has(a.code)).map((a) => ({ ...a, active: true }));
+  if (missing.length) await store.put('accounts', missing);
+  return [...accs, ...missing];
 }
 
 export async function getAccounts() {

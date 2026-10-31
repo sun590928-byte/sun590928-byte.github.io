@@ -4,7 +4,7 @@
 import { round2 } from './money.js';
 import { PL_TYPES, accountMap } from './coa.js';
 
-const CASH_CODES = new Set(['1101', '1102', '1103']);
+const CASH_CODES = new Set(['1101', '1102', '1103', '1105']);
 
 export function entryTotals(e) {
   let debit = 0;

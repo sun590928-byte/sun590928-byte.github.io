@@ -47,7 +47,7 @@ abc,壞資料,資產,借,—,,
 
 test('coa: 付款方式依科目表、上傳資料夾對應付款來源', () => {
   const pays = payAccountsOf(DEFAULT_ACCOUNTS).map(([c]) => c);
-  assert.deepEqual(pays, ['1101', '1102', '1103', '1104', '1111', '1112', '1113', '1114', '1115', '2111', '2133', '2134', '2191']);
+  assert.deepEqual(pays, ['1101', '1102', '1103', '1104', '1105', '1111', '1112', '1113', '1114', '1115', '2111', '2133', '2134', '2191']);
   assert.equal(payAccountForFolder('員工代墊支出', DEFAULT_ACCOUNTS), '2134');
   assert.equal(payAccountForFolder('負責人代墊支出', DEFAULT_ACCOUNTS), '2133');
   assert.equal(payAccountForFolder('主要帳戶', DEFAULT_ACCOUNTS), '1103');

@@ -497,9 +497,10 @@ export function suggestBankAccount(line, history = []) {
   const text = `${line.description || ''} ${line.note || ''}`;
   const key = String(line.description || '').replace(/[\d\s]+/g, '');
   const past = key && history.find((h) => h.key === key);
-  if (past) return { account: past.account, why: `以前「${key}」記這個科目` };
-  if (line.deposit > 0 && /\d{4}銷/.test(text)) return { account: '1101', why: '門市現金營收存入（零用金-門市收銀）' };
+  // 門市現金營收存入銀行：貸 1105 現金（老闆 2026-11 決定；以前記 1101 零用金-門市收銀的舊分錄不再沿用）
+  if (line.deposit > 0 && /\d{4}銷/.test(text)) return { account: '1105', why: '門市現金營收存入（現金）' };
+  if (past && !(line.deposit > 0 && past.account === '1101' && /現金/.test(text))) return { account: past.account, why: `以前「${key}」記這個科目` };
   for (const [re, account, why] of RULES) if (re.test(text)) return { account, why };
-  if (line.deposit > 0 && /現金/.test(text)) return { account: '1101', why: '現金存入' };
+  if (line.deposit > 0 && /現金/.test(text)) return { account: '1105', why: '營業現金存入' };
   return line.deposit > 0 ? { account: '2161', why: '來源不明，先記暫收款' } : { account: '1291', why: '用途不明，先記暫付款' };
 }

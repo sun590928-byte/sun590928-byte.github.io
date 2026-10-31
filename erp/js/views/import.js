@@ -370,7 +370,7 @@ export async function render(root, ctx) {
     }
     if (cur.target === 'purchases') {
       const docs = p.docs || [];
-      parts.push(h`<div class="callout" style="margin-bottom:10px"><p>合成 <b>${fmt(docs.length)}</b> 張進貨單（同發票號碼的多行為一張）。匯入後每行進貨自動載入「原物料進銷存」：${p.newItems.length ? h`沒見過的品名會自動建檔 <b>${fmt(p.newItems.length)}</b> 項（${p.newItems.slice(0, 8).map((i) => `${i.name}→${INVENTORY_CATEGORIES[i.category]?.label || i.category}`).join('、')}${p.newItems.length > 8 ? '…' : ''}），分類依品名自動判斷，之後可在「進貨紀錄 → 原物料主檔」修改並設定安全庫存、進貨包裝折合量；` : '品名都已建檔；'}${p.newSups.length ? h`新供應商 <b>${p.newSups.map((x) => x.name).join('、')}</b> 會一併建立（可到「供應商」補統編與匯款資料）。` : ''}</p></div>`);
+      parts.push(h`<div class="callout" style="margin-bottom:10px"><p>合成 <b>${fmt(docs.length)}</b> 張進貨單（同發票號碼的多行為一張）。匯入後每行進貨自動載入「原物料進銷存」：${p.newItems.length ? h`沒見過的品名會自動建檔 <b>${fmt(p.newItems.length)}</b> 項（${p.newItems.slice(0, 8).map((i) => `${i.name}→${INVENTORY_CATEGORIES[i.category]?.label || i.category}`).join('、')}${p.newItems.length > 8 ? '…' : ''}），分類依品名自動判斷，之後可在「進貨紀錄 → 商品類別（原物料主檔）」修改並設定安全庫存、進貨包裝折合量；` : '品名都已建檔；'}${p.newSups.length ? h`新供應商 <b>${p.newSups.map((x) => x.name).join('、')}</b> 會一併建立（可到「供應商」補統編與匯款資料）。` : ''}</p></div>`);
     }
     if (cur.target === 'suppliers') {
       parts.push(h`<div class="callout" style="margin-bottom:10px"><p>新增 <b>${fmt(p.added)}</b> 家、更新既有資料 <b>${fmt(p.updated)}</b> 家${p.dup ? `、${fmt(p.dup)} 家資料相同不變動` : ''}。以統一編號或發票抬頭／簡稱比對既有供應商；匯入檔裡空白的欄位不會蓋掉原本的資料。</p></div>`);

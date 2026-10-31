@@ -71,7 +71,10 @@ test('存摺明細列：匯入格式、重複偵測、補登建議科目', () =>
   assert.equal(b.description, '現金（0901銷）');
   assert.ok(alreadyImported(r, [b]));
   assert.ok(!alreadyImported({ ...r, balance: 1 }, [b]));
-  assert.equal(suggestBankAccount(b).account, '1101', '門市現金營收存入');
+  assert.equal(suggestBankAccount(b).account, '1105', '門市現金營收存入記 1105 現金');
+  assert.equal(suggestBankAccount(b, [{ key: '現金（銷）', account: '1101' }]).account, '1105', '以前記 1101 零用金的也改建議 1105');
+  assert.equal(suggestBankAccount({ description: '現金', deposit: 5000 }, [{ key: '現金', account: '1101' }]).account, '1105', '現金存入不沿用舊的 1101');
+  assert.equal(suggestBankAccount({ description: '現金', deposit: 5000 }, [{ key: '現金', account: '2191' }]).account, '2191', '以前記其他科目的照舊');
   assert.equal(suggestBankAccount({ description: '電匯（綠界科技股）', deposit: 1989 }).account, '1111');
   assert.equal(suggestBankAccount({ description: '網銀（8月代墊）', withdrawal: 2500 }).account, '2134');
   assert.equal(suggestBankAccount({ description: '網銀（7月薪資）', withdrawal: 2000 }).account, '6101');

@@ -7,10 +7,11 @@ const A = (code, name, type, extra = {}) => ({ code, name, type, side: ['asset',
 
 export const DEFAULT_ACCOUNTS = [
   // ── 流動資產
-  A('1101', '零用金-門市收銀', 'asset', { grp: 'current', hint: '每日收銀現金營收' }),
+  A('1101', '零用金-門市收銀', 'asset', { grp: 'current', hint: '門市收銀找零與備用金（營業收到的現金記 1105）' }),
   A('1102', '零用金-會計行政', 'asset', { grp: 'current', hint: '小額採買週轉' }),
   A('1103', '銀行存款-主要帳戶', 'asset', { grp: 'current', hint: '主要營業帳戶' }),
   A('1104', '銀行存款-第二帳戶', 'asset', { grp: 'current' }),
+  A('1105', '現金', 'asset', { grp: 'current', hint: '門市每日收進來、等待存入銀行的營業現金' }),
   A('1111', '應收帳款－信用卡未撥款項', 'asset', { grp: 'current', hint: '刷卡營收，待綠界撥款' }),
   A('1112', '應收帳款－LINE PAY未撥款項', 'asset', { grp: 'current', hint: 'LINE Pay 營收，待撥款' }),
   A('1113', '應收帳款－街口未撥款項', 'asset', { grp: 'current', hint: '街口' }),
@@ -140,9 +141,9 @@ export const REVENUE_ACCOUNT_BY_CATEGORY = {
   prepaid: '2151',
 };
 
-// 付款方式 → 借方科目
+// 付款方式 → 借方科目（營業收到的現金記 1105 現金；1101 零用金-門市收銀是找零備用金，不記營收）
 export const DEBIT_ACCOUNT_BY_PAYMENT = {
-  cash: '1101',
+  cash: '1105',
   card: '1111',
   linepay: '1112',
   jkopay: '1113',
@@ -153,7 +154,7 @@ export const DEBIT_ACCOUNT_BY_PAYMENT = {
   transfer: '1103',
   prepaid: '2151',
   voucher: '2152',
-  unknown: '1101',
+  unknown: '1105',
 };
 
 // 固定資產類別 → 資產／累計折舊科目、建議耐用年限（僅供參考，實際依財政部耐用年數表）

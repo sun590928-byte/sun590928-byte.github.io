@@ -99,6 +99,8 @@ test('autojournal: POS 日營收分錄借貸平衡、作廢不入帳、營業稅
   const cat = (l) => (/巴斯克/.test(l.item_raw) ? 'food' : /豆/.test(l.item_raw) ? 'retail' : /抹茶/.test(l.item_raw) ? 'non_coffee' : 'coffee');
   const entries = salesJournal(lines, { categoryOf: cat, vatMode: 'general' });
   assert.equal(entries.length, new Set(lines.map((l) => l.date)).size);
+  const allLines = entries.flatMap((e) => e.lines);
+  assert.ok(allLines.some((l) => l.account === '1105' && l.debit > 0) && !allLines.some((l) => l.account === '1101'), '現金營收借 1105 現金，不記 1101 零用金');
   const accMap = accountMap(accounts);
   for (const e of entries) assert.deepEqual(validateEntry(e, accMap), [], e.date);
   const receipts = lines.filter((l) => !l.void_reason).reduce((t, l) => t + l.amount, 0);

@@ -1,5 +1,6 @@
 // 進貨紀錄（Purchase_Records）：登記或匯入進貨單（發票）→ 沒見過的品名自動建成原物料（分類依 12XX 原料科目）
-// → 載入原物料進銷存 → 原物料主檔設安全庫存、進貨包裝折合量 → 配方（BOM）設用量 → POS 銷售自動扣庫存。
+// → 載入原物料進銷存 → 商品類別（Item_Category，原物料主檔）設安全庫存、進貨包裝折合量 → 配方（BOM）設用量 → POS 銷售自動扣庫存。
+// 分頁：進貨單（一張發票一列）、進貨明細（一行進貨一列：發票號碼、發票日期、品名、單位、單價、數量、含稅金額）、商品類別、單價追蹤。
 // 每一行進貨存成 inventory_moves（type: purchase）；同一張進貨單的行共用 purchase_id。
 
 import { h, mount, bindActions, dataTable, modal, confirmBox, toast, stat, badge, status, options, fmt, pct, emptyState, downloadCSV } from '../ui.js';
@@ -69,7 +70,7 @@ export async function editPurchaseDoc(group, { items, suppliers, vatRate = VAT_R
       if (it) {
         sel.value = it.category;
         sel.disabled = true;
-        sel.title = `既有品項 ${itemLabel(it)}（分類到原物料主檔修改）`;
+        sel.title = `既有品項 ${itemLabel(it)}（分類到商品類別修改）`;
       } else {
         sel.disabled = false;
         sel.title = '';
@@ -229,8 +230,85 @@ export async function render(root, ctx) {
     draw();
   }
 
+  const intro = () => h`<div class="callout" style="margin-bottom:16px"><p><b>進貨 → 庫存 → 配方 → 自動扣庫存：</b>登記或匯入進貨單後，沒見過的品名會自動建成原物料（分類依會計科目 12XX 原料規則判斷），每一行進貨直接載入「原物料進銷存」；在「商品類別」分頁設定安全庫存與進貨包裝折合量，到 <a href="#/inventory?tab=bom">配方（BOM）</a> 設定每份品項的用量後，POS 每賣一份就自動扣庫存。</p></div>`;
+
+  // 進貨明細（Purchase_Records）：一行進貨一列——發票號碼、發票日期、品名、單位、單價、數量、含稅金額
+  function drawLines(top, body) {
+    const itemBy = new Map(items.map((i) => [i.id, i]));
+    const supBy = new Map(suppliers.map((x) => [x.id, x]));
+    const gid = new Map();
+    for (const g of groupPurchases(moves, { items, suppliers })) for (const l of g.lines) gid.set(l.id, g.id);
+    const q = f.q.trim().toLowerCase();
+    const has = (v) => v !== undefined && v !== null && String(v) !== '';
+    const rows = moves
+      .filter((m) => m.type === 'purchase' && (!f.sup || m.supplier_id === f.sup))
+      .map((m) => {
+        const it = itemBy.get(m.item_id);
+        const qty = has(m.pack_qty) ? Number(m.pack_qty) : Number(m.qty) || 0;
+        const amount = Number(m.amount) || 0;
+        return {
+          id: m.id,
+          gid: gid.get(m.id) || '',
+          invoice_no: m.invoice_no || '',
+          invoice_date: m.invoice_date || m.date || '',
+          date: m.date || '',
+          supplier: supplierLabel(supBy.get(m.supplier_id)),
+          name: it ? it.name : m.item_name || '',
+          sku: it?.sku || '',
+          category: it?.category || '',
+          unit: m.unit || it?.unit || '',
+          price: has(m.unit_price) ? Number(m.unit_price) : qty ? amount / qty : null,
+          qty,
+          amount,
+          amount_ex: has(m.amount_ex) ? Number(m.amount_ex) : null,
+          tax: has(m.tax) ? Number(m.tax) : null,
+          source: m.source_file || '手動登記',
+        };
+      })
+      .filter((r) => !q || r.name.toLowerCase().includes(q) || r.invoice_no.toLowerCase().includes(q) || r.supplier.toLowerCase().includes(q));
+    if (!moves.some((m) => m.type === 'purchase')) {
+      mount(top, intro());
+      mount(body, emptyState('還沒有進貨明細', '登記或匯入進貨單後，每一行進貨會列在這裡（發票號碼、發票日期、品名、單位、單價、數量、含稅金額）。'));
+      return;
+    }
+    const total = (k) => round2(rows.reduce((t, r) => t + (Number(r[k]) || 0), 0));
+    mount(
+      top,
+      h`<div class="stats">
+        ${stat('進貨明細', `${fmt(rows.length)} 行`, `${fmt(new Set(rows.map((r) => r.gid)).size)} 張進貨單`)}
+        ${stat('含稅金額', money(total('amount')), '目前篩選範圍')}
+        ${stat('未稅金額', money(total('amount_ex')), `稅額 ${money(total('tax'))}`)}
+        ${stat('品名', fmt(new Set(rows.map((r) => r.name)).size), '對應「商品類別」的原物料')}
+      </div>`,
+    );
+    dataTable(body, {
+      rows,
+      exportName: '進貨明細.csv',
+      empty: '沒有符合的進貨明細',
+      initialSort: { key: 'invoice_date', dir: -1 },
+      columns: [
+        { key: 'invoice_no', label: '發票號碼', fmt: (v) => v || '—' },
+        { key: 'invoice_date', label: '發票日期', fmt: (v, r) => h`${v}${r.date && r.date !== v ? small(`到貨 ${r.date}`) : ''}`, csv: (v) => v },
+        { key: 'supplier', label: '供應商', fmt: (v) => v || '—' },
+        { key: 'name', label: '品名', fmt: (v, r) => h`<b>${v}</b>${r.sku ? small(r.sku) : ''}`, csv: (v) => v },
+        { key: 'unit', label: '單位' },
+        { key: 'price', label: '單價（含稅）', align: 'num', fmt: (v) => (v === null ? '—' : fmtUnitCost(v)), csv: (v) => v ?? '' },
+        { key: 'qty', label: '數量', align: 'num', fmt: (v) => fmt(v) },
+        { key: 'amount', label: '含稅金額', align: 'num', fmt: (v, r) => h`<b>${money(v)}</b>${r.amount_ex !== null ? small(`未稅 ${money(r.amount_ex)}・稅 ${money(r.tax || 0)}`) : ''}`, csv: (v) => v },
+        { key: 'category', label: '分類', fmt: (v) => (v ? `${INVENTORY_CATEGORIES[v]?.label || v}（${INVENTORY_CATEGORIES[v]?.gl || ''}）` : '—') },
+        { key: 'source', label: '來源', fmt: (v) => h`<span class="muted" style="font-size:12px">${v}</span>`, csv: (v) => v },
+        { key: 'gid', label: '', nosort: true, fmt: (v) => h`<button class="btn sm" data-act="editDoc" data-id="${v}">修改</button>`, csv: () => '' },
+      ],
+    });
+  }
+
   function drawDocs(top, body) {
     const groups = groupPurchases(moves, { items, suppliers });
+    if (!groups.length) {
+      mount(top, intro());
+      mount(body, emptyState('還沒有進貨紀錄', '按「新增進貨單」輸入發票上的品名、單位、數量、單價，或把進貨明細 CSV／Excel 丟進匯入中心。沒見過的品名會自動建成原物料（見「商品類別」分頁）並載入進銷存，再設定安全庫存與配方，POS 銷售就會自動扣庫存。', h`<div class="row" style="justify-content:center"><button class="btn primary" data-act="addDoc">＋ 新增進貨單</button><a class="btn" href="#/import?target=purchases">從匯入中心匯入</a></div>`));
+      return;
+    }
     const q = f.q.trim().toLowerCase();
     const rows = groups
       .filter((g) => (!f.sup || g.supplier_id === f.sup) && (!q || g.invoice_no.toLowerCase().includes(q) || g.itemNames.some((n) => n.toLowerCase().includes(q)) || g.supplierName.toLowerCase().includes(q)))
@@ -246,7 +324,7 @@ export async function render(root, ctx) {
         ${stat('本月進貨', '$' + fmt(round2(thisMonth.reduce((t, g) => t + g.total, 0))), `${fmt(thisMonth.length)} 張`)}
         ${stat('原物料品項', fmt(items.length), autoItems ? `${fmt(autoItems)} 項分類待確認` : '分類都已確認', autoItems ? 'warn' : '')}
       </div>
-      <div class="callout" style="margin-bottom:16px"><p><b>進貨 → 庫存 → 配方 → 自動扣庫存：</b>登記或匯入進貨單後，沒見過的品名會自動建成原物料（分類依會計科目 12XX 原料規則判斷），每一行進貨直接載入「原物料進銷存」；在「原物料主檔」分頁設定安全庫存與進貨包裝折合量，到 <a href="#/inventory?tab=bom">配方（BOM）</a> 設定每份品項的用量後，POS 每賣一份就自動扣庫存。</p></div>`,
+      ${intro()}`,
     );
     dataTable(body, {
       rows,
@@ -291,11 +369,11 @@ export async function render(root, ctx) {
         ${stat('未設安全庫存', fmt(noSafety), noSafety ? '點「修改」設定預警線' : '都已設定', noSafety ? 'warn' : '')}
         ${stat('低於安全庫存／缺貨', fmt(low), low ? '建議叫貨' : '庫存正常', low ? 'bad' : '')}
       </div>
-      <div class="callout" style="margin-bottom:16px"><p>物品編號、品名、單位、含稅單價、進貨包裝與每包裝價格由進貨單自動帶入；成本／單位＝移動平均成本（庫存單位）。進貨單上的單位若是「箱、瓶、包」等包裝，請在「修改」設定每一包裝折合幾個庫存單位（例：1 瓶 ＝ 936 ml），庫存與配方就以庫存單位計算。</p></div>`,
+      <div class="callout" style="margin-bottom:16px"><p><b>商品類別（原物料主檔）</b>由進貨單、發票自動判別歸類、計算與建檔：物品編號、品名、單位、含稅單價、進貨包裝與每包裝價格由進貨單自動帶入；成本／單位＝移動平均成本（庫存單位）。進貨單上的單位若是「箱、瓶、包」等包裝，請在「修改」設定每一包裝折合幾個庫存單位（例：1 瓶 ＝ 936 ml），庫存與配方就以庫存單位計算。</p></div>`,
     );
     dataTable(body, {
       rows,
-      exportName: '原物料主檔.csv',
+      exportName: '商品類別.csv',
       columns: [
         { key: 'sku', label: '物品編號' },
         { key: 'name', label: '品名', fmt: (v, r) => h`<b>${v}</b>${r.auto_category ? h` ${badge('分類待確認', 'medium')}` : ''}`, csv: (v) => v },
@@ -308,11 +386,11 @@ export async function render(root, ctx) {
         { key: 'pack_price_ex', label: '未稅價／包裝', align: 'num', fmt: (v) => (v === null || v === undefined ? '—' : fmtUnitCost(v)) },
         { key: 'pack_price_inc', label: '含稅價／包裝', align: 'num', fmt: (v) => (v === null || v === undefined ? '—' : fmtUnitCost(v)) },
         { key: 'last', label: '最近進貨日', fmt: (v) => v || '—' },
+        { key: 'source_file', label: '來源檔名', fmt: (v) => h`<span class="muted" style="font-size:12px">${v || '手動'}</span>`, csv: (v) => v || '' },
+        { key: 'category', label: '自動分類', fmt: (v, r) => h`${INVENTORY_CATEGORIES[v]?.label || v || ''}（${INVENTORY_CATEGORIES[v]?.gl || ''}）${r.auto_category ? small('待確認') : ''}`, csv: (v) => `${INVENTORY_CATEGORIES[v]?.label || v || ''}（${INVENTORY_CATEGORIES[v]?.gl || ''}）` },
+        { key: 'note', label: '備註' },
         { key: 'safety_stock', label: '安全庫存', align: 'num', fmt: (v, r) => (Number(v) > 0 ? `${fmt(Number(v))} ${r.unit}` : status('na', '未設')), csv: (v) => v ?? '' },
         { key: 'recipes', label: '用於配方', align: 'num', fmt: (v) => (v ? fmt(v) : h`<a href="#/inventory?tab=bom" class="muted">去設定</a>`), csv: (v) => v },
-        { key: 'category', label: '自動分類', fmt: (v) => `${INVENTORY_CATEGORIES[v]?.label || v || ''}（${INVENTORY_CATEGORIES[v]?.gl || ''}）` },
-        { key: 'source_file', label: '來源檔名', fmt: (v) => h`<span class="muted" style="font-size:12px">${v || '手動'}</span>`, csv: (v) => v || '' },
-        { key: 'note', label: '備註' },
         { key: 'id', label: '', nosort: true, fmt: (v) => h`<span style="white-space:nowrap"><button class="btn sm" data-act="editItem" data-id="${v}">修改</button> <a class="btn sm ghost" href="#/purchases?tab=price&amp;item=${v}">單價</a></span>`, csv: () => '' },
       ],
     });
@@ -379,19 +457,15 @@ export async function render(root, ctx) {
   }
 
   function draw() {
-    const hasPurchases = moves.some((m) => m.type === 'purchase');
     const importBtns = h`<a class="btn" href="#/import?target=purchases">從匯入中心匯入</a><button class="btn ghost" data-act="template">下載匯入範本</button>`;
-    if (!hasPurchases && !items.length) {
-      mount(root, h`<div class="card">${emptyState('還沒有進貨紀錄', '按「新增進貨單」輸入發票上的品名、單位、數量、單價，或把進貨明細 CSV／Excel 丟進匯入中心。沒見過的品名會自動建成原物料並載入進銷存，再設定安全庫存與配方，POS 銷售就會自動扣庫存。', h`<div class="row" style="justify-content:center"><button class="btn primary" data-act="addDoc">＋ 新增進貨單</button>${importBtns}</div>`)}</div>`);
-      return;
-    }
-    const tabs = [['docs', '進貨單'], ['items', `原物料主檔（${fmt(items.length)}）`], ['price', '單價追蹤']];
+    const nLines = moves.filter((m) => m.type === 'purchase').length;
+    const tabs = [['docs', '進貨單'], ['lines', `進貨明細（${fmt(nLines)}）`], ['items', `商品類別／原物料主檔（${fmt(items.length)}）`], ['price', '單價追蹤']];
     mount(
       root,
       h`<div class="toolbar">
         <button class="btn primary" data-act="addDoc">＋ 新增進貨單</button>
         ${importBtns}
-        ${f.tab === 'docs' ? h`<label class="field"><span>供應商</span><select data-act="fSup">${options([['', '全部'], ...suppliers.map((s) => [s.id, supplierLabel(s)])], f.sup)}</select></label><label class="field"><span>搜尋</span><input type="search" value="${f.q}" data-act="fQ" placeholder="品名、發票號碼" style="width:160px"></label>` : ''}
+        ${f.tab === 'docs' || f.tab === 'lines' ? h`<label class="field"><span>供應商</span><select data-act="fSup">${options([['', '全部'], ...suppliers.map((s) => [s.id, supplierLabel(s)])], f.sup)}</select></label><label class="field"><span>搜尋</span><input type="search" value="${f.q}" data-act="fQ" placeholder="品名、發票號碼" style="width:160px"></label>` : ''}
         <span class="spacer"></span>
         <a class="btn ghost" href="#/suppliers">供應商</a>
         <a class="btn ghost" href="#/inventory">原物料進銷存</a>
@@ -406,6 +480,7 @@ export async function render(root, ctx) {
     const body = root.querySelector('#po-body');
     if (f.tab === 'items') drawItems(top, body);
     else if (f.tab === 'price') drawPrice(top, body);
+    else if (f.tab === 'lines') drawLines(top, body);
     else drawDocs(top, body);
   }
 
