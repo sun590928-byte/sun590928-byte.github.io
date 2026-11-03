@@ -312,14 +312,19 @@ table.fin tr.gt td { font-weight: 750; border-top: 2px solid var(--ink); border-
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 
 /* 對話框 */
-dialog.modal { border: 0; padding: 0; border-radius: 14px; background: var(--card); color: var(--text); width: min(560px, calc(100vw - 32px)); box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.5); }
-dialog.modal.wide { width: min(980px, calc(100vw - 32px)); }
+/* 寬高都用「畫面的 %／dvh」而不是 100vw／100vh：手機瀏覽器的網址列、工具列會吃掉一截 100vh，
+   按鈕列會被推到工具列底下按不到；100vw 在有捲軸時也比可見範圍寬。 */
+dialog.modal { border: 0; padding: 0; border-radius: 14px; background: var(--card); color: var(--text); width: min(560px, calc(100% - 24px)); max-width: calc(100% - 24px); max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.5); }
+dialog.modal.wide { width: min(980px, calc(100% - 24px)); }
 dialog.modal::backdrop { background: rgba(20, 24, 32, 0.45); }
-.modal-inner { margin: 0; display: flex; flex-direction: column; max-height: calc(100vh - 48px); }
-.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px 8px; }
-.modal-head h2 { font-size: 17px; }
-.modal-body { padding: 8px 20px 12px; overflow: auto; }
-.modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px 16px; border-top: 1px solid var(--line-soft); }
+.modal-inner { margin: 0; display: flex; flex-direction: column; max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); min-width: 0; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 16px 20px 8px; flex: none; }
+.modal-head h2 { font-size: 17px; min-width: 0; overflow-wrap: anywhere; }
+.modal-body { padding: 8px 20px 12px; overflow: auto; min-height: 0; overscroll-behavior: contain; }
+/* 按鈕列可以換行：「確認（新上傳 12、更新 3、存摺照片 4）」這種長按鈕在手機上不會把「取消」擠出畫面外 */
+.modal-foot { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 12px 20px 16px; border-top: 1px solid var(--line-soft); flex: none; }
+.modal-foot .btn { max-width: 100%; white-space: normal; text-align: center; }
+@media (max-width: 560px) { .modal-foot .btn { flex: 1 1 auto; } }
 
 /* 會計項目下拉的打字篩選清單（accpick.js） */
 .acc-pop { position: fixed; z-index: 95; display: flex; flex-direction: column; background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 18px 40px -18px rgba(0, 0, 0, 0.45); overflow: hidden; font-size: 14px; }
@@ -413,14 +418,16 @@ svg .cross.on { opacity: 1; }
 .cal-item .tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
 
 /* 憑證 */
-.doc-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); }
+.doc-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(290px, 100%), 1fr)); }
 .doc-card { border: 1px solid var(--line-soft); border-radius: 12px; background: var(--card); overflow: hidden; display: flex; flex-direction: column; }
 .doc-thumb { height: 170px; background: var(--card-2); display: grid; place-items: center; overflow: hidden; cursor: zoom-in; }
 .doc-thumb img { width: 100%; height: 100%; object-fit: cover; }
-.doc-body { padding: 10px 12px 12px; display: grid; gap: 6px; font-size: 13px; }
+.doc-body { padding: 10px 12px 12px; display: grid; gap: 6px; font-size: 13px; min-width: 0; }
 .doc-body .fn { font-size: 12px; color: var(--mute); word-break: break-all; }
-.doc-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.doc-fields label { display: grid; gap: 2px; font-size: 12px; color: var(--mute); }
+/* 兩欄都用 minmax(0, 1fr)：會計項目、付款方式的下拉選單名稱很長，否則會把卡片撐得比畫面寬，右邊的欄位與按鈕被切掉 */
+.doc-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
+.doc-fields label { display: grid; gap: 2px; font-size: 12px; color: var(--mute); min-width: 0; }
+.doc-fields input, .doc-fields select { width: 100%; min-width: 0; max-width: 100%; }
 .doc-fields label.full { grid-column: 1 / -1; }
 
 /* 傳票 */
