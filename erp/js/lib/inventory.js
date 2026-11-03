@@ -1,6 +1,6 @@
 // 原物料進銷存（Inventory_Ledger）：進貨、耗用（POS × 配方）、報廢、盤點調整、安全庫存預警。
 // 品項：{ id, sku, name, unit, category, gl_account, safety_stock, reorder_qty, supplier_id, pack_type, pack_size, last_purchase_date, last_unit_price … }（進貨相關欄位見 lib/purchases.js）
-// 異動：{ id, item_id, date, type: 'opening'|'purchase'|'consume'|'scrap'|'adjust', qty, amount, supplier_id, order_date, yield_score, note }
+// 異動：{ id, item_id, date, type: 'opening'|'purchase'|'consume'|'scrap'|'adjust', qty, amount（含稅）, amount_ex（未稅）, tax, supplier_id, order_date, yield_score, note }
 // 配方：{ product_id, item_id, qty }（每售出一份產品的耗用量）
 
 import { round2 } from './money.js';
@@ -58,8 +58,22 @@ export function theoreticalUsage(lines, recipes, productIdOf, { from, to } = {})
   return usage;
 }
 
-// 移動加權平均成本（依日期序）
-export function averageCosts(items, moves, { asOf } = {}) {
+const DEFAULT_VAT_RATE = 0.05;
+
+/**
+ * 進貨成本一律用未稅金額：一般稅額營業人的進項稅額已記在 1261 進項稅額去扣抵，不是原料成本（用含稅算，成本與庫存價值會多約 5%）。
+ * 進貨紀錄有 amount_ex（未稅）就用它；舊資料只有含稅金額的以 ÷(1＋稅率) 推算；期初登記的金額本來就是成本。
+ */
+export function purchaseCost(m, vatRate = DEFAULT_VAT_RATE) {
+  const amt = Number(m.amount) || 0;
+  if (m.type !== 'purchase') return amt;
+  const ex = m.amount_ex === null || m.amount_ex === undefined || m.amount_ex === '' ? NaN : Number(m.amount_ex);
+  if (Number.isFinite(ex)) return ex;
+  return vatRate > 0 ? amt / (1 + vatRate) : amt;
+}
+
+// 移動加權平均成本（依日期序；未稅）
+export function averageCosts(items, moves, { asOf, vatRate = DEFAULT_VAT_RATE } = {}) {
   const res = new Map();
   const sorted = [...moves].filter((m) => !asOf || m.date <= asOf).sort((a, b) => (a.date < b.date ? -1 : 1));
   for (const it of items) res.set(it.id, { qty: 0, value: 0, avg: Number(it.std_cost) || 0 });
@@ -68,7 +82,7 @@ export function averageCosts(items, moves, { asOf } = {}) {
     if (!s) continue;
     const q = Number(m.qty) || 0;
     if (m.type === 'purchase' || m.type === 'opening') {
-      const amt = Number(m.amount) || 0;
+      const amt = purchaseCost(m, vatRate);
       s.qty += q;
       s.value += amt;
       if (s.qty > 0) s.avg = s.value / s.qty;
@@ -88,8 +102,8 @@ export function averageCosts(items, moves, { asOf } = {}) {
 /**
  * 庫存水位：期初 + 進貨 − 耗用 − 報廢 ± 調整；耗用 = 手動耗用 + 理論耗用（POS×配方）
  */
-export function stockLevels(items, moves, usage, { asOf, lookbackDays = 14 } = {}) {
-  const costs = averageCosts(items, moves, { asOf });
+export function stockLevels(items, moves, usage, { asOf, lookbackDays = 14, vatRate = DEFAULT_VAT_RATE } = {}) {
+  const costs = averageCosts(items, moves, { asOf, vatRate });
   const from = asOf ? addDays(asOf, -lookbackDays + 1) : null;
   return items.map((it) => {
     const mv = moves.filter((m) => m.item_id === it.id && (!asOf || m.date <= asOf));

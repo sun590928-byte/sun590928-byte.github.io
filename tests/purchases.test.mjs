@@ -104,7 +104,8 @@ test('purchases: 進貨單 → 異動、自動建檔、既有品項更新、固�
   // 進貨自動進庫存：期初 0 + 進貨 2000 g
   const lv = stockLevels(ctx.items, res.moves, new Map(), { asOf: '2026-09-30' });
   assert.equal(lv.find((x) => x.item.id === 'bean').purchased, 2000);
-  assert.equal(averageCosts(ctx.items, res.moves).get('bean').avg, 1.1);
+  assert.equal(m1.amount_ex, 2095.24);
+  assert.ok(Math.abs(averageCosts(ctx.items, res.moves).get('bean').avg - 2095.24 / 2000) < 1e-9, '平均成本＝未稅金額 ÷ 數量（不是含稅的 1.1）');
   assert.equal(supplierStats(ctx.suppliers, ctx.items, res.moves)[0].avgLead, 3);
   // 沒見過的供應商自動建立；沒品名、沒金額的行列入 skipped
   const r2 = applyPurchase({ invoice_date: '2026-09-07', supplier_name: '豆舍', supplier_tax_id: '23456789', lines: [{ name: '', qty: 1, amount: 10 }, { name: '耶加雪菲', qty: 1 }, { name: '耶加雪菲', unit: 'kg', qty: 1, amount: 650 }] }, mk());

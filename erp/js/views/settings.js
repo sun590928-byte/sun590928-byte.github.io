@@ -3,7 +3,8 @@
 import { h, raw, mount, bindActions, toast, confirmBox, download, pickFiles, options, setBusy, status, modal } from '../ui.js';
 import { lookupCompanyName } from '../lib/companyname.js';
 import { store, cloudConfig, saveCloudConfig } from '../store.js';
-import { getSettings, saveSettings } from '../state.js';
+import { getSettings, saveSettings, getAccounts } from '../state.js';
+import { payAccountSelect } from './_shared.js';
 import { VOID_REASONS, DEFAULT_VOID_RULES, reapplyVoids } from '../lib/pos.js';
 import { isValidTaxId } from '../lib/classify.js';
 import { COLLECTIONS, SCHEMA } from '../schema.js';
@@ -70,6 +71,8 @@ function showRecoveryCode(code) {
 
 export async function render(root) {
   let s = await getSettings();
+  const accounts = await getAccounts();
+  const accName = (code) => accounts.find((a) => a.code === code)?.name || '';
   const mcpFn = () => (s.mcp_function || 'erp-mcp').trim();
   const coFn = () => (s.company_function || 'company-name').trim();
   const mcpUrl = () => `${(cloudConfig() || {}).url || ''}/functions/v1/${mcpFn()}`;
@@ -105,7 +108,8 @@ export async function render(root) {
           <label class="field"><span>申報：目標幾日前完成</span><input type="number" name="filing_target_day" min="1" max="14" value="${s.filing_target_day ?? 12}"></label>
           <label class="field"><span>營業日切換時間（凌晨幾點前算前一天）</span><input type="number" name="cutoff_hour" min="0" max="6" value="${s.cutoff_hour}"></label>
           <label class="field"><span>主要銀行存款科目</span><input type="text" name="bank_gl" value="${s.bank_gl}"></label>
-          <label class="field"><span>付款方式不明時暫列科目</span><input type="text" name="unknown_payment_account" value="${s.unknown_payment_account}"></label>
+          <label class="field"><span>POS 營收付款方式不明時暫列科目（現金類）</span><input type="text" name="unknown_payment_account" value="${s.unknown_payment_account}"></label>
+          <label class="field"><span>憑證歸檔預設付款方式（沒放在付款資料夾時暫列）</span>${payAccountSelect(accounts, s.doc_pay_account || '2134', 'name="doc_pay_account"')}</label>
           <label class="field"><span>估計毛利率（行銷 ROI 用）</span><input type="number" name="gross_margin_est" step="0.05" min="0" max="1" value="${s.gross_margin_est}"></label>
           <label class="field"><span>固定資產資本化門檻（元）</span><input type="number" name="capitalize_threshold" min="0" step="1000" value="${s.capitalize_threshold ?? 80000}"></label>
         </div>
@@ -120,7 +124,7 @@ export async function render(root) {
           <label class="check"><input type="checkbox" name="owns_property" ${s.owns_property ? raw('checked') : ''}> 有自有房地</label>
           <label class="check"><input type="checkbox" name="has_vehicle" ${s.has_vehicle ? raw('checked') : ''}> 有營業用車</label>
         </div>
-        <p class="muted" style="font-size:12.5px;margin-top:8px">一般稅額：POS 含稅金額 ÷ 1.05 為收入、其餘列銷項稅額；寄杯收款時即開發票者，銷項稅額在售出當天認列，兌換時不再計稅（變更寄杯設定只會重算未結帳鎖定的月份）。申報行事曆會依「開始準備／目標完成日」提醒（法定期限前完成）。</p>
+        <p class="muted" style="font-size:12.5px;margin-top:8px">一般稅額：POS 含稅金額 ÷ 1.05 為收入、其餘列銷項稅額；寄杯收款時即開發票者，銷項稅額在售出當天認列，兌換時不再計稅（變更寄杯設定只會重算未結帳鎖定的月份）。申報行事曆會依「開始準備／目標完成日」提醒（法定期限前完成）。憑證歸檔：照片放在付款資料夾（員工代墊支出、負責人代墊支出、銀行名稱…）就依資料夾決定付款方式；直接上傳或放在最上層的，付款方式先列「憑證歸檔預設付款方式」（例如 2134 員工代墊、2133 負責人代墊），入帳前請在卡片上確認，不會再預設成 1101 零用金。</p>
         <div class="row" style="margin-top:12px"><button class="btn primary" type="button" data-act="saveBiz">儲存設定</button></div>
       </form>
 
@@ -206,6 +210,7 @@ export async function render(root) {
           <button class="btn" data-act="restore">從備份還原…</button>
           <button class="btn" data-act="resync">重新產生全部自動分錄</button>
           <button class="btn" data-act="cash1105" title="POS 現金營收、現金存入銀行的分錄，從 1101 零用金-門市收銀改記 1105 現金（已鎖定月份不動）">舊分錄現金 1101 → 1105</button>
+          <button class="btn" data-act="docPay1101" title="還沒入帳、沒有放在付款資料夾、付款方式還停在舊預設 1101 零用金-門市收銀的憑證，改成「憑證歸檔預設付款方式」（已入帳的不動）">未入帳憑證 1101 → 預設付款方式</button>
           <span class="spacer"></span>
           <button class="btn danger" data-act="wipe">清除全部資料…</button>
         </div>
@@ -236,6 +241,7 @@ export async function render(root) {
         cutoff_hour: Number(g('cutoff_hour').value) || 0,
         bank_gl: g('bank_gl').value.trim() || '1103',
         unknown_payment_account: g('unknown_payment_account').value.trim() || '1105',
+        doc_pay_account: g('doc_pay_account').value || '2134',
         fee_by_invoice: g('fee_by_invoice').checked,
         auto_recognize: g('auto_recognize').checked,
         ocr_enabled: g('ocr_enabled').checked,
@@ -249,6 +255,7 @@ export async function render(root) {
         has_vehicle: g('has_vehicle').checked,
       };
       if (patch.filing_prep_day > patch.filing_target_day) patch.filing_prep_day = patch.filing_target_day;
+      if (/^2/.test(patch.unknown_payment_account)) return toast(`POS 營收的暫列科目要用現金類科目（例如 1105 現金）；${patch.unknown_payment_account} 是負債科目，憑證的預設付款方式請改用下一個欄位「憑證歸檔預設付款方式」`, 'error', 9000);
       const needSync = patch.vat_mode !== s.vat_mode || patch.prepaid_vat !== (s.prepaid_vat || 'sale') || patch.revenue_start !== s.revenue_start || patch.bank_gl !== s.bank_gl || patch.unknown_payment_account !== s.unknown_payment_account || patch.fee_by_invoice !== !!s.fee_by_invoice;
       s = await saveSettings(patch);
       if (needSync) {
@@ -494,6 +501,16 @@ export async function render(root) {
       } finally {
         setBusy(false);
       }
+    },
+    // 以前上傳的憑證沒放資料夾時預設 1101 零用金-門市收銀，入帳時容易沒注意就記到零用金；改成設定的暫列科目（只動未入帳、非使用者親自覆核的）
+    docPay1101: async () => {
+      const dflt = s.doc_pay_account || '2134';
+      const docs = await store.all('documents');
+      const fix = docs.filter((d) => ['inbox', 'reviewed'].includes(d.status) && d.reviewed_by !== 'user' && !d.source_folder && (!d.pay_account || d.pay_account === '1101'));
+      if (!fix.length) return toast('沒有需要改的憑證：未入帳的憑證都已有付款方式或資料夾指定', 'info', 5000);
+      if (!(await confirmBox(`把 ${fix.length} 張未入帳、沒有放在付款資料夾、付款方式還是 1101 零用金-門市收銀的憑證，改成 ${dflt} ${accName(dflt)}？已入帳與你親自覆核過的不動；入帳前仍可在卡片上改。`, { ok: `改成 ${dflt}` }))) return;
+      await store.put('documents', fix.map((d) => ({ ...d, pay_account: dflt, updated_at: new Date().toISOString() })));
+      toast(`已把 ${fix.length} 張憑證的付款方式改成 ${dflt} ${accName(dflt)}`, 'good', 7000);
     },
     resync: async () => {
       setBusy(true, '重新產生自動分錄…');

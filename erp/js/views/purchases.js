@@ -369,7 +369,7 @@ export async function render(root, ctx) {
         ${stat('未設安全庫存', fmt(noSafety), noSafety ? '點「修改」設定預警線' : '都已設定', noSafety ? 'warn' : '')}
         ${stat('低於安全庫存／缺貨', fmt(low), low ? '建議叫貨' : '庫存正常', low ? 'bad' : '')}
       </div>
-      <div class="callout" style="margin-bottom:16px"><p><b>商品類別（原物料主檔）</b>由進貨單、發票自動判別歸類、計算與建檔：物品編號、品名、單位、含稅單價、進貨包裝與每包裝價格由進貨單自動帶入；成本／單位＝移動平均成本（庫存單位）。進貨單上的單位若是「箱、瓶、包」等包裝，請在「修改」設定每一包裝折合幾個庫存單位（例：1 瓶 ＝ 936 ml），庫存與配方就以庫存單位計算。</p></div>`,
+      <div class="callout" style="margin-bottom:16px"><p><b>商品類別（原物料主檔）</b>由進貨單、發票自動判別歸類、計算與建檔：物品編號、品名、單位、含稅單價、進貨包裝與每包裝價格由進貨單自動帶入；成本／單位＝移動平均成本（<b>未稅</b>，每庫存單位；進貨紀錄的未稅金額 ÷ 數量，進項稅額記在 1261 扣抵、不算成本）。進貨單上的單位若是「箱、瓶、包」等包裝，請在「修改」設定每一包裝折合幾個庫存單位（例：1 瓶 ＝ 936 ml），庫存與配方就以庫存單位計算。</p></div>`,
     );
     dataTable(body, {
       rows,
@@ -380,7 +380,7 @@ export async function render(root, ctx) {
         { key: 'unit', label: '單位' },
         { key: 'onHand', label: '現有數量', align: 'num', fmt: (v, r) => h`${fmt(v)}${r.stock === 'out' || r.stock === 'low' ? small(status('bad', r.stock === 'out' ? '缺貨' : '低於安全量')) : ''}`, csv: (v) => v },
         { key: 'last_unit_price', label: '含稅單價', align: 'num', fmt: (v, r) => (v === null || v === undefined ? '—' : h`${fmtUnitCost(v)}${small(`每 ${r.last_price_unit || r.unit || '單位'}`)}`), csv: (v) => v ?? '' },
-        { key: 'avgCost', label: '成本／單位', align: 'num', fmt: (v, r) => h`${fmtUnitCost(v)}${small(`每 ${r.unit || '單位'}`)}`, csv: (v) => v },
+        { key: 'avgCost', label: '成本／單位（未稅）', align: 'num', fmt: (v, r) => h`${fmtUnitCost(v)}${small(`每 ${r.unit || '單位'}`)}`, csv: (v) => v },
         { key: 'supplier', label: '主要供應商', fmt: (v) => v || '—' },
         { key: 'pack', label: '進貨包裝', fmt: (v) => v || '—' },
         { key: 'pack_price_ex', label: '未稅價／包裝', align: 'num', fmt: (v) => (v === null || v === undefined ? '—' : fmtUnitCost(v)) },

@@ -179,8 +179,13 @@ test('inventory: 配方耗用、報廢量、加權平均成本、安全庫存', 
   assert.equal(usage.get('bean').consume, 12 * 18);
   assert.equal(usage.get('bean').scrap, 18);
   assert.equal(usage.get('milk').byReason.boss_treat, 400);
+  // 成本用未稅：沒有 amount_ex 的舊資料以含稅 ÷ 1.05 推算；有 amount_ex（未稅）的直接用；免稅／小規模沒有進項稅額，含稅即成本
   const avg = averageCosts(items, moves);
-  assert.equal(avg.get('bean').avg, 1.2);
+  assert.ok(Math.abs(avg.get('bean').avg - 1.2 / 1.05) < 1e-9, '含稅 2,400／2,000 g → 未稅約 1.143');
+  assert.equal(averageCosts(items, moves, { vatRate: 0 }).get('bean').avg, 1.2);
+  const withEx = [...moves, { item_id: 'bean', date: '2026-09-02', type: 'purchase', qty: 1000, amount: 1050, amount_ex: 1000, tax: 50 }];
+  assert.ok(Math.abs(averageCosts(items, withEx).get('bean').avg - (2400 / 1.05 + 1000) / 3000) < 1e-9, '有未稅金額就用未稅金額');
+  assert.equal(averageCosts(items, [{ item_id: 'bean', date: '2026-08-01', type: 'opening', qty: 100, amount: 100 }]).get('bean').avg, 1, '期初登記的就是成本');
   const lv = stockLevels(items, moves, usage, { asOf: '2026-09-03', lookbackDays: 14 });
   const bean = lv.find((x) => x.item.id === 'bean');
   assert.equal(bean.onHand, 2000 - 216 - 18);
@@ -189,7 +194,7 @@ test('inventory: 配方耗用、報廢量、加權平均成本、安全庫存', 
   assert.equal(milk.onHand, 4000 - 2400 - 200);
   assert.equal(milk.status, 'low');
   const pc = productCosts([{ id: 'latte' }], recipes, (id) => avg.get(id).avg);
-  assert.ok(Math.abs(pc.get('latte') - (18 * 1.2 + 200 * 0.1)) < 0.01);
+  assert.ok(Math.abs(pc.get('latte') - (18 * 1.2 + 200 * 0.1) / 1.05) < 0.01, '理論成本也是未稅');
   const st = supplierStats([{ id: 's1', name: '鮮乳坊' }], items, moves);
   assert.equal(st[0].avgLead, 2);
   assert.equal(st[0].avgYield, 98);

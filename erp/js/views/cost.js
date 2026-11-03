@@ -17,6 +17,7 @@ const INV = ['1211', '1212', '1213', '1214', '1215', '1216'];
 
 export async function render(root, ctx) {
   const settings = await getSettings();
+  const vatRate = settings.vat_mode === 'general' ? 0.05 : 0;
   const accounts = await getAccounts();
   const accName = new Map(accounts.map((a) => [a.code, a.name]));
   let [entries, stocktakes, items, moves, recipes] = await Promise.all([store.all('journal_entries'), store.all('stocktakes'), store.all('inventory_items'), store.all('inventory_moves'), store.all('recipes')]);
@@ -38,7 +39,7 @@ export async function render(root, ctx) {
       return { account: code, name: accName.get(code) || code, opening, purchases, decreases, book, counted: st ? Number(st.value) : null, note: st?.note || '' };
     });
     // 理論成本（配方 × 平均進價）
-    const avg = averageCosts(items, moves, { asOf: to });
+    const avg = averageCosts(items, moves, { asOf: to, vatRate });
     const pCost = productCosts(idx.products, recipes, (id) => avg.get(id)?.avg || 0);
     const lines = (await revenueLines({ from, to })).filter((l) => !l.is_adjustment && l.qty > 0);
     const voidCost = { boss_treat: 0, boss_test: 0, scrap: 0 };
@@ -59,7 +60,7 @@ export async function render(root, ctx) {
     for (const k of Object.keys(voidCost)) voidCost[k] = Math.round(voidCost[k]);
     // 進銷存模組的庫存價值（依科目彙總），供盤點參考
     const usage = theoreticalUsage(await revenueLines({ to }), recipes, (l) => idx.of(l).id, { to });
-    const levels = stockLevels(items, moves, usage, { asOf: to });
+    const levels = stockLevels(items, moves, usage, { asOf: to, vatRate });
     const invValue = {};
     for (const lv of levels) invValue[lv.item.gl_account || '1211'] = round2((invValue[lv.item.gl_account || '1211'] || 0) + lv.value);
     return { rows, voidCost, theoretical: Math.round(theoretical), covered, revenue, invValue, hasRecipes: pCost.size > 0 };

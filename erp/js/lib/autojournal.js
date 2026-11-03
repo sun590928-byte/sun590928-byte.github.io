@@ -173,7 +173,7 @@ export function cogsJournal(ym, rows, voidCost = {}) {
 
 // 支出憑證 → 分錄（借 費用/存貨 + 進項稅額；貸 付款來源）
 // doc.lines（明細拆分：一張照片多張發票、或分屬多個科目）：[{ invoice_no, account, amount（含稅）, tax, deductible, memo }]
-export function documentJournal(doc, { payAccount = '1101', deductible = true } = {}) {
+export function documentJournal(doc, { payAccount = '2134', deductible = true } = {}) {
   const total = round2(Number(doc.amount_total) || 0);
   const parts = Array.isArray(doc.lines) && doc.lines.length ? doc.lines : null;
   if (!total || (!doc.account && !parts)) return null;

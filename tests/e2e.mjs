@@ -369,6 +369,24 @@ try {
   await shot('accounts', false);
   await go('settings');
   await shot('settings');
+  assert((await page.inputValue('#biz [name=doc_pay_account]')) === '2134', '設定：憑證歸檔預設付款方式 2134');
+  // 老闆把 POS 的暫列科目填成 2133（其實是想設憑證的預設付款方式）：載入時搬到憑證設定、POS 的回到 1105
+  await page.evaluate(async () => {
+    const { store } = await import('/erp/js/store.js');
+    const main = (await store.all('settings')).find((r) => r.id === 'main');
+    const { doc_pay_account, ...rest } = main.value;
+    await store.put('settings', { id: 'main', value: { ...rest, unknown_payment_account: '2133' } });
+  });
+  await go('dashboard'); // 已經在設定頁，hash 不變不會重畫，先離開再回來
+  await go('settings');
+  assert((await page.inputValue('#biz [name=unknown_payment_account]')) === '1105' && (await page.inputValue('#biz [name=doc_pay_account]')) === '2133', '負債科目搬到憑證預設付款方式、POS 回到 1105');
+  await page.fill('#biz [name=unknown_payment_account]', '2134');
+  await page.click('[data-act="saveBiz"]');
+  await page.waitForSelector('.toast >> text=現金類科目');
+  await page.fill('#biz [name=unknown_payment_account]', '1105');
+  await page.selectOption('#biz [name=doc_pay_account]', '2134');
+  await page.click('[data-act="saveBiz"]');
+  await page.waitForTimeout(600);
   // 既有的憑證流程測試先關掉「上傳後自動本機辨識」（另有專門的辨識測試）
   const setRecognize = async (on, taxId) => {
     await go('settings');
@@ -403,6 +421,8 @@ try {
     const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pick"]')]);
     await chooser.setFiles([{ name: 'IMG_0007.png', mimeType: 'image/png', buffer: await readFile(FX('20260902_全聯_鮮乳2瓶_356.png')) }]);
     await page.waitForFunction(() => document.querySelectorAll('.doc-card').length === 2);
+    const dfltPay = await page.$eval('.doc-card:has-text("IMG_0007.png") [name=pay_account]', (el) => el.value);
+    assert(dfltPay === '2134', '直接上傳（沒有資料夾）的憑證，付款方式先列設定的暫列科目 2134，不是 1101：' + dfltPay);
     assert(await page.isVisible('[data-act="postAll"]'), '有「全部入帳」按鈕');
     await page.click('[data-act="postAll"]');
     await page.waitForSelector('dialog >> text=全部入帳（1）');
@@ -425,6 +445,10 @@ try {
     const [c0] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pick"]')]);
     await c0.setFiles([{ name: '20260911_大創_小碟5件_245.png', mimeType: 'image/png', buffer: png }]);
     await page.waitForSelector('.doc-card >> text=20260911_大創_小碟5件_245.png');
+    // 新預設就是 2134，先把它改成 1101 並暫存，才測得到「同名檔案只更新付款方式」
+    await page.selectOption('.doc-card:has-text("20260911_大創_小碟5件_245.png") [name=pay_account]', '1101');
+    await page.click('.doc-card:has-text("20260911_大創_小碟5件_245.png") [data-act="save"]');
+    await page.waitForFunction(async () => { const { store } = await import('/erp/js/store.js'); const d = (await store.all('documents')).find((x) => x.original_name === '20260911_大創_小碟5件_245.png'); return !!d && d.pay_account === '1101'; });
     const dir = join(OUT, 'fx-folder', '原始憑證');
     await rm(join(OUT, 'fx-folder'), { recursive: true, force: true });
     for (const [sub, name] of [

@@ -28,7 +28,8 @@ export const DEFAULT_SETTINGS = {
   tiers: DEFAULT_TIERS,
   locked_months: [],
   bank_gl: '1103',
-  unknown_payment_account: '1105',
+  unknown_payment_account: '1105', // POS 營收付款方式不明時暫列（現金類）
+  doc_pay_account: '2134', // 憑證歸檔：沒有放在付款資料夾（source_folder 空白）時的預設付款方式，先列其他應付款，入帳前可改
   fee_by_invoice: true, // 金流手續費以綠界／LINE Pay 開的發票入帳（貸 應收帳款－未撥款項），撥款分錄不另計手續費
   auto_recognize: true, // 上傳憑證後自動在瀏覽器裡辨識（QR 碼、文字），不使用外部 AI
   ocr_enabled: true, // 讀不到 QR 碼時做文字辨識（第一次使用會下載約 10 MB 的辨識資料）
@@ -44,6 +45,11 @@ export async function getSettings() {
   settingsCache = { ...DEFAULT_SETTINGS, ...(main?.value || {}) };
   // 2026-11 老闆決定：營業收到的現金記 1105 現金，1101 零用金-門市收銀只做找零備用金；舊設定還停在 1101 的一律視為 1105
   if (settingsCache.unknown_payment_account === '1101') settingsCache.unknown_payment_account = '1105';
+  // POS 的暫列科目必須是現金類；被填成 2133／2134 等負債科目的，其實是想設「憑證的預設付款方式」→ 搬到 doc_pay_account，POS 的回到 1105
+  if (/^2/.test(String(settingsCache.unknown_payment_account || ''))) {
+    if (!main?.value?.doc_pay_account) settingsCache.doc_pay_account = settingsCache.unknown_payment_account;
+    settingsCache.unknown_payment_account = '1105';
+  }
   return settingsCache;
 }
 

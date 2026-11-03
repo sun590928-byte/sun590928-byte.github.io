@@ -330,9 +330,11 @@ export function autoReview(doc, ctx = {}) {
   const dedCodes = out.lines ? out.lines.map((p) => p.ded_code) : [out.ded_code];
   if (dedCodes.some((c) => c === '2' || c === '4') && !FIXED_ASSET_ACCOUNTS.has(account)) issues.push(`申報為扣抵代號 ${dedCodes.find((c) => c === '2' || c === '4')}（${DED_CODES[dedCodes.find((c) => c === '2' || c === '4')]}），會計項目卻不是固定資產`);
 
-  // 付款方式：沒有資料夾指定、還是預設值時，沿用老闆以前對這家店的付款方式（例如月結）
+  // 付款方式：沒有資料夾指定、還是預設值（設定的暫列科目，或舊版預設的 1101）時，沿用老闆以前對這家店的付款方式（例如月結）
   const pay = hit?.entry?.pay;
-  if (!manual && !doc.source_folder && (!doc.pay_account || doc.pay_account === '1101') && pay?.value && pay.value !== '1101' && accSet.has(pay.value) && pay.share >= 0.8 && hit.entry.n >= 2 && hit.confidence >= 0.85) {
+  const dfltPay = ctx.settings?.doc_pay_account || '2134';
+  const stillDefault = !doc.pay_account || doc.pay_account === dfltPay || doc.pay_account === '1101';
+  if (!manual && !doc.source_folder && stillDefault && pay?.value && pay.value !== dfltPay && pay.value !== '1101' && accSet.has(pay.value) && pay.share >= 0.8 && hit.entry.n >= 2 && hit.confidence >= 0.85) {
     out.pay_account = pay.value;
     reasons.push(`付款方式沿用這家店以前的 ${pay.value} ${accName(pay.value)}`);
   }

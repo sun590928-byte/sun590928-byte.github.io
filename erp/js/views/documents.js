@@ -158,7 +158,8 @@ export async function render(root, ctx) {
       else g.same.push(d);
     }
     const list = [...groups.values()];
-    const accName = (c) => (c ? `${c} ${accounts.find((a) => a.code === c)?.name || ''}` : '未對應（維持預設，請手動選）');
+    const dflt = settings.doc_pay_account || '2134';
+    const accName = (c) => `${c || dflt} ${accounts.find((a) => a.code === (c || dflt))?.name || ''}${c ? '' : '（資料夾沒對應到科目，先列預設付款方式，入帳前請確認）'}`;
     const nAdd = list.reduce((t, g) => t + g.add.length, 0);
     const nUpd = list.reduce((t, g) => t + g.update.length, 0);
     const passbook = list.flatMap((g) => g.passbook);
@@ -356,7 +357,7 @@ export async function render(root, ctx) {
       d = { ...d, tax_type: d.tax_type || p.tax_type, ded_code: d.ded_code || p.ded_code };
     }
     const entries = await store.all('journal_entries');
-    const je = documentJournal(d, { deductible });
+    const je = documentJournal(d, { deductible, payAccount: settings.doc_pay_account || '2134' });
     const e = { ...je, id: uid('je_'), voucher_no: nextVoucherNo(entries, d.doc_date), status: 'posted', attachments: [d.id], created_at: new Date().toISOString() };
     await store.put('journal_entries', e);
     // 雲端物件路徑只用英數（Storage 對中文路徑支援不一），中文歸檔名存於資料庫、下載 ZIP 時套用
@@ -625,7 +626,7 @@ export async function render(root, ctx) {
           <label>稅額（可扣抵）<input type="number" name="tax_amount" value="${d.tax_amount ?? ''}" ${dis}></label>
           <label class="full">摘要（品項）<input type="text" name="summary" value="${d.summary || ''}" ${dis}></label>
           <label class="full">會計項目${accountSelect(accounts, d.account, `name="account" ${ro ? 'disabled' : ''}`)}</label>
-          <label class="full">付款方式${payAccountSelect(accounts, d.pay_account || '1101', `name="pay_account" ${ro ? 'disabled' : ''}`)}</label>
+          <label class="full">付款方式${payAccountSelect(accounts, d.pay_account || settings.doc_pay_account || '2134', `name="pay_account" ${ro ? 'disabled' : ''}`)}</label>
           <label class="full check" style="display:flex"><input type="checkbox" name="deductible" ${(d.deductible ?? Number(d.tax_amount) > 0) ? raw('checked') : ''} ${dis}> 三聯式／載明本店統編（進項稅額可扣抵）</label>
           ${d.lines?.length ? '' : h`<label>課稅別<select name="tax_type" ${dis}>${options([['', `自動（${ev.parts[0].tax_type} ${TAX_TYPES[ev.parts[0].tax_type]}）`], ...Object.entries(TAX_TYPES).map(([k, v]) => [k, `${k} ${v}`])], d.tax_type || '')}</select></label>
           <label>扣抵代號<select name="ded_code" ${dis}>${options([['', `自動（${ev.parts[0].ded_code}）`], ...Object.entries(DED_CODES).map(([k, v]) => [k, `${k} ${v}`])], d.ded_code || '')}</select></label>`}
@@ -727,7 +728,7 @@ export async function render(root, ctx) {
     }
     const entries = await store.all('journal_entries');
     const ded = deductibility({ invoice_no: inv.invoice_no, tax: inv.tax, account, buyer_tax_id: inv.buyer_tax_id, deductible: inv.deductible }, { taxId: settings.tax_id, vatMode: settings.vat_mode });
-    const je = documentJournal({ id: inv.id, doc_date: inv.date, vendor_name: inv.seller_name, invoice_no: inv.invoice_no, amount_total: inv.total, tax_amount: inv.tax, summary: (inv.items || []).map((i) => i.name).slice(0, 3).join('、'), account, pay_account: '1101' }, { deductible: !!inv.deductible && ded.ok });
+    const je = documentJournal({ id: inv.id, doc_date: inv.date, vendor_name: inv.seller_name, invoice_no: inv.invoice_no, amount_total: inv.total, tax_amount: inv.tax, summary: (inv.items || []).map((i) => i.name).slice(0, 3).join('、'), account, pay_account: settings.doc_pay_account || '2134' }, { deductible: !!inv.deductible && ded.ok });
     const e = { ...je, source: 'document', source_ref: inv.id, id: uid('je_'), voucher_no: nextVoucherNo(entries, inv.date), status: 'posted', created_at: new Date().toISOString() };
     await store.put('journal_entries', e);
     await store.put('einvoices', { ...inv, account, entry_id: e.id });

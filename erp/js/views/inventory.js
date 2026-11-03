@@ -14,8 +14,8 @@ import { toStockQty, unitMatches } from '../lib/purchases.js';
 // 庫存狀態：[status() 種類, 文字, 排序]
 const STATUS = { out: ['bad', '缺貨', 0], low: ['bad', '低於安全量', 1], watch: ['warn', '接近安全量', 2], unset: ['na', '未設安全量', 3], ok: ['good', '正常', 4] };
 const MOVE_HINT = {
-  opening: '期初：營收起算日當天盤點的數量與總價值；金額留白時以標準成本計算。',
-  purchase: '進貨：填訂購日可計算供應商交貨天數；良率評分記錄這批貨的品質（100＝全數可用）。',
+  opening: '期初：營收起算日當天盤點的數量與總價值（未稅成本）；金額留白時以標準成本計算。',
+  purchase: '進貨：金額填發票上的含稅總價，平均成本與庫存價值會自動以未稅（÷ 1.05）計算；填訂購日可計算供應商交貨天數；良率評分記錄這批貨的品質（100＝全數可用）。',
   consume: '手動耗用：POS 銷售 × 配方已自動扣庫存，這裡只登記配方以外的用量（員工餐、試做等）。',
   scrap: '報廢：過期、打翻、品質不良而丟棄的數量。POS 上以「報廢」作廢的品項已自動計入，不必重複登記。',
   adjust: '盤點調整：實際盤點數與帳面庫存的差額，正數＝盤盈、負數＝盤虧。',
@@ -51,7 +51,7 @@ const fmtDays = (v) => (v === null || v === undefined ? '—' : v <= 0 ? '0' : v
  * 登記／修改一筆進銷存異動並儲存；取消回傳 null。
  * @param opts.type 指定時固定類型（採購頁只登記進貨）；opts.itemId 預選品項
  */
-export async function editMove(move, { items, suppliers, type = null, itemId = null } = {}) {
+export async function editMove(move, { items, suppliers, type = null, itemId = null, vatRate = 0.05 } = {}) {
   if (!items.length) {
     toast('請先到「原物料進銷存」新增原物料品項', 'error');
     return null;
@@ -65,7 +65,7 @@ export async function editMove(move, { items, suppliers, type = null, itemId = n
       <label class="field"><span>類型</span><select name="type" ${type ? raw('disabled') : ''}>${options(Object.entries(MOVE_TYPES), m.type)}</select></label>
       <label class="field"><span data-date-label>日期</span><input type="date" name="date" value="${m.date || ''}"></label>
       <label class="field"><span>數量（<span data-unit></span>）</span><input type="number" name="qty" step="any" value="${m.qty ?? ''}"></label>
-      <label class="field" data-for="purchase opening"><span>金額（總價）</span><input type="number" name="amount" min="0" step="any" value="${m.amount ?? ''}"></label>
+      <label class="field" data-for="purchase opening"><span data-amount-label>金額（含稅總價）</span><input type="number" name="amount" min="0" step="any" value="${m.amount ?? ''}"></label>
       <label class="field" data-for="purchase"><span>供應商（選填）</span><select name="supplier_id">${options([['', '—'], ...[...suppliers].sort(byName).map((s) => [s.id, s.name])], m.supplier_id || '')}</select></label>
       <label class="field" data-for="purchase"><span>訂購日（算交貨天數）</span><input type="date" name="order_date" value="${m.order_date || ''}"></label>
       <label class="field" data-for="purchase"><span>良率評分（0–100）</span><input type="number" name="yield_score" min="0" max="100" step="1" value="${m.yield_score ?? ''}"></label>
@@ -79,11 +79,12 @@ export async function editMove(move, { items, suppliers, type = null, itemId = n
     const unit = byId.get(get('item_id'))?.unit || '單位';
     for (const el of dlg.querySelectorAll('[data-for]')) el.style.display = el.dataset.for.split(' ').includes(t) ? '' : 'none';
     dlg.querySelector('[data-date-label]').textContent = t === 'purchase' ? '到貨日' : '日期';
+    dlg.querySelector('[data-amount-label]').textContent = t === 'opening' ? '總價值（未稅成本）' : '金額（含稅總價）';
     dlg.querySelector('[data-unit]').textContent = unit;
     dlg.querySelector('[data-hint]').textContent = MOVE_HINT[t] || '';
     const q = num(get('qty'));
     const a = num(get('amount'));
-    dlg.querySelector('[data-price]').textContent = (t === 'purchase' || t === 'opening') && q > 0 && a !== null ? `單價 ${fmtUnitCost(a / q)}／${unit}` : '';
+    dlg.querySelector('[data-price]').textContent = (t === 'purchase' || t === 'opening') && q > 0 && a !== null ? (t === 'purchase' && vatRate > 0 ? `未稅單價 ${fmtUnitCost(a / (1 + vatRate) / q)}／${unit}（含稅 ${fmtUnitCost(a / q)}）` : `單價 ${fmtUnitCost(a / q)}／${unit}`) : '';
   };
   const save = (dlg) => {
     const get = (n) => dlg.querySelector(`[name=${n}]`).value.trim();
@@ -95,12 +96,15 @@ export async function editMove(move, { items, suppliers, type = null, itemId = n
     if (!date) return fail('請輸入日期');
     if (qty === null || !Number.isFinite(qty) || qty === 0) return fail('請輸入數量');
     if (t !== 'adjust' && qty < 0) return fail('數量需為正數；盤虧請用「盤點調整」輸入負數');
-    const out = { ...m, id: m.id || uid('mv_'), item_id: it.id, date, type: t, qty, amount: null, supplier_id: null, order_date: null, yield_score: null, invoice_no: '', note: get('note') };
+    const out = { ...m, id: m.id || uid('mv_'), item_id: it.id, date, type: t, qty, amount: null, amount_ex: null, tax: null, supplier_id: null, order_date: null, yield_score: null, invoice_no: '', note: get('note') };
     if (t === 'purchase' || t === 'opening') {
       const amount = num(get('amount'));
       if (amount !== null && !(amount >= 0)) return fail('金額需為 0 以上');
       if (amount === null && t === 'purchase') return fail('請輸入進貨金額（用於平均成本與單價趨勢）');
       out.amount = round2(amount ?? qty * (Number(it.std_cost) || 0));
+      // 成本用未稅：進貨填的是含稅總價，換算未稅與稅額；期初登記的就是成本（未稅）
+      out.amount_ex = t === 'purchase' ? round2(out.amount / (1 + vatRate)) : out.amount;
+      out.tax = round2(out.amount - out.amount_ex);
     }
     if (t === 'purchase') {
       const od = get('order_date');
@@ -136,14 +140,16 @@ export async function editMove(move, { items, suppliers, type = null, itemId = n
  * 目前的庫存快照（供其他頁面用）：各品項現有數量、狀態、移動平均成本。
  */
 export async function stockSnapshot({ asOf = null } = {}) {
+  const settings = await getSettings();
+  const vatRate = settings.vat_mode === 'general' ? 0.05 : 0;
   const idx = await getProductIndex();
   const lines = await revenueLines();
   const [items, moves, recipes] = await Promise.all(['inventory_items', 'inventory_moves', 'recipes'].map((c) => store.all(c)));
   const lastSale = lines.reduce((m, l) => (l.date > m ? l.date : m), '');
   const day = asOf || (lastSale > today() ? lastSale : today());
   const usage = theoreticalUsage(lines, recipes, (l) => idx.of(l).id, { to: day });
-  const levels = stockLevels(items, moves, usage, { asOf: day });
-  return { asOf: day, items, moves, recipes, levels: new Map(levels.map((r) => [r.item.id, r])), costs: averageCosts(items, moves, { asOf: day }) };
+  const levels = stockLevels(items, moves, usage, { asOf: day, vatRate });
+  return { asOf: day, items, moves, recipes, levels: new Map(levels.map((r) => [r.item.id, r])), costs: averageCosts(items, moves, { asOf: day, vatRate }) };
 }
 
 /**
@@ -172,7 +178,7 @@ export async function editItem(item, { items, moves, recipes, suppliers, accName
         <label class="field"><span>主要供應商（選填）</span><select name="supplier_id">${options([['', '—'], ...[...suppliers].sort(byName).map((s) => [s.id, s.short_name || s.name])], it.supplier_id || '')}</select></label>
         <label class="field" style="grid-column:1/-1"><span>備註</span><input type="text" name="note" value="${it.note || ''}"></label>
       </div>
-      <p class="muted" style="font-size:12.5px;margin:10px 0 0">庫存單位請與配方用量一致（咖啡豆用 g、鮮奶用 ml、杯蓋用個）；進貨單上的單位若是包裝（箱、瓶、包），填每一包裝折合幾個庫存單位，進貨數量就會自動換算成庫存。現有庫存低於安全庫存就會提醒叫貨；標準成本在還沒有進貨紀錄時當作平均成本。</p>
+      <p class="muted" style="font-size:12.5px;margin:10px 0 0">庫存單位請與配方用量一致（咖啡豆用 g、鮮奶用 ml、杯蓋用個）；進貨單上的單位若是包裝（箱、瓶、包），填每一包裝折合幾個庫存單位，進貨數量就會自動換算成庫存。現有庫存低於安全庫存就會提醒叫貨；標準成本（未稅）在還沒有進貨紀錄時當作平均成本。</p>
       ${lastInfo ? h`<p class="muted" style="font-size:12.5px;margin:6px 0 0">${lastInfo}</p>` : ''}
       ${used ? h`<p class="muted" style="font-size:12.5px;margin:6px 0 0">此品項已有異動或配方：變更庫存單位不會換算既有數量（改包裝折合量會重算進貨行），也無法刪除。</p>` : ''}`,
     actions: [
@@ -245,7 +251,8 @@ export async function render(root, ctx) {
   const f = { tab: ctx.params.tab || 'stock', asOf: ctx.params.asof || '', item: ctx.params.item || '', mtype: ctx.params.mtype || '' };
   const lastSale = lines.reduce((m, l) => (l.date > m ? l.date : m), '');
   const asOfDate = () => f.asOf || (lastSale > today() ? lastSale : today());
-  const vatDiv = settings.vat_mode === 'general' ? 1.05 : 1;
+  const vatRate = settings.vat_mode === 'general' ? 0.05 : 0;
+  const vatDiv = 1 + vatRate;
   const marginOf = (price, cost) => (price > 0 && cost !== null ? (price / vatDiv - cost) / (price / vatDiv) : null);
 
   // 每條銷售明細對應的標準品項（快取），以及各品項平均售價（非作廢）
@@ -280,10 +287,10 @@ export async function render(root, ctx) {
     const asOf = asOfDate();
     const rateAsOf = lastSale && lastSale < asOf ? lastSale : asOf;
     const usage = theoreticalUsage(lines, recipes, pidOf, { to: asOf });
-    let levels = stockLevels(items, moves, usage, { asOf });
+    let levels = stockLevels(items, moves, usage, { asOf, vatRate });
     if (rateAsOf !== asOf) {
       // POS 資料落後基準日：日均耗用改以最後銷售日往前推算，避免沒有資料的天數稀釋
-      const rate = new Map(stockLevels(items, moves, usage, { asOf: rateAsOf }).map((r) => [r.item.id, r.avgDaily]));
+      const rate = new Map(stockLevels(items, moves, usage, { asOf: rateAsOf, vatRate }).map((r) => [r.item.id, r.avgDaily]));
       levels = levels.map((r) => {
         const d = rate.get(r.item.id) || 0;
         return { ...r, avgDaily: d, daysCover: d > 0 ? r.onHand / d : null };
@@ -306,12 +313,13 @@ export async function render(root, ctx) {
         ${stat('品項數', fmt(items.length), `${fmt(items.filter((i) => inRecipe.has(i.id)).length)} 項已用於配方`)}
         ${stat('低於安全庫存', fmt(n('low')), [n('low') ? '已低於預警線，建議叫貨' : '沒有品項低於預警線', n('watch') ? `另 ${n('watch')} 項接近` : ''].filter(Boolean).join('・'), n('low') ? 'bad' : '')}
         ${stat('缺貨', fmt(n('out')), n('out') ? '現有庫存 ≤ 0，請盡快叫貨' : '沒有缺貨品項', n('out') ? 'bad' : '')}
-        ${stat('庫存總值', '$' + fmt(round2(rows.reduce((t, r) => t + r.value, 0))), `移動平均成本・${asOf}`)}
+        ${stat('庫存總值（未稅）', '$' + fmt(round2(rows.reduce((t, r) => t + r.value, 0))), `移動平均成本（未稅）・${asOf}`)}
       </div>
       ${recipes.length ? '' : h`<div class="callout warn" style="margin-bottom:12px"><p>尚未設定任何配方，POS 銷售不會自動扣庫存。請到「配方（BOM）」分頁設定每個品項用了哪些原料。</p></div>`}
       <div class="callout" style="margin-bottom:16px">
         <p><b>耗用 ＝ POS 銷售份數 × 配方用量 ＋ 手動登記的耗用。</b>老闆招待、老闆測試的品項雖然金額作廢，原料確實用掉了，仍計入耗用；POS 上以「報廢」作廢的品項計入報廢量。</p>
         <p>現有庫存 ＝ 期初 ＋ 進貨 − 耗用 − 報廢 ± 盤點調整；可用天數 ＝ 現有庫存 ÷ 近 14 天日均耗用。${rateAsOf !== asOf ? `POS 銷售資料只到 ${rateAsOf}，之後的耗用尚未扣除，日均耗用以該日往前 14 天計算。` : ''}期初庫存請以營收起算日（${settings.revenue_start}）的盤點數量登記「期初」。</p>
+        <p>平均成本與庫存價值一律以<b>未稅</b>金額計算（進貨紀錄的未稅金額 ÷ 數量）；進項稅額記在 1261 進項稅額去扣抵，不算原料成本。</p>
       </div>`,
     );
     dataTable(body, {
@@ -331,8 +339,8 @@ export async function render(root, ctx) {
         { key: 'onHand', label: '現有庫存', align: 'num', fmt: (v) => h`<b>${fmt(v)}</b>`, csv: (v) => v },
         { key: 'safety', label: '安全庫存', align: 'num', fmt: (v) => (v ? fmt(v) : '—') },
         { key: 'daysCover', label: '可用天數', align: 'num', fmt: fmtDays },
-        { key: 'avgCost', label: '平均成本', align: 'num', fmt: (v) => fmtUnitCost(v) },
-        { key: 'value', label: '庫存價值', align: 'num', fmt: (v) => '$' + fmt(v) },
+        { key: 'avgCost', label: '平均成本（未稅）', align: 'num', fmt: (v) => fmtUnitCost(v) },
+        { key: 'value', label: '庫存價值（未稅）', align: 'num', fmt: (v) => '$' + fmt(v) },
         {
           key: 'rank',
           label: '狀態',
@@ -382,7 +390,7 @@ export async function render(root, ctx) {
       mount(body, emptyState('尚未建立標準品項', '配方要設定在標準品項上。請先到「品項整併」把 POS 上的品名合併成標準品項，再回來設定每一份用了哪些原料。', h`<a class="btn primary" href="#/products">前往品項整併</a>`));
       return;
     }
-    const costs = averageCosts(items, moves, { asOf: asOfDate() });
+    const costs = averageCosts(items, moves, { asOf: asOfDate(), vatRate });
     const perProduct = productCosts(idx.products, recipes, (id) => costs.get(id)?.avg || 0);
     const count = new Map();
     for (const r of recipes) count.set(r.product_id, (count.get(r.product_id) || 0) + 1);
@@ -393,7 +401,7 @@ export async function render(root, ctx) {
     });
     mount(
       top,
-      h`<div class="callout" style="margin-bottom:16px"><p>配方＝每售出<b>一份</b>用掉的原料量，以原料的庫存單位計（咖啡豆 g、鮮奶 ml、杯蓋 個）；設定後 POS 每賣一份就自動扣庫存。理論成本＝Σ 用量 × 移動平均成本；毛利率以平均售價${vatDiv > 1 ? '扣除 5% 營業稅後' : ''}計算。</p>
+      h`<div class="callout" style="margin-bottom:16px"><p>配方＝每售出<b>一份</b>用掉的原料量，以原料的庫存單位計（咖啡豆 g、鮮奶 ml、杯蓋 個）；設定後 POS 每賣一份就自動扣庫存。理論成本＝Σ 用量 × 移動平均成本（未稅）；毛利率以平均售價${vatDiv > 1 ? '扣除 5% 營業稅後' : ''}計算。</p>
         ${unmapped.size ? h`<p>另有 <b>${unmapped.size}</b> 個 POS 品名尚未整併到標準品項，這些銷售不會扣庫存 → <a href="#/products">前往品項整併</a></p>` : ''}</div>`,
     );
     dataTable(body, {
@@ -449,7 +457,7 @@ export async function render(root, ctx) {
   async function recipeModal(p) {
     if (!p) return;
     const byId = new Map(items.map((i) => [i.id, i]));
-    const costs = averageCosts(items, moves, { asOf: asOfDate() });
+    const costs = averageCosts(items, moves, { asOf: asOfDate(), vatRate });
     const costOf = (id) => costs.get(id)?.avg || 0;
     const price = priceOf(p.id);
     const current = recipes.filter((r) => r.product_id === p.id);
@@ -469,7 +477,7 @@ export async function render(root, ctx) {
     const r = await modal({
       title: `配方：${p.name}`,
       wide: true,
-      body: h`<p class="muted" style="margin-top:0">每售出一份「${p.name}」用掉的原料量，以原料的庫存單位計；成本依目前的移動平均成本試算。</p>
+      body: h`<p class="muted" style="margin-top:0">每售出一份「${p.name}」用掉的原料量，以原料的庫存單位計；成本依目前的移動平均成本（未稅）試算。</p>
         <div class="table-wrap"><table class="grid"><thead><tr><th style="width:55%">原料</th><th class="num">每份用量</th><th class="num">成本</th><th></th></tr></thead>
         <tbody id="bom-lines">${(current.length ? current : [{ item_id: '', qty: '' }]).map(line)}</tbody>
         <tfoot><tr><td colspan="4"><button type="button" class="btn sm" data-add>＋ 新增原料</button></td></tr></tfoot></table></div>
@@ -539,11 +547,11 @@ export async function render(root, ctx) {
       if (it) return itemModal(it);
     },
     addMove: async (el) => {
-      if (await editMove(null, { items, suppliers, itemId: el.dataset.id || f.item })) await reload();
+      if (await editMove(null, { items, suppliers, itemId: el.dataset.id || f.item, vatRate })) await reload();
     },
     editMove: async (el) => {
       const m = moves.find((x) => x.id === el.dataset.id);
-      if (m && (await editMove(m, { items, suppliers }))) await reload();
+      if (m && (await editMove(m, { items, suppliers, vatRate }))) await reload();
     },
     delMove: async (el) => {
       const m = moves.find((x) => x.id === el.dataset.id);

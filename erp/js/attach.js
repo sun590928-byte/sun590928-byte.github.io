@@ -3,6 +3,7 @@
 
 import { h, raw, modal, toast, pickFiles, fmt, setBusy } from './ui.js';
 import { store } from './store.js';
+import { getSettings } from './state.js';
 import { parseDocName, archiveName, archiveFolder } from './lib/docname.js';
 import { classifyExpense } from './lib/classify.js';
 import { uid } from './lib/text.js';
@@ -45,13 +46,15 @@ export function pickDocFiles({ camera = false, multiple = true } = {}) {
 
 /**
  * 上傳檔案並建立憑證紀錄（檔名中的日期、廠商、金額、發票號會自動帶入）。
- * @param extra    覆寫欄位，例如 { status: 'reviewed', asset_id }
+ * 付款方式：由資料夾對應到的放 extra.pay_account；沒有的（直接上傳、最上層）先列設定的「憑證歸檔預設付款方式」（預設 2134 員工代墊），不再預設 1101 零用金。
+ * @param extra    覆寫欄位，例如 { status: 'reviewed', asset_id, pay_account }
  * @param fallback 檔名沒有時才使用的欄位，例如 { doc_date, vendor_name }
  * @returns 新建立的憑證
  */
 export async function createDocuments(files, extra = {}, fallback = {}) {
   const rows = [];
   if (!files.length) return rows;
+  const settings = await getSettings();
   setBusy(true, `上傳 ${files.length} 個檔案…`);
   try {
     for (const file of files) {
@@ -72,7 +75,7 @@ export async function createDocuments(files, extra = {}, fallback = {}) {
         tax_amount: null,
         summary: parsed.summary,
         account: cls.account,
-        pay_account: '1101',
+        pay_account: settings.doc_pay_account || '2134',
         confidence: parsed.date && parsed.amount ? 0.5 : 0.2,
         ai: null,
         created_at: new Date().toISOString(),
