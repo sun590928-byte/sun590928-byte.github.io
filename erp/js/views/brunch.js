@@ -29,6 +29,21 @@ const fail = (msg) => {
 const same = (a, b) => SIM_FIELDS.every((f) => Number(a[f.key]) === Number(b[f.key]));
 const safeName = (s) => s.replace(/[\\/:*?"<>|]/g, '-');
 
+// 圖表照容器實際寬度畫；第一次量不到寬度（還沒排版）或寬度改變時重畫，字才不會被縮小
+function fitWidth(el, draw) {
+  el._ro?.disconnect();
+  let w = el.clientWidth;
+  const ro = new ResizeObserver(() => {
+    const nw = el.clientWidth;
+    if (nw && Math.abs(nw - w) >= 16) {
+      w = nw;
+      draw();
+    }
+  });
+  ro.observe(el);
+  el._ro = ro;
+}
+
 export async function render(root, ctx) {
   const settings = await getSettings();
   const vatRate = settings.vat_mode === 'general' ? 0.05 : 0;
@@ -191,7 +206,10 @@ export async function render(root, ctx) {
       <div id="bp-curve" class="chart"></div>
       <p class="muted" style="font-size:12.5px;margin:6px 0 0">營收先除以 ${1 + vatRate} 扣營業稅；食材成本率是「成本 ÷ 含稅售價」。只算因為這個時段才多來的客人；原本就會來、只是改點的，只有毛利差算數（在「測試紀錄」分開記）。</p>`,
     );
-    curve(out.querySelector('#bp-curve'), profitCurve(sim, { vatRate }), s);
+    const curveEl = out.querySelector('#bp-curve');
+    const pts = profitCurve(sim, { vatRate });
+    curve(curveEl, pts, s);
+    fitWidth(curveEl, () => curve(curveEl, pts, s));
     const btn = root.querySelector('[data-act="saveSim"]');
     if (btn) btn.disabled = same(sim, plan.params);
   }
@@ -486,12 +504,10 @@ export async function render(root, ctx) {
           : emptyState('還沒有紀錄', '推出後每天收班花 1 分鐘：份數、新客／加點／換點、報廢、最慢出餐、天氣；沒賣也要記 0。測試期間有匯入 POS 銷售明細的話，時段營收會自動帶出來。', h`<button class="btn primary" data-act="addLog" data-date="${day}">＋ 記今天</button>`)
       }</div>`,
     );
-    bars(
-      body.querySelector('#bp-bars'),
-      v.days
-        .filter((d) => !d.closed)
-        .map((d) => ({ label: md(d.date), value: d.profit })),
-    );
+    const barsEl = body.querySelector('#bp-bars');
+    const barPts = v.days.filter((d) => !d.closed).map((d) => ({ label: md(d.date), value: d.profit }));
+    bars(barsEl, barPts);
+    if (barsEl) fitWidth(barsEl, () => bars(barsEl, barPts));
   }
   // 正負直條（多賺／虧）
   function bars(el, pts) {
