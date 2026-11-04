@@ -5,7 +5,7 @@ import { h, raw, mount, bindActions, modal, confirmBox, toast, stat, status, bad
 import { store } from '../store.js';
 import { getSettings, getProductIndex, revenueLines } from '../state.js';
 import { averageCosts, productCosts } from '../lib/inventory.js';
-import { PLAN_ID, SIM_FIELDS, SCENARIOS, BLOCKERS, OWNERS, simulate, profitCurve, menuSummary, dishCost, testVerdict, dayResult, posWindow, buildSchedule, scheduleStatus, normalizePlan, isWeekend } from '../lib/brunch.js';
+import { PLAN_ID, SIM_FIELDS, SCENARIOS, BLOCKERS, OWNERS, simulate, profitCurve, menuSummary, dishCost, swapMarginOf, testVerdict, dayResult, posWindow, buildSchedule, scheduleStatus, normalizePlan, isWeekend } from '../lib/brunch.js';
 import { today, weekdayIndex, WEEKDAYS, addDays, daysBetween, eachDay } from '../lib/dates.js';
 import { round2 } from '../lib/money.js';
 import { uid } from '../lib/text.js';
@@ -16,7 +16,7 @@ const TABS = [
   ['plan', '推出進度'],
   ['test', '測試紀錄'],
 ];
-const VERDICT = { pass: ['good', '過關'], adjust: ['warn', '要調整'], stop: ['bad', '停'], pending: ['na', '還不能判斷'] };
+const VERDICT = { pass: ['good', '過關'], adjust: ['warn', '換品項或加強宣傳'], fix: ['warn', '調價、成本或人力'], stop: ['bad', '停'], collecting: ['info', '資料收集中'], pending: ['na', '還不能判斷'] };
 const WEATHER = ['', '晴', '多雲', '陰', '雨', '冷', '熱', '颱風'];
 
 const cash = (v) => (v === null || v === undefined ? '—' : (v < 0 ? '−$' : '$') + fmt(Math.round(Math.abs(v))));
@@ -212,7 +212,18 @@ export async function render(root, ctx) {
               </tr>`;
             })}</tbody></table></div>`
           : emptyState('還沒有品項', '新增要試賣的餐點：名稱、售價、成本（或連到品項主檔用配方算）、過敏原。也可以按上方「匯入企劃檔」一次帶入。', h`<button class="btn primary" data-act="addDish">＋ 新增品項</button>`)
-      }</div>`,
+      }</div>
+      <div class="card"><div class="card-head"><h2>換點對照</h2><span class="card-note">原本會點這個、改點早午餐的客人，多賺的是兩邊毛利的差</span></div>
+        <div class="form-grid">
+          <label class="field"><span>被換掉的品項</span><input type="text" data-act="swapRef" data-k="name" value="${plan.swap_ref.name}" placeholder="例如：甜點平均"></label>
+          <label class="field"><span>售價（含稅）</span><input type="number" min="0" step="1" data-act="swapRef" data-k="price" value="${plan.swap_ref.price ?? ''}"></label>
+          <label class="field"><span>成本</span><input type="number" min="0" step="any" data-act="swapRef" data-k="cost" value="${plan.swap_ref.cost ?? ''}"></label>
+          <div class="field"><span>每份毛利</span><b style="font-size:18px">${(() => {
+            const m = swapMarginOf(plan.swap_ref, { vatRate, feePct: plan.params.fee });
+            return m === null ? '—（沒填就用差價估）' : cash(m);
+          })()}</b></div>
+        </div>
+      </div>`,
     );
   }
 
@@ -337,87 +348,93 @@ export async function render(root, ctx) {
 
   // ─────────── 測試紀錄
 
-  function testContext() {
-    const ms = summary();
+  // 主指標要用的毛利：餐點（有 POS 就照實際銷售組合加權）、新客整張單（試算器的每位客人毛利）、被換掉的品項
+  function testContext(mix) {
+    const ms = menuSummary(plan.menu, { vatRate, feePct: plan.params.fee, recipeCostOf, mix });
     const s = simulate(plan.params, { vatRate });
     return {
       dishMargin: ms.margin ?? s.perGuest,
+      guestMargin: s.perGuest,
+      swapMargin: swapMarginOf(plan.swap_ref, { vatRate, feePct: plan.params.fee }),
       costRate: ms.avgRate ?? plan.params.cost / 100,
       feePct: plan.params.fee,
       wage: plan.params.wage,
       vatRate,
       fromMenu: ms.margin !== null,
+      weighted: ms.weighted,
     };
   }
 
   async function drawTest(body) {
-    const tctx = testContext();
     const from = plan.test.from || plan.launch_date || '';
     const to = plan.test.to || (from ? addDays(from, 27) : '');
-    const entries = plan.log.filter((e) => (!from || e.date >= from) && (!to || e.date <= to));
-    const v = testVerdict(entries, tctx, plan.rules);
     const lines = from ? await revenueLines({ from, to }) : [];
-    const pos = posWindow(lines, { from, to, start: plan.window.start, end: plan.window.end, keywords: [plan.test.keywords, ...plan.menu.map((d) => d.name)].filter(Boolean).join(',') });
+    const pos = posWindow(lines, { from, to, start: plan.window.start, end: plan.window.end, keywords: plan.test.keywords, dishes: plan.menu.map((d) => d.name) });
+    const tctx = testContext(pos.mix.size ? pos.mix : null);
+    const v = testVerdict(plan.log, tctx, plan.rules, { from, to, today: day });
     const posBy = new Map(pos.map((p) => [p.date, p]));
     const logBy = new Map(plan.log.map((e) => [e.date, e]));
-    const shownDates = from ? eachDay(from, to < day ? to : day).filter((d) => logBy.has(d) || posBy.has(d)) : plan.log.map((e) => e.date);
+    const shownDates = from && from <= day ? eachDay(from, to < day ? to : day) : plan.log.map((e) => e.date);
     const [tone, label] = VERDICT[v.verdict];
+    const swapNote = tctx.swapMargin === null ? '「菜單與成本」還沒設被換掉的品項，換點先用差價估' : `早午餐毛利減掉被換掉的品項（每份 ${cash(tctx.swapMargin)}）`;
     mount(
       body,
       h`<div class="toolbar">
         <label class="field"><span>測試開始</span><input type="date" data-act="testFrom" value="${plan.test.from || from}"></label>
         <label class="field"><span>測試結束</span><input type="date" data-act="testTo" value="${plan.test.to || to}"></label>
-        <label class="field"><span>試賣時段</span><span class="row"><input type="time" data-act="winStart" value="${plan.window.start}" style="width:110px"> – <input type="time" data-act="winEnd" value="${plan.window.end}" style="width:110px"></span></label>
-        <label class="field" style="min-width:200px"><span>POS 比對關鍵字（品名、品類）</span><input type="text" data-act="keywords" value="${plan.test.keywords}"></label>
+        <label class="field"><span>試賣時段</span><span class="row"><input type="time" data-act="winStart" value="${plan.window.start}" style="width:140px"> – <input type="time" data-act="winEnd" value="${plan.window.end}" style="width:140px"></span></label>
+        <label class="field" style="min-width:200px"><span>POS 比對關鍵字（品類；品名會自動比對）</span><input type="text" data-act="keywords" value="${plan.test.keywords}"></label>
         <span class="spacer" style="flex:1"></span>
         <button class="btn primary" data-act="addLog" data-date="${day}">＋ 記今天</button>
       </div>
       <div class="stats">
-        ${stat('判斷', h`${status(tone, label)}`, `${v.count} 天紀錄，週末 ${v.weekendCount} 天`)}
-        ${stat('平均每天多賺', signed(v.avgProfit), `累計 ${signed(v.totalProfit)}`, v.avgProfit === null ? '' : v.avgProfit > 0 ? 'good' : 'bad')}
-        ${stat('週末平均份數', v.weekendPortions === null ? '—' : `${fmt(v.weekendPortions)} 份`, `平日 ${v.weekdayPortions === null ? '—' : fmt(round2(v.weekdayPortions)) + ' 份'}`)}
+        ${stat('判斷', h`${status(tone, label)}`, `${v.count} 天紀錄（週末 ${v.weekendCount} 天）${v.missing.length ? `，缺 ${v.missing.length} 天` : ''}`, v.missing.length ? 'bad' : '')}
+        ${stat('平均每天多賺', signed(v.avgProfit), `週末 ${signed(v.weekendProfit)}／平日 ${signed(v.weekdayProfit)}`, v.avgProfit === null ? '' : v.avgProfit > 0 ? 'good' : 'bad')}
+        ${stat('週末平均份數', v.weekendPortions === null ? '—' : `${fmt(v.weekendPortions)} 份`, `平日 ${v.weekdayPortions === null ? '—' : fmt(v.weekdayPortions) + ' 份'}`)}
         ${stat('出餐太慢', `${fmt(v.slowDays)} 天`, `超過 ${plan.rules.max_serve_min} 分鐘就砍一道菜`, v.slowDays ? 'bad' : '')}
         ${stat('提早開的訊號', `${fmt(v.doorGroups)} 組`, `開門前在等的組數；問卷想來 ${fmt(v.surveyYes)} 人`)}
       </div>
-      <div class="callout ${v.verdict === 'pass' ? 'good' : v.verdict === 'stop' ? 'bad' : v.verdict === 'adjust' ? 'warn' : ''}" style="margin-bottom:16px">
+      <div class="callout ${v.verdict === 'pass' ? 'good' : v.verdict === 'stop' ? 'bad' : ['adjust', 'fix'].includes(v.verdict) || v.missing.length ? 'warn' : ''}" style="margin-bottom:16px">
         <p><b>${v.reason}</b></p>
-        <p>主指標是「每天多賺多少」：新客點的、原本的客人多加點的，整份毛利都算（每份 ${cash(tctx.dishMargin)}${tctx.fromMenu ? '，來自菜單' : '，菜單還沒有成本，暫用試算器的每位客人毛利'}）；原本的客人把甜點換成餐點，只算差價的毛利；再扣報廢和多排的人力。份數只用來決定要調什麼，不決定過不過關。</p>
+        <p>主指標是「每天多賺多少」：新客（因為早午餐才來的人）算整張單的毛利（每位 ${cash(tctx.guestMargin)}，來自試算器）；原本的客人多加點，算那份餐的毛利（每份 ${cash(tctx.dishMargin)}${tctx.weighted ? '，照 POS 實際賣的組合加權' : tctx.fromMenu ? '，菜單平均' : '，菜單還沒有成本，暫用每位客人毛利'}）；換點算${swapNote}；再扣報廢和多排的人力。份數只用來決定要調什麼，不決定過不過關。測試期結束、每天都有紀錄（沒賣記 0）、週末至少 ${plan.rules.min_weekend_days} 天，才會下結論。</p>
       </div>
       <div class="card"><div class="card-head"><h2>每天多賺</h2><span class="card-note">綠色多賺、紅色虧</span></div><div id="bp-bars" class="chart"></div></div>
       <div class="card"><div class="card-head"><h2>每日紀錄</h2><span class="card-note">POS 欄位來自匯入的銷售明細（${plan.window.start}–${plan.window.end}）</span></div>
       ${
         shownDates.length
-          ? h`<div class="table-wrap"><table class="grid"><thead><tr><th>日期</th><th class="num">POS 時段營收</th><th class="num">POS 比對份數</th><th class="num">份數</th><th class="num">新客／加點／換點</th><th class="num">換點差價</th><th class="num">報廢</th><th class="num">多排人力</th><th class="num">最慢出餐</th><th>天氣、活動</th><th class="num">當天多賺</th><th></th></tr></thead><tbody>${shownDates
+          ? h`<div class="table-wrap"><table class="grid"><thead><tr><th>日期</th><th class="num">POS 時段營收</th><th class="num">POS 比對份數</th><th class="num">份數</th><th class="num">新客／加點／換點</th><th class="num">報廢</th><th class="num">多排人力</th><th class="num">最慢出餐</th><th>天氣、活動</th><th class="num">當天多賺</th><th></th></tr></thead><tbody>${shownDates
               .slice()
               .reverse()
               .map((d) => {
                 const e = logBy.get(d);
                 const p = posBy.get(d);
-                const r = e ? dayResult(e, tctx) : null;
+                const r = e && !e.closed ? dayResult(e, tctx) : null;
+                const miss = !e && d < day;
                 return h`<tr>
                   <td style="white-space:nowrap">${md(d)}${isWeekend(d) ? badge('週末', 'accent') : ''}</td>
                   <td class="num">${p ? cash(p.windowRevenue) : '—'}</td>
                   <td class="num">${p ? fmt(p.brunchQty) : '—'}</td>
-                  <td class="num">${e ? fmt(e.portions || 0) : '—'}</td>
-                  <td class="num">${e ? `${fmt(e.new_count || 0)}／${fmt(e.addon_count || 0)}／${fmt(e.swap_count || 0)}` : '—'}</td>
-                  <td class="num">${e ? cash(e.swap_diff || 0) : '—'}</td>
-                  <td class="num">${e ? cash(e.waste || 0) : '—'}</td>
-                  <td class="num">${e ? `${fmt(e.extra_hours || 0)} 小時` : '—'}</td>
-                  <td class="num">${e && e.slowest_min ? h`${e.slowest_min > plan.rules.max_serve_min ? status('bad', `${e.slowest_min} 分`) : `${e.slowest_min} 分`}` : '—'}</td>
+                  <td class="num">${e?.closed ? badge('公休', 'low') : e ? fmt(e.portions || 0) : miss ? status('warn', '缺紀錄') : '—'}</td>
+                  <td class="num">${r ? `${fmt(e.new_count || 0)}／${fmt(e.addon_count || 0)}／${fmt(e.swap_count || 0)}` : '—'}</td>
+                  <td class="num">${r ? cash(e.waste || 0) : '—'}</td>
+                  <td class="num">${r ? `${fmt(e.extra_hours || 0)} 小時` : '—'}</td>
+                  <td class="num">${r && e.slowest_min ? h`${e.slowest_min > plan.rules.max_serve_min ? status('bad', `${e.slowest_min} 分`) : `${e.slowest_min} 分`}` : '—'}</td>
                   <td>${e ? [e.weather, e.event, e.posted ? '有發文' : ''].filter(Boolean).join('、') || '—' : '—'}</td>
                   <td class="num">${r ? h`<b class="${r.profit >= 0 ? 'bp-pos' : 'bp-neg'}">${signed(r.profit)}</b>` : '—'}</td>
                   <td><button class="btn sm" data-act="addLog" data-date="${d}">${e ? '修改' : '記錄'}</button></td>
                 </tr>`;
               })}</tbody></table></div>`
-          : emptyState('還沒有紀錄', '推出後每天收班花 1 分鐘：份數、新客／加點／換點、報廢、最慢出餐、天氣。測試期間有匯入 POS 銷售明細的話，時段營收會自動帶出來。', h`<button class="btn primary" data-act="addLog" data-date="${day}">＋ 記今天</button>`)
+          : emptyState('還沒有紀錄', '推出後每天收班花 1 分鐘：份數、新客／加點／換點、報廢、最慢出餐、天氣；沒賣也要記 0。測試期間有匯入 POS 銷售明細的話，時段營收會自動帶出來。', h`<button class="btn primary" data-act="addLog" data-date="${day}">＋ 記今天</button>`)
       }</div>`,
     );
     bars(
       body.querySelector('#bp-bars'),
-      v.days.slice().sort((a, b) => (a.date < b.date ? -1 : 1)).map((d) => ({ label: md(d.date), value: d.profit })),
+      v.days
+        .filter((d) => !d.closed)
+        .sort((a, b) => (a.date < b.date ? -1 : 1))
+        .map((d) => ({ label: md(d.date), value: d.profit })),
     );
   }
-
   // 正負直條（多賺／虧）
   function bars(el, pts) {
     if (!el) return;
@@ -459,11 +476,12 @@ export async function render(root, ctx) {
       title: `每日紀錄：${md(date)}`,
       wide: true,
       body: h`<div class="form-grid">
-        ${field('portions', '早午餐份數')}
-        ${field('new_count', '新客點的（份）')}
+        <label class="row" style="grid-column:1/-1"><input type="checkbox" name="closed" ${e.closed ? raw('checked') : ''}> 這天公休（不算進平均）</label>
+        ${field('portions', '早午餐份數（沒賣記 0）')}
+        ${field('new_count', '新客：因為早午餐才來的人')}
         ${field('addon_count', '原本的客人多加點（份）')}
         ${field('swap_count', '原本的客人換點（份）')}
-        ${field('swap_diff', '換點的差價合計（含稅）')}
+        ${field('swap_diff', '換點差價合計（沒設被換掉的品項時才用）')}
         ${field('waste', '報廢金額（成本）')}
         ${field('extra_hours', '多排的人力（小時）')}
         ${field('slowest_min', '最慢一份出餐（分鐘）')}
@@ -474,7 +492,7 @@ export async function render(root, ctx) {
         <label class="row"><input type="checkbox" name="posted" ${e.posted ? raw('checked') : ''}> 當天有發文</label>
         <label class="field" style="grid-column:1/-1"><span>備註</span><input type="text" name="note" value="${e.note || ''}"></label>
       </div>
-      <p class="muted" style="font-size:12.5px;margin:10px 0 0">換點：例如原本點 200 元的甜點，改點 220 元的餐點，差價記 20。份數 ＝ 新客＋加點＋換點，可以不填，系統會自己加。</p>`,
+      <p class="muted" style="font-size:12.5px;margin:10px 0 0">新客算「人」，一位新客點 1 份餐＋飲料就記 1。換點：原本會點甜點、改點早午餐的；在「菜單與成本」設好被換掉的品項，就照毛利相減算，差價可以不填。份數不填會自動加總。</p>`,
       actions: [
         ...(plan.log.some((x) => x.date === date) ? [{ label: '刪除這天', danger: true, value: 'delete' }] : []),
         { label: '取消', value: null },
@@ -490,6 +508,7 @@ export async function render(root, ctx) {
               out[k] = val;
             }
             if (out.portions === null) out.portions = (out.new_count || 0) + (out.addon_count || 0) + (out.swap_count || 0);
+            out.closed = g('closed').checked;
             out.weather = g('weather').value;
             out.event = g('event').value.trim();
             out.posted = g('posted').checked;
@@ -565,6 +584,12 @@ export async function render(root, ctx) {
     winEnd: (el) => setAndSave(() => (plan.window = { ...plan.window, end: el.value }), ''),
     keywords: (el) => setAndSave(() => (plan.test = { ...plan.test, keywords: el.value.trim() }), ''),
     addLog: (el) => editLog(el.dataset.date),
+    swapRef: (el) => {
+      const k = el.dataset.k;
+      const v = k === 'name' ? el.value.trim() : num(el.value);
+      if (k !== 'name' && v !== null && !(v >= 0)) return toast('需為 0 以上的數字', 'error');
+      return setAndSave(() => (plan.swap_ref = { ...plan.swap_ref, [k]: v }), '已儲存換點對照');
+    },
     exportPlan: () => {
       download(`${plan.name}_${day}.json`, JSON.stringify({ kind: 'wuyue-erp-brunch-plan', ...plan }, null, 2), 'application/json');
     },

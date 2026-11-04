@@ -1,7 +1,7 @@
 // 早午餐企劃：新時段加賣的損益試算、菜單成本、測試期每日紀錄與判斷、推出進度表。
 // 只有計算。店家的實際數字（價格、成本、營收）存在使用者資料（settings 的 brunch_plan），這裡只放通用示範值。
 
-import { addDays, daysBetween, weekdayIndex } from './dates.js';
+import { addDays, daysBetween, eachDay, weekdayIndex } from './dates.js';
 import { round2 } from './money.js';
 
 export const PLAN_ID = 'brunch_plan';
@@ -17,20 +17,23 @@ export const SIM_FIELDS = [
   { key: 'waste', label: '報廢＋耗材', unit: '元／天', min: 0, max: 800, step: 10, hint: '賣不完的備料、外帶盒、紙巾' },
   { key: 'util', label: '多出來的水電', unit: '元／天', min: 0, max: 400, step: 10, hint: '提早開燈、冷氣、烤箱' },
   { key: 'lost', label: '縮短營業少掉的營收（含稅）', unit: '元／天', min: 0, max: 3000, step: 50, hint: '把晚上的時數搬到早上時，晚上少賺的' },
+  { key: 'lost_cost', label: '晚上那些品項的成本率', unit: '%', min: 10, max: 60, step: 1, hint: '晚上賣的多半是飲料甜點，成本率跟早午餐不一樣；沒有少掉營收就不影響' },
   { key: 'days', label: '每月天數', unit: '天', min: 1, max: 31, step: 1, hint: '只做週末約 8–9 天；每天做約 26–30 天' },
 ];
 
 // 通用示範值：不是任何店的真實數字
-export const DEMO_PARAMS = { people: 5, ticket: 300, cost: 32, fee: 1, hours: 0.25, wage: 230, waste: 120, util: 40, lost: 0, days: 26 };
+export const DEMO_PARAMS = { people: 5, ticket: 300, cost: 32, fee: 1, hours: 0.25, wage: 230, waste: 120, util: 40, lost: 0, lost_cost: 25, days: 26 };
 
 export const SCENARIOS = [
-  { key: 'A', label: 'A 營業時間不變，只加餐點', params: { people: 4, ticket: 300, cost: 32, fee: 1, hours: 0.25, wage: 230, waste: 150, util: 30, lost: 0, days: 26 } },
-  { key: 'B', label: 'B 週末提早開，晚上照舊', params: { people: 6, ticket: 320, cost: 32, fee: 1, hours: 1.75, wage: 230, waste: 120, util: 80, lost: 0, days: 8 } },
-  { key: 'C', label: 'C 週末提早開，也提早打烊', params: { people: 6, ticket: 320, cost: 32, fee: 1, hours: 0.25, wage: 230, waste: 120, util: 80, lost: 300, days: 8 } },
-  { key: 'D', label: 'D 平日也提早開', params: { people: 3, ticket: 300, cost: 32, fee: 1, hours: 1.75, wage: 230, waste: 120, util: 80, lost: 0, days: 18 } },
+  { key: 'A', label: 'A 營業時間不變，只加餐點', params: { people: 4, ticket: 300, cost: 32, fee: 1, hours: 0.25, wage: 230, waste: 150, util: 30, lost: 0, lost_cost: 25, days: 26 } },
+  { key: 'B', label: 'B 週末提早開，晚上照舊', params: { people: 6, ticket: 320, cost: 32, fee: 1, hours: 1.75, wage: 230, waste: 120, util: 80, lost: 0, lost_cost: 25, days: 8 } },
+  { key: 'C', label: 'C 週末提早開，也提早打烊', params: { people: 6, ticket: 320, cost: 32, fee: 1, hours: 0.25, wage: 230, waste: 120, util: 80, lost: 300, lost_cost: 25, days: 8 } },
+  { key: 'D', label: 'D 平日也提早開', params: { people: 3, ticket: 300, cost: 32, fee: 1, hours: 1.75, wage: 230, waste: 120, util: 80, lost: 0, lost_cost: 25, days: 18 } },
 ];
 
-export const DEFAULT_RULES = { stop_portions: 3, adjust_portions: 5, target_serve_min: 12, max_serve_min: 15, waste_rate: 0.15 };
+// stop_portions／adjust_portions：虧錢時，週末平均份數 < stop 停；stop～adjust 換品項或加強宣傳；> adjust 有人點卻不賺 → 調價、成本或人力
+// min_weekend_days：至少要幾個週末日的紀錄才判斷（4 個週末＝8 天）
+export const DEFAULT_RULES = { stop_portions: 3, adjust_portions: 5, min_weekend_days: 8, target_serve_min: 12, max_serve_min: 15, waste_rate: 0.15 };
 
 const n = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
 
@@ -52,7 +55,7 @@ export function simulate(params, { vatRate = 0.05 } = {}) {
   const food = (rev * p.cost) / 100;
   const fee = (rev * p.fee) / 100;
   const labor = p.hours * p.wage;
-  const lostMargin = p.lost / (1 + vatRate) - (p.lost * p.cost) / 100 - (p.lost * p.fee) / 100;
+  const lostMargin = p.lost / (1 + vatRate) - (p.lost * p.lost_cost) / 100 - (p.lost * p.fee) / 100;
   const other = p.waste + p.util + lostMargin + fee;
   const profit = net - food - labor - other;
   // 打平線：每位客人的毛利要蓋過固定支出（人力、報廢耗材、水電、少掉的毛利）
@@ -101,15 +104,31 @@ export function dishCost(dish, recipeCostOf = () => undefined) {
   return { price, cost, source: useRecipe ? 'recipe' : cost === null ? null : 'manual', rate: cost !== null && price > 0 ? cost / price : null };
 }
 
-// 菜單平均：售價、成本率、每份毛利（扣稅、食材、金流）
-export function menuSummary(menu = [], { vatRate = 0.05, feePct = 1, recipeCostOf } = {}) {
+// 一份的毛利：扣營業稅、食材、金流
+export const unitMargin = (price, cost, { vatRate = 0.05, feePct = 1 } = {}) => n(price) / (1 + vatRate) - n(cost) - (n(price) * feePct) / 100;
+
+// 換點時被換掉的品項（例如甜點）每份毛利；價格或成本沒填就回 null，改用差價估
+export function swapMarginOf(ref, opts) {
+  if (!ref || !(n(ref.price) > 0) || ref.cost === null || ref.cost === undefined || ref.cost === '') return null;
+  return round2(unitMargin(ref.price, ref.cost, opts));
+}
+
+/**
+ * 菜單平均：售價、成本率、每份毛利。
+ * 有 mix（品名 → 實際賣出份數，來自 POS）就照實際銷售組合加權；沒有就每道平均。沒有成本的菜不拿來猜。
+ */
+export function menuSummary(menu = [], { vatRate = 0.05, feePct = 1, recipeCostOf, mix = null } = {}) {
   const rows = menu.filter((d) => d.active !== false).map((d) => ({ dish: d, ...dishCost(d, recipeCostOf) }));
   const priced = rows.filter((r) => r.price > 0);
   const costed = priced.filter((r) => r.cost !== null);
   const avgPrice = priced.length ? priced.reduce((t, r) => t + r.price, 0) / priced.length : 0;
   const avgRate = costed.length ? costed.reduce((t, r) => t + r.rate, 0) / costed.length : null;
-  const margin = avgPrice > 0 && avgRate !== null ? avgPrice / (1 + vatRate) - avgPrice * avgRate - (avgPrice * feePct) / 100 : null;
-  return { rows, count: rows.length, avgPrice: round2(avgPrice), avgRate, margin: margin === null ? null : round2(margin), missingCost: priced.length - costed.length };
+  const sold = mix ? costed.map((r) => [r, n(mix.get(r.dish.name))]).filter(([, q]) => q > 0) : [];
+  const soldQty = sold.reduce((t, [, q]) => t + q, 0);
+  let margin = null;
+  if (soldQty > 0) margin = sold.reduce((t, [r, q]) => t + unitMargin(r.price, r.cost, { vatRate, feePct }) * q, 0) / soldQty;
+  else if (costed.length) margin = costed.reduce((t, r) => t + unitMargin(r.price, r.cost, { vatRate, feePct }), 0) / costed.length;
+  return { rows, count: rows.length, avgPrice: round2(avgPrice), avgRate, margin: margin === null ? null : round2(margin), weighted: soldQty > 0, missingCost: priced.length - costed.length };
 }
 
 // ─────────── 測試期每日紀錄
@@ -118,55 +137,78 @@ export const isWeekend = (ymd) => weekdayIndex(ymd) >= 5;
 
 /**
  * 一天多賺多少（主指標）：
- * - 新客點的、原本的客人多加點的：整份毛利都算；
- * - 原本的客人把別的品項換成早午餐：只算差價的毛利；
+ * - 新客（因為早午餐才來的人）：整張增量訂單的毛利（guestMargin，試算器的每位客人毛利，含飲料）；
+ * - 原本的客人多加點：那份餐的毛利（dishMargin）；
+ * - 原本的客人把別的品項換成早午餐：早午餐毛利 − 被換掉品項的毛利（swapMargin）；
+ *   沒設被換掉的品項時，退回用「差價」估（swap_diff），會比較不準；
  * - 再扣報廢和多排的人力。
  */
-export function dayResult(entry, { dishMargin, costRate = 0.32, feePct = 1, wage = 230, vatRate = 0.05 } = {}) {
-  const whole = n(entry.new_count) + n(entry.addon_count);
-  const diffMargin = n(entry.swap_diff) / (1 + vatRate) - n(entry.swap_diff) * costRate - (n(entry.swap_diff) * feePct) / 100;
-  const profit = whole * n(dishMargin) + diffMargin - n(entry.waste) - n(entry.extra_hours) * wage;
-  return { profit: round2(profit), whole, portions: n(entry.portions), slow: n(entry.slowest_min) };
+export function dayResult(entry, { dishMargin = 0, guestMargin = null, swapMargin = null, costRate = 0.32, feePct = 1, wage = 230, vatRate = 0.05 } = {}) {
+  const guest = guestMargin === null ? n(dishMargin) : n(guestMargin);
+  const swap =
+    swapMargin === null || swapMargin === undefined
+      ? n(entry.swap_diff) / (1 + vatRate) - n(entry.swap_diff) * costRate - (n(entry.swap_diff) * feePct) / 100
+      : n(entry.swap_count) * (n(dishMargin) - n(swapMargin));
+  const profit = n(entry.new_count) * guest + n(entry.addon_count) * n(dishMargin) + swap - n(entry.waste) - n(entry.extra_hours) * wage;
+  return { profit: round2(profit), portions: n(entry.portions), slow: n(entry.slowest_min), closed: !!entry.closed };
 }
 
 /**
- * 測試判斷（照企劃：主指標優先，份數只用來決定要調什麼）
+ * 測試判斷（主指標優先，份數只用來決定要調什麼）
+ * 先確認資料夠：測試期結束、期間每個營業日都有紀錄（沒賣也要記 0；公休勾公休）、週末日數夠。
  * - 平均每天多賺 > 0 → 過關
- * - ≤ 0、週末平均 ≥ stop_portions 份 → 換品項、立牌，再跑 2 週
- * - ≤ 0、週末平均 < stop_portions 份 → 停
- * 天數不夠（週末少於 2 天）時先不下結論。
+ * - 虧，週末平均 < stop_portions 份 → 停
+ * - 虧，週末平均 stop～adjust_portions 份 → 換品項或加強宣傳
+ * - 虧，週末平均 > adjust_portions 份 → 有人點卻不賺：調價、降成本或減人力
  */
-export function testVerdict(entries = [], ctx = {}, rules = DEFAULT_RULES) {
+export function testVerdict(entries = [], ctx = {}, rules = DEFAULT_RULES, { from = '', to = '', today = '' } = {}) {
   const r = { ...DEFAULT_RULES, ...rules };
-  const days = entries.filter((e) => e && e.date).map((e) => ({ ...e, ...dayResult(e, ctx), weekend: isWeekend(e.date) }));
+  const inRange = (d) => (!from || d >= from) && (!to || d <= to);
+  const all = entries.filter((e) => e && e.date && inRange(e.date)).map((e) => ({ ...e, ...dayResult(e, ctx), weekend: isWeekend(e.date) }));
+  const days = all.filter((d) => !d.closed);
   const avg = (arr, k) => (arr.length ? arr.reduce((t, x) => t + x[k], 0) / arr.length : null);
   const weekends = days.filter((d) => d.weekend);
+  const weekdays = days.filter((d) => !d.weekend);
   const avgProfit = avg(days, 'profit');
   const weekendPortions = avg(weekends, 'portions');
-  const slowDays = days.filter((d) => d.slow > r.max_serve_min).length;
+  const logged = new Set(all.map((d) => d.date));
+  const until = to && today && today < to ? today : to;
+  const missing = from && until && from <= until ? eachDay(from, until).filter((d) => !logged.has(d) && d < (today || '9999')) : [];
   let verdict = 'pending';
-  let reason = '紀錄還不夠：至少要 2 個週末日才判斷。';
-  if (weekends.length >= 2) {
-    if (avgProfit > 0) {
-      verdict = 'pass';
-      reason = '平均每天多賺大於 0：過關，留下來。份數少的日子可以不賣。';
-    } else if (weekendPortions >= r.stop_portions) {
-      verdict = 'adjust';
-      reason = `沒有多賺，但週末平均有 ${round2(weekendPortions)} 份：換品項、放門口立牌，再跑 2 週。`;
-    } else {
-      verdict = 'stop';
-      reason = `沒有多賺，週末平均不到 ${r.stop_portions} 份：停，品項收掉。`;
-    }
+  let reason = '';
+  if (!from || !to) reason = '先設定測試開始與結束日。';
+  else if (today && today <= to) {
+    verdict = 'collecting';
+    reason = `測試進行中（到 ${to}），先看數字、不下結論${missing.length ? `；已經缺 ${missing.length} 天紀錄，沒賣也要記 0` : ''}。`;
+  } else if (missing.length) reason = `還缺 ${missing.length} 天紀錄（${missing.slice(0, 3).join('、')}${missing.length > 3 ? '…' : ''}）：沒賣也要記 0，公休就勾公休。補齊才判斷。`;
+  else if (weekends.length < r.min_weekend_days) reason = `週末紀錄只有 ${weekends.length} 天，至少要 ${r.min_weekend_days} 天才判斷。`;
+  else if (avgProfit > 0) {
+    verdict = 'pass';
+    reason = '平均每天多賺大於 0：過關，留下來。份數少的日子可以不賣。';
+  } else if (weekendPortions < r.stop_portions) {
+    verdict = 'stop';
+    reason = `沒有多賺，週末平均不到 ${r.stop_portions} 份：停，品項收掉。`;
+  } else if (weekendPortions <= r.adjust_portions) {
+    verdict = 'adjust';
+    reason = `沒有多賺，週末平均 ${round2(weekendPortions)} 份：換品項、加強門口立牌與宣傳，再跑 2 週。`;
+  } else {
+    verdict = 'fix';
+    reason = `週末平均有 ${round2(weekendPortions)} 份卻沒有多賺：有人點，問題在錢——調價、降成本或減人力。`;
   }
+  const r2 = (v) => (v === null ? null : round2(v));
   return {
-    days,
+    days: all,
     count: days.length,
+    closedCount: all.length - days.length,
     weekendCount: weekends.length,
-    avgProfit: avgProfit === null ? null : round2(avgProfit),
+    missing,
+    avgProfit: r2(avgProfit),
+    weekendProfit: r2(avg(weekends, 'profit')),
+    weekdayProfit: r2(avg(weekdays, 'profit')),
     totalProfit: round2(days.reduce((t, d) => t + d.profit, 0)),
-    weekendPortions: weekendPortions === null ? null : round2(weekendPortions),
-    weekdayPortions: avg(days.filter((d) => !d.weekend), 'portions'),
-    slowDays,
+    weekendPortions: r2(weekendPortions),
+    weekdayPortions: r2(avg(weekdays, 'portions')),
+    slowDays: days.filter((d) => d.slow > r.max_serve_min).length,
     verdict,
     reason,
     doorGroups: days.reduce((t, d) => t + n(d.door_groups), 0),
@@ -181,71 +223,75 @@ const toMin = (t) => {
   return m ? Number(m[1]) * 60 + Number(m[2]) : null;
 };
 
+const textOf = (l) => `${l.item_raw || ''} ${l.category_raw || ''} ${l.option_raw || ''}`.toLowerCase();
+
 function matcher(keywords) {
   const keys = String(keywords || '')
     .split(/[,，、\n]/)
     .map((k) => k.trim().toLowerCase())
     .filter(Boolean);
-  return (l) => keys.length > 0 && keys.some((k) => `${l.item_raw || ''} ${l.category_raw || ''} ${l.option_raw || ''}`.toLowerCase().includes(k));
+  return (l) => keys.length > 0 && keys.some((k) => textOf(l).includes(k));
 }
 
 /**
- * 每天在試賣時段（例如 11:30–13:30）的 POS 營收、訂單數，以及符合關鍵字（早午餐品名或品類）的份數。
- * 作廢、招待、報廢、調整列不算營收。
+ * 每天在試賣時段（start ≤ 時間 < end）的 POS 營收、訂單數，以及時段內符合關鍵字（早午餐品名或品類）的份數。
+ * 作廢、招待、測試、報廢（ERP 標成作廢的）和調整列不算；售價 0 的（員工餐、贈送）不算份數。
+ * dishes：菜單品名，另外分品名統計份數（給實際銷售組合用）。
  */
-export function posWindow(lines = [], { from, to, start = '11:30', end = '13:30', keywords = '' } = {}) {
+export function posWindow(lines = [], { from, to, start = '11:30', end = '14:00', keywords = '', dishes = [] } = {}) {
   const s = toMin(start);
   const e = toMin(end);
-  const hit = matcher(keywords);
+  const hit = matcher([keywords, ...dishes].filter(Boolean).join(','));
+  const names = dishes.filter(Boolean).map((d) => [d, d.toLowerCase()]);
   const byDate = new Map();
+  const mix = new Map();
   for (const l of lines) {
-    if (!l.date || (from && l.date < from) || (to && l.date > to) || l.is_adjustment) continue;
-    const t = toMin(l.time);
+    if (!l.date || (from && l.date < from) || (to && l.date > to) || l.is_adjustment || l.void_reason) continue;
     let d = byDate.get(l.date);
     if (!d) byDate.set(l.date, (d = { date: l.date, revenue: 0, windowRevenue: 0, windowOrders: new Set(), brunchQty: 0, brunchRevenue: 0 }));
-    if (l.void_reason) continue;
     d.revenue += n(l.revenue);
-    const inWin = t !== null && t >= s && t < e;
-    if (inWin) {
-      d.windowRevenue += n(l.revenue);
-      d.windowOrders.add(l.order_no || `${l.date} ${l.time}`);
-    }
-    if (hit(l)) {
-      d.brunchQty += n(l.qty, 1);
+    const t = toMin(l.time);
+    if (t === null || t < s || t >= e) continue;
+    d.windowRevenue += n(l.revenue);
+    d.windowOrders.add(l.order_no || `${l.date} ${l.time}`);
+    if (n(l.revenue) > 0 && hit(l)) {
+      const q = n(l.qty, 1);
+      d.brunchQty += q;
       d.brunchRevenue += n(l.revenue);
+      const nm = names.find(([, k]) => textOf(l).includes(k));
+      if (nm) mix.set(nm[0], (mix.get(nm[0]) || 0) + q);
     }
   }
-  return [...byDate.values()]
+  const days = [...byDate.values()]
     .map((d) => ({ ...d, revenue: round2(d.revenue), windowRevenue: round2(d.windowRevenue), windowOrders: d.windowOrders.size, brunchRevenue: round2(d.brunchRevenue) }))
     .sort((a, b) => (a.date < b.date ? -1 : 1));
+  return Object.assign(days, { mix });
 }
-
 // ─────────── 推出進度表
 
 export const OWNERS = ['老闆', '店長', '員工', 'Claude'];
 
 // 範本：day 是距離開始日第幾天；推出日固定在最後一天（launch）
 export const TASK_TEMPLATE = [
-  { day: 0, owner: '老闆', title: '定案 3 道菜與暫定價格', done: '企劃頁「菜單與成本」有 3 道菜名＋暫定價' },
+  { day: 0, owner: '老闆', title: '定案菜色與暫定價格', done: '「菜單與成本」有菜名＋暫定價' },
   { day: 0, owner: '老闆', title: '確認設備：有沒有爐火、烤箱一次烤幾份', done: '寫在備註；只有烤箱就照「卡關怎麼辦」第 1 條' },
-  { day: 0, owner: 'Claude', title: '把企劃參數帶進 ERP、算第一版成本', done: '試算器存成「我的設定」' },
   { day: 1, owner: '店長', title: '叫貨：試做用的原料（只叫試做量）', done: '進貨紀錄有登打' },
-  { day: 1, owner: '老闆', title: '試做第 1 輪：每道 2 份、計時、拍照', done: '每道出餐分鐘數＋照片' },
-  { day: 2, owner: 'Claude', title: '用進貨紀錄算實際成本，建議定價', done: '每道成本率都有數字，目標 ≤ 35%' },
-  { day: 2, owner: '老闆', title: '定價定案', done: '「菜單與成本」價格不再改' },
+  { day: 1, owner: '店長', title: '試做第 1 輪：每道 2 份、計時、拍照', done: '每道出餐分鐘數＋照片' },
+  { day: 2, owner: '店長', title: '每道一張標準配方卡：克數、烤溫與時間、保存期限、生熟分開、每日備料上限', done: '配方卡貼在備料區' },
+  { day: 2, owner: 'Claude', title: '協助：用進貨紀錄算實際成本、建議定價', done: '每道成本率都有數字，目標 ≤ 35%' },
   { day: 2, owner: '老闆', title: '食品安全：食品業者登錄、產品責任險有包含現場餐點', done: '兩項都確認；沒有就先辦，不推出' },
-  { day: 3, owner: 'Claude', title: '菜單卡、桌卡草稿（品名、價格、過敏原、一題問卷）', done: '印刷檔給老闆看' },
-  { day: 3, owner: '老闆', title: 'Google 商家檔案菜單加這幾道（營業時間不動）', done: '商家檔案看得到' },
-  { day: 4, owner: '店長', title: 'POS 加「早午餐」品類與品項', done: 'POS 點得到、出單正確' },
-  { day: 4, owner: '老闆', title: '試做第 2 輪＋壓力測試（3 份餐＋3 杯飲料同時）', done: '最慢一份 ≤ 12 分；超過就照「卡關怎麼辦」' },
-  { day: 5, owner: '老闆', title: '員工訓練：備料、出餐步驟、過敏原、POS 備註（新客／加點／換點）', done: '每位員工自己做過一次' },
-  { day: 5, owner: '店長', title: '開班加入早午餐備料（約 15 分）', done: '開收班清單有這一項' },
-  { day: 6, owner: '員工', title: '內部試賣：員工、熟客試吃，不對外', done: '問題記下來、當天改完' },
-  { day: 6, owner: '店長', title: '補齊首週原料', done: '進貨紀錄有登打' },
-  { day: 'launch', owner: '老闆', title: '推出：試賣時段供應，最後點餐前 30 分鐘截止', done: '收班時記第一筆每日紀錄' },
-  { day: 'launch', owner: '員工', title: '收班 1 分鐘：份數、新客／加點／換點、報廢、最慢出餐、天氣', done: '「測試紀錄」有今天' },
+  { day: 3, owner: '老闆', title: '定價定案、配方凍結（之後不再改）', done: '價格與配方卡不再改' },
+  { day: 3, owner: 'Claude', title: '協助：菜單卡、桌卡草稿（品名、價格、過敏原、一題問卷）', done: '印刷檔給老闆看' },
+  { day: 4, owner: '店長', title: 'POS 加「早午餐」品類與品項（先設停售）', done: 'POS 點得到、出單正確' },
+  { day: 4, owner: '店長', title: '壓力測試：3 份餐＋3 杯飲料同時下單', done: '最慢一份 ≤ 12 分；超過就照「卡關怎麼辦」' },
+  { day: 5, owner: '店長', title: '員工訓練與驗收：照配方卡做一次、過敏原問答、POS 備註（新客／加點／換點）、冰箱溫度紀錄', done: '每位員工自己做過一次並通過' },
+  { day: 5, owner: '老闆', title: '排首週人手：試賣時段多一人支援', done: '班表上看得到；多排的時數記進每日紀錄' },
+  { day: 6, owner: '員工', title: '最終演練：照推出當天的流程跑一次（不對外）', done: '問題記下來、當天改完' },
+  { day: 6, owner: '老闆', title: '14:00 檢查點：照原計畫推出／減為兩道／延期', done: '決定寫在備註' },
+  { day: 6, owner: '店長', title: '補齊首週原料、印好菜單卡與桌卡', done: '進貨紀錄有登打、菜單卡擺好' },
+  { day: 'launch', owner: '老闆', title: '推出：開賣前把菜單放上 Google 商家檔案、發一則社群', done: '第一份出餐' },
+  { day: 'launch', owner: '員工', title: '收班 1 分鐘：份數、新客／加點／換點、報廢、最慢出餐、天氣（沒賣也記 0）', done: '「測試紀錄」有今天' },
 ];
-
 export const BLOCKERS = [
   { when: '只有烤箱、一次只能烤 2 份', then: '先賣 2 道（一道不用烤的，例如優格杯），最後點餐提早 30 分鐘。' },
   { when: '沒有爐火，不能煮蛋', then: '蛋改成收班前煮好的全熟蛋，冷藏 7°C 以下、隔天用完；或拿掉蛋。' },
@@ -285,13 +331,14 @@ export function emptyPlan() {
   return {
     version: 1,
     name: '早午餐企劃',
-    window: { start: '11:30', end: '13:30', last_order: '13:00' },
+    window: { start: '11:30', end: '14:00', last_order: '13:30' },
     params: { ...DEMO_PARAMS },
     menu: [],
     schedule: [],
     start_date: '',
     launch_date: '',
     test: { from: '', to: '', keywords: '早午餐' },
+    swap_ref: { name: '', price: null, cost: null },
     rules: { ...DEFAULT_RULES },
     log: [],
     notes: '',
@@ -317,6 +364,7 @@ export function normalizePlan(raw) {
     start_date: raw.start_date || '',
     launch_date: raw.launch_date || '',
     test: { ...base.test, ...(raw.test || {}) },
+    swap_ref: { name: String(raw.swap_ref?.name || ''), price: raw.swap_ref?.price == null || raw.swap_ref?.price === '' ? null : n(raw.swap_ref.price), cost: raw.swap_ref?.cost == null || raw.swap_ref?.cost === '' ? null : n(raw.swap_ref.cost) },
     rules: { ...base.rules, ...(raw.rules || {}) },
     log: arr(raw.log).filter((e) => e && /^\d{4}-\d{2}-\d{2}$/.test(e.date || '')),
     notes: typeof raw.notes === 'string' ? raw.notes : '',
