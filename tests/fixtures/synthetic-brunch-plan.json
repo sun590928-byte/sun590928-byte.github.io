@@ -1,8 +1,9 @@
 {
   "kind": "wuyue-erp-brunch-plan",
+  "version": 1,
   "name": "示範店早午餐企劃（合成測試資料）",
   "window": { "start": "11:30", "end": "14:00", "last_order": "13:30" },
-  "params": { "people": 4, "ticket": 300, "cost": 32, "fee": 1, "hours": 0.25, "wage": 230, "waste": 150, "util": 30, "lost": 0, "days": 26 },
+  "params": { "people": 6, "ticket": 250, "cost": 28, "fee": 2, "hours": 1, "wage": 210, "waste": 60, "supplies": 20, "util": 20, "lost": 0, "lost_cost": 20, "days": 20 },
   "menu": [
     { "id": "d1", "name": "示範法式吐司", "price": 200, "cost": 56, "allergens": "蛋、奶、小麥", "method": "厚片泡蛋奶液進烤箱", "phase": 1 },
     { "id": "d2", "name": "示範可頌盤", "price": 240, "cost": 96, "allergens": "奶、小麥、蛋", "phase": 1 },
@@ -18,8 +19,9 @@
   "test": { "from": "2026-09-05", "to": "2026-09-06", "keywords": "拿鐵" },
   "swap_ref": { "name": "甜點平均", "price": 150, "cost": 45 },
   "rules": { "min_weekend_days": 2 },
+  "safety_ok": true,
   "log": [
     { "date": "2026-09-05", "portions": 6, "new_count": 3, "addon_count": 1, "swap_count": 2, "swap_diff": 40, "waste": 60, "extra_hours": 0, "slowest_min": 11, "weather": "晴" },
-    { "date": "2026-09-06", "portions": 5, "new_count": 2, "addon_count": 1, "swap_count": 2, "swap_diff": 20, "waste": 40, "extra_hours": 0, "slowest_min": 16, "weather": "雨", "door_groups": 2, "survey_yes": 3 }
+    { "date": "2026-09-06", "portions": 5, "new_count": 2, "addon_count": 1, "swap_count": 2, "swap_diff": 20, "waste": 40, "extra_hours": 0, "slowest_min": 13, "weather": "雨", "door_groups": 2, "survey_yes": 3 }
   ]
 }

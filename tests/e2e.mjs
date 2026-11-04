@@ -368,11 +368,14 @@ try {
 
   // 早午餐企劃：第一次是示範數字 → 匯入企劃檔 → 試算器拉桿、菜單成本、進度表勾選、測試紀錄判斷（含 POS 時段營收）、手機寬度
   await go('brunch');
-  assert((await page.textContent('#view')).includes('通用示範數字'), '早午餐企劃：第一次使用要說明是示範數字');
+  assert((await page.textContent('#view')).includes('畫面上是示範數字'), '早午餐企劃：第一次使用要說明是示範數字');
   {
     const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="importPlan"]')]);
     await chooser.setFiles(FX('synthetic-brunch-plan.json'));
-    await page.waitForFunction(() => document.querySelector('#view')?.textContent.includes('示範店早午餐企劃') && !document.querySelector('#view').textContent.includes('通用示範數字'));
+    await page.waitForSelector('dialog.modal');
+    assert((await page.textContent('dialog.modal')).includes('每日紀錄是現場記的'), '早午餐匯入：要說明每日紀錄不會被刪');
+    await page.click('dialog.modal .modal-foot [data-i="1"]');
+    await page.waitForFunction(() => document.querySelector('#view')?.textContent.includes('示範店早午餐企劃') && !document.querySelector('#view').textContent.includes('畫面上是示範數字'));
   }
   await page.$eval('input[type=range][data-k="people"]', (el) => {
     el.value = '12';

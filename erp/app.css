@@ -526,4 +526,22 @@ tr.muted-row td { color: var(--mute); }
 .bp-task.done .bp-task-main > div:first-child { text-decoration: line-through; color: var(--mute); }
 .bp-task.late .bp-task-main > div:first-child { color: var(--bad-text); }
 .bp-pos { color: var(--good-text); }
-.bp-neg { color: var(--bad-text); }
+.bp-neg { color: var(--bad-text); }.bp-safety { font-size: 13.5px; align-self: center; min-height: 34px; }
+.bp-how summary { cursor: pointer; font-size: 13.5px; color: var(--text-2); }
+.bp-how p { font-size: 13.5px; margin: 6px 0 0; }
+table.grid.bp-log th.bp-date { font-weight: 600; text-align: left; white-space: nowrap; background: none; position: static; font-size: 14px; color: var(--ink); }
+table.grid.bp-log tr.bp-miss > * { background: color-mix(in srgb, var(--warn) 9%, transparent); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+/* 每日紀錄在手機改成一天一張卡片，份數、多賺、修改都看得到 */
+@media (max-width: 640px) {
+  .bp-log-wrap { border: 0; background: transparent; overflow: visible; }
+  table.grid.bp-log, table.grid.bp-log tbody { display: block; }
+  table.grid.bp-log thead { display: none; }
+  table.grid.bp-log tr { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; padding: 12px 14px; margin-bottom: 10px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--card); }
+  table.grid.bp-log th.bp-date { grid-column: 1 / -1; border: 0; padding: 0 0 2px; font-size: 15px; background: none; position: static; }
+  table.grid.bp-log td { border: 0; padding: 0; text-align: left; display: flex; flex-direction: column; gap: 1px; font-size: 14px; }
+  table.grid.bp-log td::before { content: attr(data-label); font-size: 12px; color: var(--mute); }
+  table.grid.bp-log td.bp-act { grid-column: 1 / -1; margin-top: 4px; }
+  table.grid.bp-log td.bp-act::before { content: none; }
+  table.grid.bp-log td.bp-act .btn { width: 100%; justify-content: center; padding: 8px; }
+}
