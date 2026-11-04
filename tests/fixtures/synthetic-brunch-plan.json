@@ -1,0 +1,23 @@
+{
+  "kind": "wuyue-erp-brunch-plan",
+  "name": "示範店早午餐企劃（合成測試資料）",
+  "window": { "start": "11:30", "end": "13:30", "last_order": "13:00" },
+  "params": { "people": 4, "ticket": 300, "cost": 32, "fee": 1, "hours": 0.25, "wage": 230, "waste": 150, "util": 30, "lost": 0, "days": 26 },
+  "menu": [
+    { "id": "d1", "name": "示範法式吐司", "price": 200, "cost": 56, "allergens": "蛋、奶、小麥", "method": "厚片泡蛋奶液進烤箱", "phase": 1 },
+    { "id": "d2", "name": "示範可頌盤", "price": 240, "cost": 96, "allergens": "奶、小麥、蛋", "phase": 1 },
+    { "id": "d3", "name": "示範優格杯", "price": 160, "cost": null, "allergens": "奶、燕麥", "phase": 1 }
+  ],
+  "start_date": "2026-09-01",
+  "launch_date": "2026-09-04",
+  "schedule": [
+    { "id": "t1", "date": "2026-09-01", "owner": "老闆", "title": "定案菜單", "done_when": "三道菜有價格", "done": false },
+    { "id": "t2", "date": "2026-09-02", "owner": "店長", "title": "試做與計時", "done_when": "每道出餐分鐘數", "done": false },
+    { "id": "t3", "date": "2026-09-04", "owner": "老闆", "title": "推出", "done_when": "收班記第一筆", "done": false }
+  ],
+  "test": { "from": "2026-09-01", "to": "2026-09-14", "keywords": "拿鐵" },
+  "log": [
+    { "date": "2026-09-05", "portions": 6, "new_count": 3, "addon_count": 1, "swap_count": 2, "swap_diff": 40, "waste": 60, "extra_hours": 0, "slowest_min": 11, "weather": "晴" },
+    { "date": "2026-09-06", "portions": 5, "new_count": 2, "addon_count": 1, "swap_count": 2, "swap_diff": 20, "waste": 40, "extra_hours": 0, "slowest_min": 16, "weather": "雨", "door_groups": 2, "survey_yes": 3 }
+  ]
+}

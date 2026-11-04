@@ -30,7 +30,8 @@ const server = createServer(async (req, res) => {
     res.end('not found');
   }
 });
-await new Promise((r) => server.listen(8123, '127.0.0.1', r));
+const PORT = Number(process.env.E2E_PORT) || 8123; // 8123 被占用時用 E2E_PORT 換
+await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
 await mkdir(OUT, { recursive: true });
 
 // 瀏覽器需要 UTF-8 語系，下載的中文檔名才不會變成 download
@@ -41,7 +42,7 @@ const errors = [];
 page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
 // Tesseract 載入繁中語言檔時會印出舊版參數的警告（無害）
 page.on('console', (m) => m.type() === 'error' && !/^Warning: Parameter not found/.test(m.text()) && errors.push('console: ' + m.text()));
-const BASE = 'http://127.0.0.1:8123/erp/';
+const BASE = `http://127.0.0.1:${PORT}/erp/`;
 let step = 0;
 const shot = async (name, full = true) => {
   await page.waitForTimeout(250);
@@ -364,6 +365,47 @@ try {
   await shot('tax', false);
   await go('pnl');
   await shot('pnl');
+
+  // 早午餐企劃：第一次是示範數字 → 匯入企劃檔 → 試算器拉桿、菜單成本、進度表勾選、測試紀錄判斷（含 POS 時段營收）、手機寬度
+  await go('brunch');
+  assert((await page.textContent('#view')).includes('通用示範數字'), '早午餐企劃：第一次使用要說明是示範數字');
+  {
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="importPlan"]')]);
+    await chooser.setFiles(FX('synthetic-brunch-plan.json'));
+    await page.waitForFunction(() => document.querySelector('#view')?.textContent.includes('示範店早午餐企劃') && !document.querySelector('#view').textContent.includes('通用示範數字'));
+  }
+  await page.$eval('input[type=range][data-k="people"]', (el) => {
+    el.value = '12';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const bpDay = (await page.textContent('#bp-result .stat-value')).trim();
+  assert(bpDay.startsWith('+'), '早午餐試算器：12 位客人應該多賺，實際 ' + bpDay);
+  assert(!(await page.isDisabled('[data-act="saveSim"]')), '早午餐試算器：改了參數可以存');
+  await shot('brunch-sim');
+  await go('brunch?tab=menu');
+  const bpMenu = await page.textContent('#view');
+  assert(bpMenu.includes('示範可頌盤') && bpMenu.includes('40.0%') && bpMenu.includes('1 道還沒有成本'), '早午餐菜單：成本率與缺成本提示');
+  await shot('brunch-menu');
+  await go('brunch?tab=plan');
+  await page.click('[data-act="toggleTask"][data-id="t1"]');
+  await page.waitForFunction(() => document.querySelector('#view .stat-value')?.textContent.includes('1／3'));
+  await shot('brunch-plan');
+  await go('brunch?tab=test');
+  await page.waitForSelector('#bp-bars svg');
+  const bpTest = await page.textContent('#view');
+  assert(bpTest.includes('過關') && bpTest.includes('出餐太慢'), '早午餐測試紀錄：兩個週末日都多賺 → 過關');
+  const bpPosRows = await page.$$eval('#view table.grid tbody tr', (trs) => trs.filter((tr) => /\$\d/.test(tr.children[1]?.textContent || '')).length);
+  assert(bpPosRows > 0, '早午餐測試紀錄：要帶出 POS 時段營收');
+  await shot('brunch-test');
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const tab of ['sim', 'menu', 'plan', 'test']) {
+    await go(`brunch?tab=${tab}`);
+    const ov = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    assert(ov <= 1, `早午餐企劃手機版（${tab}）水平捲動 ${ov}px`);
+  }
+  await shot('brunch-mobile', false);
+  await page.setViewportSize({ width: 1360, height: 900 });
+
   await go('bank');
   await go('accounts');
   await shot('accounts', false);
