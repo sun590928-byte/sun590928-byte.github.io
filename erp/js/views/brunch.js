@@ -5,7 +5,7 @@ import { h, raw, esc, mount, bindActions, modal, confirmBox, toast, stat, status
 import { store } from '../store.js';
 import { getSettings, getProductIndex, revenueLines } from '../state.js';
 import { averageCosts, productCosts } from '../lib/inventory.js';
-import { PLAN_ID, SIM_FIELDS, SCENARIOS, BLOCKERS, OWNERS, simulate, profitCurve, dailyFixedOf, menuSummary, dishCost, swapMarginOf, testVerdict, dayResult, posWindow, buildSchedule, scheduleStatus, normalizePlan, checkPlanFile, mergeImport, exportPlan, isWeekend } from '../lib/brunch.js';
+import { PLAN_ID, SIM_FIELDS, SCENARIOS, BLOCKERS, OWNERS, simulate, profitCurve, dailyFixedOf, menuSummary, dishCost, swapMarginOf, testVerdict, dayResult, entryProblem, posWindow, buildSchedule, scheduleStatus, normalizePlan, checkPlanFile, mergeImport, exportPlan, isWeekend } from '../lib/brunch.js';
 import { today, weekdayIndex, WEEKDAYS, addDays, daysBetween, eachDay } from '../lib/dates.js';
 import { uid } from '../lib/text.js';
 
@@ -29,21 +29,6 @@ const fail = (msg) => {
 const same = (a, b) => SIM_FIELDS.every((f) => Number(a[f.key]) === Number(b[f.key]));
 const safeName = (s) => s.replace(/[\\/:*?"<>|]/g, '-');
 
-// 圖表照容器實際寬度畫；第一次量不到寬度（還沒排版）或寬度改變時重畫，字才不會被縮小
-function fitWidth(el, draw) {
-  el._ro?.disconnect();
-  let w = el.clientWidth;
-  const ro = new ResizeObserver(() => {
-    const nw = el.clientWidth;
-    if (nw && Math.abs(nw - w) >= 16) {
-      w = nw;
-      draw();
-    }
-  });
-  ro.observe(el);
-  el._ro = ro;
-}
-
 export async function render(root, ctx) {
   const settings = await getSettings();
   const vatRate = settings.vat_mode === 'general' ? 0.05 : 0;
@@ -56,6 +41,30 @@ export async function render(root, ctx) {
   let sim = { ...plan.params };
   let simKey = 'mine';
   let saving = false;
+
+  // 圖表照容器實際寬度畫；第一次量不到寬度（還沒排版）或寬度改變時重畫，字才不會被縮小。
+  // 觀察器集中管理：畫新的之前先拆掉已經不在畫面上的，離開頁面時全部拆掉
+  const observers = new Set();
+  const dropObservers = (all = false) => {
+    for (const o of observers)
+      if (all || !o.el.isConnected) {
+        o.ro.disconnect();
+        observers.delete(o);
+      }
+  };
+  function fitWidth(el, redraw) {
+    dropObservers();
+    let w = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      const nw = el.clientWidth;
+      if (nw && Math.abs(nw - w) >= 16) {
+        w = nw;
+        redraw();
+      }
+    });
+    ro.observe(el);
+    observers.add({ el, ro });
+  }
 
   // 配方成本：品項主檔 × 配方 × 原物料平均進價（未稅）
   const [idx, items, moves, recipes] = await Promise.all([getProductIndex(), store.all('inventory_items'), store.all('inventory_moves'), store.all('recipes')]);
@@ -102,6 +111,7 @@ export async function render(root, ctx) {
   // ─────────── 共用外框
 
   function draw() {
+    dropObservers(true);
     mount(
       root,
       h`<div class="toolbar">
@@ -198,7 +208,9 @@ export async function render(root, ctx) {
           ['食材', cash(-s.food)],
           ['人力', cash(-s.labor)],
           ['金流手續費', cash(-s.fee)],
-          ['報廢、耗材、水電', cash(-s.wasteUtil)],
+          ['報廢', cash(-s.waste)],
+          ['耗材', cash(-s.supplies)],
+          ['水電', cash(-s.util)],
           ...(s.params.lost ? [['縮短營業少掉的毛利', cash(-s.lostMargin)]] : []),
         ].map(([a, b]) => h`<div><span>${a}</span><span>${b}</span></div>`)}
       </div>
@@ -486,12 +498,13 @@ export async function render(root, ctx) {
                 const p = posBy.get(d);
                 const r = e && !e.closed ? dayResult(e, tctx) : null;
                 const miss = !e && d < day;
+                const problem = e ? entryProblem(e) : '';
                 const gap = r && p && Math.abs((e.portions || 0) - p.brunchQty) >= 2;
-                return h`<tr class="${miss ? 'bp-miss' : ''}">
+                return h`<tr class="${miss || problem ? 'bp-miss' : ''}">
                   <th scope="row" class="bp-date">${md(d)}${isWeekend(d) ? badge('週末', 'accent') : ''}</th>
                   ${cell('POS 時段營收', p ? cash(p.windowRevenue) : '—', 'num')}
                   ${cell('POS 份數', p ? (gap ? status('warn', `${fmt(p.brunchQty)}（差 ${fmt(Math.abs((e.portions || 0) - p.brunchQty))}）`) : fmt(p.brunchQty)) : '—', 'num')}
-                  ${cell('手記份數', e?.closed ? badge('公休', 'low') : e ? fmt(e.portions || 0) : miss ? status('warn', '缺紀錄') : '—', 'num')}
+                  ${cell('手記份數', e?.closed ? badge('公休', 'low') : problem ? status('warn', `不完整：${problem}`) : e ? fmt(e.portions || 0) : miss ? status('warn', '缺紀錄') : '—', 'num')}
                   ${cell('新客／加點／換點', r ? `${fmt(e.new_count || 0)}／${fmt(e.addon_count || 0)}／${fmt(e.swap_count || 0)}` : '—', 'num')}
                   ${cell('報廢', r ? cash(e.waste || 0) : '—', 'num')}
                   ${cell('多排人力', r ? `${fmt(e.extra_hours || 0)} 小時` : '—', 'num')}
@@ -582,8 +595,13 @@ export async function render(root, ctx) {
               if (val !== null && !(val >= 0)) return fail('數字需為 0 以上');
               out[k] = val;
             }
-            if (out.portions === null) out.portions = (out.new_count || 0) + (out.addon_count || 0) + (out.swap_count || 0);
             out.closed = g('closed').checked;
+            const split = (out.new_count || 0) + (out.addon_count || 0) + (out.swap_count || 0);
+            if (!out.closed) {
+              if (out.portions === null) out.portions = split;
+              if (out.portions !== split) return fail(`新客＋加點＋換點（${split}）要等於份數（${out.portions}）；一位新客點 1 份就記 1`);
+              if (out.portions > 0 && out.slowest_min === null) return fail('有賣出就要填最慢一份的出餐分鐘');
+            }
             out.weather = g('weather').value;
             out.event = g('event').value.trim();
             out.posted = g('posted').checked;
@@ -704,6 +722,7 @@ export async function render(root, ctx) {
   draw();
   return () => {
     unbind();
+    dropObservers(true);
     root.removeEventListener('keydown', onTabKey);
   };
 }

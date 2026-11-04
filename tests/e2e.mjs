@@ -41,7 +41,7 @@ const page = await ctx.newPage();
 const errors = [];
 page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
 // Tesseract 載入繁中語言檔時會印出舊版參數的警告（無害）
-page.on('console', (m) => m.type() === 'error' && !/^Warning: Parameter not found/.test(m.text()) && errors.push('console: ' + m.text()));
+page.on('console', (m) => m.type() === 'error' && !/^Warning: Parameter not found|模擬存檔失敗/.test(m.text()) && errors.push('console: ' + m.text())); // 模擬存檔失敗：早午餐企劃故意測的
 const BASE = `http://127.0.0.1:${PORT}/erp/`;
 let step = 0;
 const shot = async (name, full = true) => {
@@ -392,6 +392,29 @@ try {
   await go('brunch?tab=plan');
   await page.click('[data-act="toggleTask"][data-id="t1"]');
   await page.waitForFunction(() => document.querySelector('#view .stat-value')?.textContent.includes('1／3'));
+  // 存檔衝突：別台裝置剛改過 → 不覆蓋、改載入最新的；存檔失敗 → 退回改之前並提示
+  await page.evaluate(async () => {
+    const { store } = await import('/erp/js/store.js');
+    const row = (await store.all('settings')).find((r) => r.id === 'brunch_plan');
+    await store.put('settings', { id: 'brunch_plan', value: { ...row.value, name: '別台裝置改的企劃', updated_at: new Date(Date.now() + 1000).toISOString() } });
+  });
+  await page.click('[data-act="toggleTask"][data-id="t2"]');
+  await page.waitForFunction(() => document.querySelector('#view').textContent.includes('別台裝置改的企劃'));
+  assert(!(await page.isChecked('[data-act="toggleTask"][data-id="t2"]')), '早午餐存檔衝突：不能覆蓋別台裝置的修改');
+  assert((await page.textContent('#toasts')).includes('別的裝置剛改過'), '早午餐存檔衝突：要提示');
+  await page.evaluate(async () => {
+    const { store } = await import('/erp/js/store.js');
+    const orig = store.put;
+    store.put = async () => {
+      store.put = orig;
+      throw new Error('模擬存檔失敗');
+    };
+  });
+  await page.click('[data-act="toggleTask"][data-id="t2"]');
+  await page.waitForFunction(() => document.querySelector('#toasts')?.textContent.includes('沒有存到'));
+  assert(!(await page.isChecked('[data-act="toggleTask"][data-id="t2"]')), '早午餐存檔失敗：要退回改之前');
+  await page.click('[data-act="toggleTask"][data-id="t2"]');
+  await page.waitForFunction(() => document.querySelector('#view .stat-value')?.textContent.includes('2／3'));
   await shot('brunch-plan');
   await go('brunch?tab=test');
   await page.waitForSelector('#bp-bars svg');

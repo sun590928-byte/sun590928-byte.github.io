@@ -2,7 +2,7 @@
 // 數字都是虛構的整數，不對應任何店。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { simulate, profitCurve, cleanParams, dailyFixedOf, dishCost, menuSummary, swapMarginOf, dayResult, testVerdict, posWindow, buildSchedule, scheduleStatus, normalizePlan, checkPlanFile, mergeImport, exportPlan, emptyPlan, TASK_TEMPLATE, DEMO_PARAMS, SCENARIOS, PLAN_KIND } from '../erp/js/lib/brunch.js';
+import { simulate, profitCurve, cleanParams, dailyFixedOf, dishCost, menuSummary, swapMarginOf, dayResult, entryProblem, testVerdict, posWindow, buildSchedule, scheduleStatus, normalizePlan, checkPlanFile, mergeImport, exportPlan, emptyPlan, TASK_TEMPLATE, DEMO_PARAMS, SCENARIOS, PLAN_KIND } from '../erp/js/lib/brunch.js';
 
 const P = { people: 10, ticket: 200, cost: 25, fee: 2, hours: 1, wage: 200, waste: 50, supplies: 30, util: 20, lost: 0, lost_cost: 20, days: 20 };
 const round = (n) => Math.round(n * 100) / 100;
@@ -100,8 +100,8 @@ test('brunch: 判斷——期間沒結束只收資料、缺紀錄或週末不夠
   const rules = { min_weekend_days: 2 };
   const period = { from: '2026-11-14', to: '2026-11-16', today: '2026-11-20' };
   const good = [
-    { date: '2026-11-14', new_count: 5, portions: 5 },
-    { date: '2026-11-15', new_count: 4, portions: 4 },
+    { date: '2026-11-14', new_count: 5, portions: 5, slowest_min: 10 },
+    { date: '2026-11-15', new_count: 4, portions: 4, slowest_min: 10 },
     { date: '2026-11-16', portions: 0 },
   ];
   assert.equal(testVerdict(good, ctx, rules, { ...period, today: '2026-11-15' }).verdict, 'collecting');
@@ -114,7 +114,7 @@ test('brunch: 判斷——期間沒結束只收資料、缺紀錄或週末不夠
   assert.equal(pass.verdict, 'pass');
   assert.equal(pass.weekdayProfit, 0);
   // 公休不算缺、不算進平均；同一天重複的紀錄只算一次
-  const closed = testVerdict([...good.slice(0, 2), { date: '2026-11-16', closed: true }, { date: '2026-11-15', new_count: 4, portions: 4 }], ctx, rules, period);
+  const closed = testVerdict([...good.slice(0, 2), { date: '2026-11-16', closed: true }, { date: '2026-11-15', new_count: 4, portions: 4, slowest_min: 10 }], ctx, rules, period);
   assert.equal(closed.verdict, 'pass');
   assert.equal(closed.count, 2);
 });
@@ -125,9 +125,9 @@ test('brunch: 判斷——多賺不到門檻、報廢率、出餐太慢、份數
   const period = { from: '2026-11-14', to: '2026-11-15', today: '2026-11-20' };
   const twoDays = (e) => [{ date: '2026-11-14', ...e }, { date: '2026-11-15', ...e }];
   // 只多賺幾塊錢：不過關（份數 2 → 停）
-  assert.equal(testVerdict(twoDays({ portions: 2, addon_count: 1, extra_hours: 0.45 }), ctx, rules, period).verdict, 'stop');
+  assert.equal(testVerdict(twoDays({ portions: 1, addon_count: 1, extra_hours: 0.45, slowest_min: 10 }), ctx, rules, period).verdict, 'stop');
   // 有賺但報廢太多 → 先調整
-  const waste = testVerdict(twoDays({ portions: 6, new_count: 6, waste: 200 }), ctx, rules, period);
+  const waste = testVerdict(twoDays({ portions: 6, new_count: 6, waste: 200, slowest_min: 10 }), ctx, rules, period);
   assert.equal(waste.verdict, 'fix');
   assert.match(waste.reason, /報廢率/);
   // 有賺但每天都出餐太慢 → 先調整
@@ -135,8 +135,8 @@ test('brunch: 判斷——多賺不到門檻、報廢率、出餐太慢、份數
   assert.equal(slow.verdict, 'fix');
   assert.match(slow.reason, /出餐/);
   // 虧：週末 4 份 → 換品項；超過 5 份 → 調價成本人力
-  assert.equal(testVerdict(twoDays({ portions: 4, swap_count: 4, extra_hours: 2 }), ctx, rules, period).verdict, 'adjust');
-  const fix = testVerdict(twoDays({ portions: 8, swap_count: 8, extra_hours: 2 }), ctx, rules, period);
+  assert.equal(testVerdict(twoDays({ portions: 4, swap_count: 4, extra_hours: 2, slowest_min: 10 }), ctx, rules, period).verdict, 'adjust');
+  const fix = testVerdict(twoDays({ portions: 8, swap_count: 8, extra_hours: 2, slowest_min: 10 }), ctx, rules, period);
   assert.equal(fix.verdict, 'fix');
   assert.match(fix.reason, /超過 5 份/);
 });
@@ -205,8 +205,8 @@ test('brunch: 企劃檔檢查——要有標記、版本不能比程式新、壞
   assert.match(checkPlanFile({ kind: PLAN_KIND, version: 2 }).errors.join(), /較新/);
   assert.ok(checkPlanFile([1, 2]).errors.length);
   const w = checkPlanFile({ kind: PLAN_KIND, menu: [{ name: 'a', price: -1 }], log: [{ date: '2026-11-14' }, { date: '2026-11-14' }, { date: 'x' }], window: { start: '9點' } }).warnings.join('｜');
-  assert.match(w, /1 道菜/);
-  assert.match(w, /1 筆每日紀錄/);
+  assert.match(w, /菜單第 1 道「a」：價格「-1」不對，會略過/);
+  assert.match(w, /每日紀錄第 3 筆：日期「x」不對，會略過/);
   assert.match(w, /重複的日期/);
   assert.match(w, /9點/);
 });
@@ -231,4 +231,38 @@ test('brunch: 匯出企劃不帶每日紀錄、備註、勾選；完整備份全
   assert.deepEqual([f.log.length, f.notes, f.safety_ok, f.schedule[0].done], [1, '內部', true, true]);
   // 匯出再讀回來一樣
   assert.deepEqual(normalizePlan(JSON.parse(JSON.stringify(f))), plan);
+});
+
+test('brunch: 紀錄不完整不判斷——有賣沒填出餐、份數對不上、有賣出但沒成本', () => {
+  assert.equal(entryProblem({ date: '2026-11-14', portions: 3, new_count: 3, slowest_min: 9 }), '');
+  assert.equal(entryProblem({ date: '2026-11-14', portions: 0 }), '');
+  assert.equal(entryProblem({ date: '2026-11-14', closed: true }), '');
+  assert.match(entryProblem({ date: '2026-11-14' }), /份數/);
+  assert.match(entryProblem({ date: '2026-11-14', portions: 3, new_count: 3 }), /最慢出餐/);
+  assert.match(entryProblem({ date: '2026-11-14', portions: 3, new_count: 1, slowest_min: 9 }), /不等於份數/);
+  const ctx = { dishMargin: 100, dishCost: 50, guestMargin: 150, swapMargin: 90, dailyFixed: 0, wage: 200 };
+  const period = { from: '2026-11-14', to: '2026-11-15', today: '2026-11-20' };
+  const ok = [{ date: '2026-11-14', portions: 5, new_count: 5, slowest_min: 9 }, { date: '2026-11-15', portions: 4, new_count: 4, slowest_min: 9 }];
+  assert.equal(testVerdict(ok, ctx, { min_weekend_days: 2 }, period).verdict, 'pass');
+  const bad = testVerdict([ok[0], { date: '2026-11-15', portions: 4, new_count: 4 }], ctx, { min_weekend_days: 2 }, period);
+  assert.equal(bad.verdict, 'pending');
+  assert.deepEqual(bad.incomplete.map((x) => x.date), ['2026-11-15']);
+  const unc = testVerdict(ok, { ...ctx, soldUncosted: ['測試優格'] }, { min_weekend_days: 2 }, period);
+  assert.equal(unc.verdict, 'pending');
+  assert.match(unc.reason, /測試優格/);
+});
+
+test('brunch: 匯入檢查跟讀取用同一套規則——說會略過的真的略過、說當成沒填的真的變空白', () => {
+  const data = { kind: PLAN_KIND, menu: [{ name: 'a', price: 0 }, { name: 'b', price: 100, cost: -3 }, { name: 'c', price: 120, cost: 30 }], schedule: [{ title: 't', date: '2026-02-30' }], log: [{ date: '2026-11-14', portions: -1, waste: 'x' }], swap_ref: { price: 100, cost: -1 } };
+  const w = checkPlanFile(data).warnings.join('｜');
+  const p = normalizePlan(data);
+  assert.match(w, /「a」：價格「0」不對，會略過/);
+  assert.match(w, /「b」：成本「-3」不對，當成沒填/);
+  assert.match(w, /進度表第 1 件「t」：日期「2026-02-30」不對/);
+  assert.match(w, /portions、waste 不是 0 以上的數字/);
+  assert.match(w, /換點對照/);
+  assert.deepEqual(p.menu.map((d) => [d.name, d.cost]), [['b', null], ['c', 30]]);
+  assert.equal(p.schedule.length, 0);
+  assert.deepEqual([p.log[0].portions, p.log[0].waste], [null, null]);
+  assert.equal(p.swap_ref.cost, null);
 });

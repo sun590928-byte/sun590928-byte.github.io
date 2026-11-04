@@ -45,7 +45,8 @@ export const SCENARIOS = [
 export const DEFAULT_RULES = { min_weekend_days: 8, min_profit: 100, waste_rate: 0.15, target_serve_min: 12, max_serve_min: 15, max_slow_share: 0.1, stop_portions: 3, adjust_portions: 5 };
 
 const n = (v, d = 0) => (v !== null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : d);
-const isDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v));
+// 日期要真的存在（2/30 這種會被 Date 自動進位，所以比對來回轉換後是否一樣）
+const isDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v)) && new Date(v + 'T00:00:00Z').toISOString().slice(0, 10) === v;
 const isTime = (v) => typeof v === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
 
 export function cleanParams(p = {}) {
@@ -79,6 +80,9 @@ export function simulate(params, { vatRate = 0.05 } = {}) {
     food: round2(food),
     fee: round2(fee),
     labor: round2(labor),
+    waste: round2(p.waste),
+    supplies: round2(p.supplies),
+    util: round2(p.util),
     wasteUtil: round2(p.waste + p.supplies + p.util),
     lostMargin: round2(lostMargin),
     profit: round2(profit),
@@ -206,6 +210,8 @@ export function testVerdict(entries = [], ctx = {}, rules = DEFAULT_RULES, { fro
   const until = to && today && today < to ? today : to;
   const missing = isDate(from) && isDate(until) && from <= until ? eachDay(from, until).filter((d) => !byDate.has(d) && d < (today || '9999')) : [];
   const slowDays = days.filter((d) => d.slow > r.max_serve_min).length;
+  const incomplete = [...byDate.values()].filter((e) => entryProblem(e)).map((e) => ({ date: e.date, problem: entryProblem(e) }));
+  const uncosted = (ctx.soldUncosted || []).filter(Boolean);
   const slowShare = days.length ? slowDays / days.length : 0;
   const wasteTotal = sum(days, 'waste');
   const foodTotal = sum(days, 'portions') * n(ctx.dishCost);
@@ -218,6 +224,8 @@ export function testVerdict(entries = [], ctx = {}, rules = DEFAULT_RULES, { fro
     verdict = 'collecting';
     reason = `測試進行中（到 ${to}），先看數字、不下結論${missing.length ? `；已經缺 ${missing.length} 天紀錄，沒賣也要記 0` : ''}。`;
   } else if (missing.length) reason = `還缺 ${missing.length} 天紀錄（${missing.slice(0, 3).join('、')}${missing.length > 3 ? '…' : ''}）：沒賣也要記 0，公休就勾公休。補齊才判斷。`;
+  else if (incomplete.length) reason = `有 ${incomplete.length} 天紀錄不完整（${incomplete.slice(0, 2).map((x) => ` ${x.problem}`).join('；')}${incomplete.length > 2 ? '…' : ''}）：補完才判斷。`;
+  else if (uncosted.length) reason = `有賣出但沒有成本的品項：${uncosted.join('、')}。補上成本前只看暫算，不下結論。`;
   else if (weekends.length < r.min_weekend_days) reason = `週末紀錄只有 ${weekends.length} 天，至少要 ${r.min_weekend_days} 天才判斷。`;
   else if (!safetyOk) reason = '食品業者登錄與產品責任險還沒確認，不能判過關。確認後勾「食品安全已確認」。';
   else if (avgProfit >= r.min_profit) {
@@ -248,6 +256,7 @@ export function testVerdict(entries = [], ctx = {}, rules = DEFAULT_RULES, { fro
     closedCount: all.length - days.length,
     weekendCount: weekends.length,
     missing,
+    incomplete,
     avgProfit: r2(avgProfit),
     weekendProfit: r2(avg(weekends, 'profit')),
     weekdayProfit: r2(avg(weekdays, 'profit')),
@@ -261,6 +270,22 @@ export function testVerdict(entries = [], ctx = {}, rules = DEFAULT_RULES, { fro
     doorGroups: days.reduce((t, d) => t + n(d.door_groups), 0),
     surveyYes: days.reduce((t, d) => t + n(d.survey_yes), 0),
   };
+}
+
+const blank = (v) => v === null || v === undefined || v === '';
+
+/**
+ * 一筆每日紀錄有沒有缺：有賣出（份數 > 0）就要填最慢出餐；新客＋加點＋換點要等於份數（一位新客記 1 份）。
+ * 回傳問題文字；沒問題回空字串。公休日不檢查。
+ */
+export function entryProblem(e) {
+  if (!e || e.closed) return '';
+  if (blank(e.portions)) return '沒填份數';
+  const portions = n(e.portions);
+  if (portions > 0 && blank(e.slowest_min)) return '有賣出但沒填最慢出餐';
+  const split = n(e.new_count) + n(e.addon_count) + n(e.swap_count);
+  if (split !== portions) return `新客＋加點＋換點（${split}）不等於份數（${portions}）`;
+  return '';
 }
 
 // ─────────── POS 銷售明細對照
@@ -393,6 +418,25 @@ export function emptyPlan() {
   };
 }
 
+// 匯入與讀取共用的規則：會被丟掉的（drop）與會被改成空白的（fix）
+const badNumber = (v) => !blank(v) && !(Number.isFinite(Number(v)) && Number(v) >= 0);
+function menuIssue(d) {
+  if (!d || typeof d.name !== 'string' || !d.name.trim()) return { drop: '缺名稱' };
+  if (!(Number(d.price) > 0)) return { drop: `價格「${blank(d.price) ? '空白' : d.price}」不對` };
+  if (badNumber(d.cost)) return { fix: `成本「${d.cost}」不對，當成沒填` };
+  return {};
+}
+function taskIssue(x) {
+  if (!x || typeof x.title !== 'string' || !x.title.trim()) return { drop: '缺事項名稱' };
+  if (!isDate(x.date)) return { drop: `日期「${x.date ?? '空白'}」不對` };
+  return {};
+}
+function logIssue(e) {
+  if (!e || !isDate(e.date)) return { drop: `日期「${e?.date ?? '空白'}」不對` };
+  const bad = LOG_NUMS.filter((k) => badNumber(e[k]));
+  return bad.length ? { fix: `${bad.join('、')} 不是 0 以上的數字，當成沒填` } : {};
+}
+
 const LOG_NUMS = ['portions', 'new_count', 'addon_count', 'swap_count', 'swap_diff', 'waste', 'extra_hours', 'slowest_min', 'door_groups', 'survey_yes'];
 const nonNeg = (v) => (v === null || v === undefined || v === '' ? null : Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : null);
 const uniqueIds = (rows, prefix) => {
@@ -427,13 +471,13 @@ export function normalizePlan(raw) {
     params: cleanParams({ ...base.params, ...(raw.params || {}) }),
     menu: uniqueIds(
       arr(raw.menu)
-        .filter((d) => d && typeof d.name === 'string' && d.name.trim())
+        .filter((d) => !menuIssue(d).drop)
         .map((d) => ({ id: d.id, name: d.name.trim(), price: nonNeg(d.price) ?? 0, cost: nonNeg(d.cost), product_id: typeof d.product_id === 'string' ? d.product_id : '', allergens: String(d.allergens || ''), method: String(d.method || ''), phase: d.phase === 2 ? 2 : 1, active: d.active !== false })),
       'd',
     ),
     schedule: uniqueIds(
       arr(raw.schedule)
-        .filter((t) => t && typeof t.title === 'string' && t.title.trim() && isDate(t.date))
+        .filter((x) => !taskIssue(x).drop)
         .map((t) => ({ id: t.id, date: t.date, owner: String(t.owner || ''), title: t.title.trim(), done_when: String(t.done_when || ''), done: !!t.done, note: String(t.note || '') })),
       't',
     ),
@@ -458,17 +502,20 @@ export function checkPlanFile(data) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return { errors: ['檔案內容不是企劃'], warnings };
   if (data.kind !== PLAN_KIND) errors.push('不是早午餐企劃檔（缺少企劃標記）');
   if (n(data.version, 1) > PLAN_VERSION) errors.push(`企劃檔是較新的版本（${data.version}），請先更新 ERP`);
-  const count = (list, ok) => (Array.isArray(list) ? list.filter((x) => !ok(x)).length : 0);
-  const badMenu = count(data.menu, (d) => d && typeof d.name === 'string' && d.name.trim() && nonNeg(d.price) !== null);
-  const badTasks = count(data.schedule, (t) => t && typeof t.title === 'string' && t.title.trim() && isDate(t.date));
-  const badLog = count(data.log, (e) => e && isDate(e.date));
-  if (badMenu) warnings.push(`${badMenu} 道菜缺名稱或價格不對，會略過`);
-  if (badTasks) warnings.push(`${badTasks} 件事缺標題或日期不對，會略過`);
-  if (badLog) warnings.push(`${badLog} 筆每日紀錄日期不對，會略過`);
-  const dates = Array.isArray(data.log) ? data.log.map((e) => e && e.date).filter(isDate) : [];
+  const list = (v) => (Array.isArray(v) ? v : []);
+  const report = (rows, issue, label) =>
+    rows.forEach((x, i) => {
+      const r = issue(x);
+      if (r.drop) warnings.push(`${label(x, i)}：${r.drop}，會略過`);
+      else if (r.fix) warnings.push(`${label(x, i)}：${r.fix}`);
+    });
+  report(list(data.menu), menuIssue, (d, i) => `菜單第 ${i + 1} 道${d?.name ? `「${d.name}」` : ''}`);
+  report(list(data.schedule), taskIssue, (x, i) => `進度表第 ${i + 1} 件${x?.title ? `「${String(x.title).slice(0, 12)}」` : ''}`);
+  report(list(data.log), logIssue, (e, i) => `每日紀錄第 ${i + 1} 筆${isDate(e?.date) ? `（${e.date}）` : ''}`);
+  const dates = list(data.log).map((e) => e && e.date).filter(isDate);
   if (new Set(dates).size < dates.length) warnings.push('每日紀錄有重複的日期，同一天只留最後一筆');
   for (const k of ['start', 'end', 'last_order']) if (data.window?.[k] && !isTime(data.window[k])) warnings.push(`時段「${data.window[k]}」格式不對，改用預設`);
-  return { errors, warnings };
+  if (data.swap_ref && (badNumber(data.swap_ref.price) || badNumber(data.swap_ref.cost))) warnings.push('換點對照的價格或成本不對，當成沒填');  return { errors, warnings };
 }
 
 /**
