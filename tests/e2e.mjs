@@ -432,6 +432,68 @@ try {
   await shot('brunch-mobile', false);
   await page.setViewportSize({ width: 1360, height: 900 });
 
+  // 濾掛與禮盒企劃：示範數字 → 匯入企劃檔 → 單包毛利、缺豆價提示、改共用成本、禮盒貢獻、進度勾選與存檔衝突、批次效期與留樣、POS 銷量對照、新增批次、手機寬度
+  await go('dripbag');
+  assert((await page.textContent('#view')).includes('畫面上是示範數字'), '濾掛企劃：第一次使用要說明是示範數字');
+  {
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="importPlan"]')]);
+    await chooser.setFiles(FX('synthetic-dripbag-plan.json'));
+    await page.waitForSelector('dialog.modal');
+    assert((await page.textContent('dialog.modal')).includes('批次與留樣紀錄是現場記的'), '濾掛匯入：要說明批次紀錄不會被刪');
+    await page.click('dialog.modal .modal-foot [data-i="1"]');
+    await page.waitForFunction(() => document.querySelector('#view')?.textContent.includes('示範店濾掛企劃') && !document.querySelector('#view').textContent.includes('畫面上是示範數字'));
+  }
+  {
+    const t = await page.textContent('#view');
+    assert(t.includes('80%') && t.includes('示範濾掛乙 還沒有熟豆成本'), '濾掛單包：毛利率與缺豆價提示');
+    await page.fill('[data-act="param"][data-k="loss"]', '20');
+    await page.dispatchEvent('[data-act="param"][data-k="loss"]', 'change');
+    await page.waitForFunction(() => document.querySelector('#view').textContent.includes('75%'));
+  }
+  await shot('dripbag-cost');
+  await go('dripbag?tab=gift');
+  assert((await page.textContent('#view')).includes('示範禮盒'), '濾掛禮盒：要列出禮盒');
+  await shot('dripbag-gift');
+  await go('dripbag?tab=plan');
+  await page.click('[data-act="toggleTask"][data-id="t1"]');
+  await page.waitForFunction(() => document.querySelector('#view .stat-value')?.textContent.includes('1／3'));
+  await page.evaluate(async () => {
+    const { store } = await import('/erp/js/store.js');
+    const row = (await store.all('settings')).find((r) => r.id === 'dripbag_plan');
+    await store.put('settings', { id: 'dripbag_plan', value: { ...row.value, name: '別台裝置改的濾掛企劃', updated_at: new Date(Date.now() + 1000).toISOString() } });
+  });
+  await page.click('[data-act="toggleTask"][data-id="t2"]');
+  await page.waitForFunction(() => document.querySelector('#view').textContent.includes('別台裝置改的濾掛企劃'));
+  assert(!(await page.isChecked('[data-act="toggleTask"][data-id="t2"]')), '濾掛存檔衝突：不能覆蓋別台裝置的修改');
+  await shot('dripbag-plan');
+  await go('dripbag?tab=batch');
+  {
+    const t = await page.textContent('#view');
+    assert(t.includes('260825-1') && t.includes('已過期') && t.includes('逾期沒記'), '濾掛批次：過期與留樣逾期要標出來');
+    assert(t.includes('還不能延長'), '濾掛效期：沒有第 30 天合格不能延長');
+    await page.click('[data-act="addBatch"]');
+    await page.waitForSelector('dialog.modal');
+    await page.fill('dialog.modal [name=packs]', '30');
+    await page.click('dialog.modal .modal-foot [data-i="1"]');
+    await page.waitForFunction(() => document.querySelectorAll('#view table.grid tbody tr').length === 2);
+  }
+  await shot('dripbag-batch');
+  await go('dripbag?tab=sales');
+  {
+    const t = await page.textContent('#view');
+    assert(/開賣以來[^包]*?[1-9][\d,]* 包/.test(t), '濾掛銷售對照：要從 POS 帶出包數');
+    assert(['達標', '要調整', '不擴大'].some((w) => t.includes(w)), '濾掛銷售對照：滿 14 天要有判斷');
+  }
+  await shot('dripbag-sales');
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const tab of ['cost', 'gift', 'plan', 'batch', 'sales']) {
+    await go(`dripbag?tab=${tab}`);
+    const ov = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    assert(ov <= 1, `濾掛企劃手機版（${tab}）水平捲動 ${ov}px`);
+  }
+  await shot('dripbag-mobile', false);
+  await page.setViewportSize({ width: 1360, height: 900 });
+
   await go('bank');
   await go('accounts');
   await shot('accounts', false);

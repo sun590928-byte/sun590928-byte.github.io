@@ -21,6 +21,7 @@ export const ROUTES = [
   { group: '營運分析', path: 'customers', title: '會員消費輪廓', load: () => import('./views/customers.js') },
   { group: '營運分析', path: 'campaigns', title: '行銷活動成效', load: () => import('./views/campaigns.js') },
   { group: '營運分析', path: 'brunch', title: '早午餐企劃', load: () => import('./views/brunch.js') },
+  { group: '營運分析', path: 'dripbag', title: '濾掛與禮盒企劃', load: () => import('./views/dripbag.js') },
   { group: '營運分析', path: 'pnl', title: '營運損益', load: () => import('./views/pnl.js') },
   { group: '會計帳務', path: 'accounts', title: '會計項目', load: () => import('./views/accounts.js') },
   { group: '會計帳務', path: 'journal', title: '日記簿', load: () => import('./views/journal.js') },

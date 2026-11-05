@@ -545,3 +545,10 @@ table.grid.bp-log tr.bp-miss > * { background: color-mix(in srgb, var(--warn) 9%
   table.grid.bp-log td.bp-act::before { content: none; }
   table.grid.bp-log td.bp-act .btn { width: 100%; justify-content: center; padding: 8px; }
 }
+/* 濾掛與禮盒企劃 */
+.db-gifts { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin-bottom: 12px; }
+.db-gifts > .card { margin: 0; }
+.db-checks { display: grid; gap: 2px; }
+.db-check { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 12px; padding: 6px 0; border-bottom: 1px dashed var(--line); font-size: 13.5px; }
+.db-check > span:last-child { display: flex; align-items: center; gap: 8px; }
+.db-check.late > span:first-child { color: var(--bad-text); }

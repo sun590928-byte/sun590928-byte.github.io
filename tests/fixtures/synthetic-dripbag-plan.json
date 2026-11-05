@@ -1,0 +1,27 @@
+{
+  "kind": "wuyue-erp-dripbag-plan",
+  "version": 1,
+  "name": "示範店濾掛企劃",
+  "costs": { "grams": 10, "grind_loss": 0, "filter": 2, "outer": 2, "label": 1, "wage": 200, "packs_per_hour": 40, "loss": 0, "fee": 0 },
+  "month": { "weekday_packs": 2, "weekend_packs": 9, "days": 28, "five_share": 50, "bag_cost": 10, "first_order": 1000 },
+  "skus": [
+    { "id": "sa", "name": "示範濾掛甲", "price": 105, "bean_kg": 1000, "mix": 50 },
+    { "id": "sb", "name": "示範濾掛乙", "price": 210, "bean_kg": null, "mix": 50 }
+  ],
+  "gifts": [
+    { "id": "ga", "name": "示範禮盒", "price": 525, "minutes": 6, "items": [{ "sku_id": "sa", "qty": 3 }], "extras": [{ "name": "袋", "cost": 30 }] }
+  ],
+  "schedule": [
+    { "id": "t1", "date": "2026-08-20", "owner": "老闆", "title": "示範：業者登錄", "done_when": "送出" },
+    { "id": "t2", "date": "2026-08-25", "owner": "店長", "title": "示範：試製批", "done_when": "留樣第 0 天已記" },
+    { "id": "t3", "date": "2026-09-01", "owner": "員工", "title": "示範：開賣", "done_when": "第一包賣出" }
+  ],
+  "trial_date": "2026-08-25",
+  "launch_date": "2026-09-01",
+  "shelf": { "days": 14, "extended_days": 30, "spec_ok": false },
+  "batches": [
+    { "id": "b1", "code": "260825-1", "date": "2026-08-25", "sku_id": "sa", "packs": 20, "purpose": "trial", "shelf_days": 14, "retained": 3, "qc": "pass", "checks": [{ "day": 0, "date": "2026-08-25", "result": "pass" }] }
+  ],
+  "keywords": "美式",
+  "rules": { "review_days": 14, "target_per_day": 5, "stop_per_day": 2, "soon_days": 3 }
+}
