@@ -380,7 +380,7 @@ export function normalizePlan(raw) {
   if (!raw || typeof raw !== 'object') return base;
   const rules = {};
   for (const [k, v] of Object.entries(DEFAULT_RULES)) rules[k] = nonNeg(raw.rules?.[k]) ?? v;
-  if (!(rules.review_days >= 1)) rules.review_days = DEFAULT_RULES.review_days;
+  rules.review_days = rules.review_days >= 1 ? Math.round(rules.review_days) : DEFAULT_RULES.review_days;
   const skus = uniqueIds(
     arr(raw.skus)
       .filter((s) => !skuIssue(s).drop)
@@ -410,7 +410,7 @@ export function normalizePlan(raw) {
     if (batchIssue(b).drop) continue;
     const row = {
       id: typeof b.id === 'string' && b.id ? b.id : '',
-      code: str(b.code, 30) || '',
+      code: str(b.code, 30) || nextBatchCode([...byCode.values()], b.date),
       date: b.date,
       sku_id: typeof b.sku_id === 'string' ? b.sku_id : '',
       packs: nonNeg(b.packs) ?? 0,
@@ -423,7 +423,7 @@ export function normalizePlan(raw) {
       checks: cleanChecks(b.checks),
       note: str(b.note),
     };
-    byCode.set(row.code || `#${byCode.size}`, row);
+    byCode.set(row.code, row);
   }
   const shelf = raw.shelf || {};
   return {
@@ -441,7 +441,7 @@ export function normalizePlan(raw) {
     ),
     trial_date: isDate(raw.trial_date) ? raw.trial_date : '',
     launch_date: isDate(raw.launch_date) ? raw.launch_date : '',
-    shelf: { days: nonNeg(shelf.days) || base.shelf.days, extended_days: nonNeg(shelf.extended_days) || base.shelf.extended_days, spec_ok: !!shelf.spec_ok },
+    shelf: { days: Math.round(nonNeg(shelf.days) || base.shelf.days), extended_days: Math.round(nonNeg(shelf.extended_days) || base.shelf.extended_days), spec_ok: !!shelf.spec_ok },
     batches: uniqueIds([...byCode.values()], 'b').sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
     keywords: typeof raw.keywords === 'string' ? raw.keywords : base.keywords,
     rules,

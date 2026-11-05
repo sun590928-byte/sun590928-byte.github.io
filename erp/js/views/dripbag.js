@@ -144,7 +144,7 @@ export async function render(root, ctx) {
                 return h`<tr class="${s.active === false ? 'muted' : ''}">
                   <th scope="row" style="text-align:left">${s.name}${s.active === false ? h` ${badge('停售', 'low')}` : ''}${s.weekly_limit ? h`<div class="muted" style="font-size:12px">限量每週 ${fmt(s.weekly_limit)} 包</div>` : ''}</th>
                   <td class="num">${cash(s.price)}</td>
-                  <td class="num">${linked !== null ? h`${cash(linked)}<div class="muted" style="font-size:11.5px">進貨平均</div>` : s.bean_kg !== null ? h`${cash(s.bean_kg)}<div class="muted" style="font-size:11.5px">手填</div>` : status('warn', '沒填')}</td>
+                  <td class="num">${linked !== null ? h`${cash(linked)}<div class="muted" style="font-size:11.5px">進貨平均</div>` : s.bean_kg !== null ? h`${cash(s.bean_kg)}<div class="muted" style="font-size:11.5px">${s.item_id ? '連了原物料但還沒有進貨價，先用手填' : '手填'}</div>` : status('warn', s.item_id ? '原物料還沒有進貨價' : '沒填')}</td>
                   <td class="num">${c ? cash1(c.bean) : '—'}</td><td class="num">${c ? cash1(c.pack) : '—'}</td><td class="num">${c ? cash1(c.labor) : '—'}</td><td class="num">${c ? cash1(c.loss) : '—'}</td><td class="num">${c ? cash1(c.fee) : '—'}</td>
                   <td class="num"><b>${c ? cash1(c.total) : '—'}</b></td>
                   <td class="num">${r.rate === null ? '—' : h`<b class="${r.rate >= 0.5 ? 'bp-pos' : r.rate < 0.3 ? 'bp-neg' : ''}">${pct(r.rate, 0)}</b><div class="muted" style="font-size:11.5px">每包 ${cash1(r.margin)}</div>`}</td>
@@ -440,7 +440,7 @@ export async function render(root, ctx) {
                   <td>${md(b.date)}</td>
                   <td class="num">${fmt(b.packs)}${b.retained ? h`<div class="muted" style="font-size:11.5px">留樣 ${fmt(b.retained)}</div>` : ''}</td>
                   <td>${md(st.expiry)}<div class="muted" style="font-size:11.5px">＋${fmt(b.shelf_days)} 天</div></td>
-                  <td>${status(tone[st.kind], label(st))}</td>
+                  <td>${b.purpose === 'trial' ? status('na', `不販售 · ${label(st)}`) : status(tone[st.kind], label(st))}</td>
                   <td>${b.qc === 'pass' ? status('good', '合格') : b.qc === 'fail' ? status('bad', '不合格') : status('na', '沒記')}</td>
                   <td style="white-space:nowrap"><button class="btn sm" data-act="editBatch" data-id="${b.id}">修改</button></td>
                 </tr>`;
@@ -572,8 +572,12 @@ export async function render(root, ctx) {
     },
     param: (el) => {
       const v = num(el.value);
-      if (v === null || !(v >= 0)) return toast('需為 0 以上的數字', 'error');
       const g = el.dataset.group;
+      const fd = (g === 'costs' ? COST_FIELDS : MONTH_FIELDS).find((x) => x.key === el.dataset.k);
+      if (v === null || !(v >= 0) || !fd || v > fd.max) {
+        el.value = plan[g][el.dataset.k];
+        return toast(`需為 0 到 ${fmt(fd?.max ?? 0)} 之間的數字`, 'error');
+      }
       return setAndSave(() => (plan[g] = { ...plan[g], [el.dataset.k]: v }), '');
     },
     addSku: () => editSku(null),
@@ -608,8 +612,11 @@ export async function render(root, ctx) {
     keywords: (el) => setAndSave(() => (plan.keywords = el.value.trim()), ''),
     rule: (el) => {
       const v = num(el.value);
-      if (v === null || !(v >= 0) || (el.dataset.k === 'review_days' && !(v >= 1))) return toast('數字不對', 'error');
-      return setAndSave(() => (plan.rules = { ...plan.rules, [el.dataset.k]: v }), '');
+      if (v === null || !(v >= 0) || (el.dataset.k === 'review_days' && !(v >= 1))) {
+        el.value = plan.rules[el.dataset.k];
+        return toast('數字不對', 'error');
+      }
+      return setAndSave(() => (plan.rules = { ...plan.rules, [el.dataset.k]: el.dataset.k === 'review_days' ? Math.round(v) : v }), '');
     },
     exportPlan: () => download(`${safeName(plan.name)}_企劃_${day}.json`, JSON.stringify(exportPlan(plan), null, 2), 'application/json'),
     exportFull: () => download(`${safeName(plan.name)}_完整備份_${day}.json`, JSON.stringify(exportPlan(plan, { full: true }), null, 2), 'application/json'),

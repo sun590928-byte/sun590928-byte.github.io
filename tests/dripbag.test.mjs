@@ -168,6 +168,7 @@ test('dripbag: 讀取時丟掉壞資料、補 ID、同批號留最後一筆', ()
   assert.equal(p.gifts[0].extras[0].cost, 0);
   assert.equal(p.schedule.length, 1);
   assert.equal(p.batches.length, 1);
+  assert.equal(normalizePlan({ batches: [{ date: '2026-02-01', packs: 1, shelf_days: 1 }, { date: '2026-02-01', packs: 2, shelf_days: 1 }] }).batches.map((b) => b.code).join(), '260201-1,260201-2'); // 沒批號的自動補，不會互相蓋掉
   assert.equal(p.batches[0].packs, 20);
   assert.deepEqual(p.batches[0].checks, [{ day: 14, date: '', result: '', note: '' }]);
   assert.equal(p.trial_date, '');
