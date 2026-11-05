@@ -5,7 +5,7 @@ import { h, raw, mount, bindActions, modal, confirmBox, toast, stat, status, bad
 import { store } from '../store.js';
 import { getSettings, revenueLines } from '../state.js';
 import { averageCosts } from '../lib/inventory.js';
-import { PLAN_ID, COST_FIELDS, MONTH_FIELDS, OWNERS, BLOCKERS, CHECK_DAYS, skuMargin, monthPlan, giftCost, batchStatus, sampleChecks, canExtend, shelfDays, checkEntryProblem, nextBatchCode, posDrip, salesVerdict, buildSchedule, scheduleStatus, normalizePlan, checkPlanFile, mergeImport, exportPlan, beanKgFrom } from '../lib/dripbag.js';
+import { PLAN_ID, COST_FIELDS, MONTH_FIELDS, OWNERS, BLOCKERS, CHECK_DAYS, skuMargin, monthPlan, giftCost, batchStatus, sampleChecks, canExtend, shelfDays, checkEntryProblem, missingFields, canonCode, CODE_MAX, nextBatchCode, posDrip, salesVerdict, buildSchedule, scheduleStatus, normalizePlan, checkPlanFile, mergeImport, exportPlan, beanKgFrom } from '../lib/dripbag.js';
 import { today, weekdayIndex, WEEKDAYS, addDays, daysBetween, eachDay } from '../lib/dates.js';
 import { uid } from '../lib/text.js';
 
@@ -91,6 +91,11 @@ export async function render(root, ctx) {
 
   // 改資料一律走這裡：先記下改之前的樣子，存檔失敗就退回
   const setAndSave = async (fn, msg) => {
+    if (saving) {
+      toast('還在存上一個修改，等一下再改一次', 'error');
+      draw(); // 把輸入框還原成已存的內容
+      return;
+    }
     const before = structuredClone(plan);
     fn();
     await save(msg, before);
@@ -140,8 +145,9 @@ export async function render(root, ctx) {
   function drawCost(body) {
     const rows = plan.skus.map((s) => ({ s, r: skuMargin(s, plan.costs, { vatRate, beanKg: beanKgOf(s) }), linked: linkedKg(s) }));
     const mp = monthPlan(plan.skus, plan.costs, plan.month, { vatRate, beanKgOf });
-    const noSpeed = !(plan.costs.packs_per_hour > 0);
-    const noBean = noSpeed ? [] : rows.filter((x) => x.r.cost === null).map((x) => x.s.name);
+    const costGap = missingFields(COST_FIELDS, plan.costs);
+    const noSpeed = !costGap.length && !(plan.costs.packs_per_hour > 0);
+    const noBean = noSpeed || costGap.length ? [] : rows.filter((x) => x.r.cost === null).map((x) => x.s.name);
     mount(
       body,
       h`<div class="card">
@@ -163,6 +169,7 @@ export async function render(root, ctx) {
                   <td class="db-act"><button class="btn sm" data-act="editSku" data-id="${s.id}" aria-label="修改 ${s.name}">修改</button></td>
                 </tr>`;
               })}</tbody></table></div>
+              ${costGap.length ? h`<div class="callout warn" style="margin-top:10px"><p>下面「每包共用的成本」還沒填：${costGap.join('、')}。填好以前所有品項都不算成本和毛利。</p></div>` : ''}
               ${noSpeed ? h`<div class="callout warn" style="margin-top:10px"><p>「一小時包幾包」要大於 0 才算得出人工，現在所有品項都不算成本和毛利。</p></div>` : ''}
               ${noBean.length ? h`<div class="callout warn" style="margin-top:10px"><p>${noBean.join('、')} 還沒有熟豆成本，不算毛利。豆子成本不要從售價倒推：連到「原物料」用進貨平均價，或手填烘豆商報價（未稅）。</p></div>` : ''}`
             : emptyState('還沒有品項', '新增要賣的濾掛：名稱、含稅售價、熟豆每公斤成本（或連到原物料用進貨平均價）、預估銷售佔比。也可以按上方「匯入企劃檔」一次帶入。', h`<button class="btn primary" data-act="addSku">＋ 新增品項</button>`)
@@ -184,6 +191,7 @@ export async function render(root, ctx) {
             ${stat('回本', mp.breakeven === null ? '—' : `${fmt(mp.breakeven)} 包`, `第一次購買 ${cash(plan.month.first_order)}`)}
           </div>
           ${mp.missing.length ? h`<p class="muted" style="font-size:12.5px">${mp.missing.join('、')} 沒有成本，毛利和回本先不算。</p>` : ''}
+          ${mp.monthMissing.length ? h`<p class="muted" style="font-size:12.5px">還沒填：${mp.monthMissing.join('、')}，毛利和回本先不算。</p>` : ''}
           ${mp.limited.length ? h`<p class="muted" style="font-size:12.5px">${mp.limited.join('、')} 有限量，但月試算照銷售佔比算、沒有套用限量；要的話把它的佔比調低。</p>` : ''}
           <p class="muted" style="font-size:12.5px;margin:8px 0 0">週末天數＝營業天數 × 2/7；銷售佔比照上表。沒有算廣告、寄送和滯銷報廢。</p>
         </div>
@@ -303,7 +311,7 @@ export async function render(root, ctx) {
               extras.push({ name: m[1].trim(), cost: Number(m[2]) });
             }
             const its = [...dlg.querySelectorAll('[data-sku]')].map((el) => ({ sku_id: el.dataset.sku, qty: num(el.value) ?? 0 }));
-            if (its.some((it) => !(it.qty >= 0))) return fail('包數需為 0 以上');
+            if (its.some((it) => !(it.qty >= 0) || !Number.isInteger(it.qty))) return fail('包數需為 0 以上的整數');
             const v = { ...x, name: gv('name'), price: num(gv('price')), minutes: num(gv('minutes')) ?? 0, items: its.filter((it) => it.qty > 0), extras, note: gv('note') };
             if (!v.name) return fail('請輸入名稱');
             if (!(v.price > 0)) return fail('請輸入售價');
@@ -486,7 +494,7 @@ export async function render(root, ctx) {
       title: b ? `修改批次 ${x.code}` : '新增批次',
       wide: true,
       body: h`<div class="form-grid">
-        <label class="field"><span>批號</span><input type="text" name="code" value="${x.code}"></label>
+        <label class="field"><span>批號（最多 ${CODE_MAX} 字）</span><input type="text" name="code" maxlength="${CODE_MAX}" value="${x.code}"></label>
         <label class="field"><span>製造日</span><input type="date" name="date" value="${x.date}"></label>
         <label class="field"><span>品項</span><select name="sku_id">${options(plan.skus.map((s) => [s.id, s.name]), x.sku_id)}</select></label>
         <label class="field"><span>用途</span><select name="purpose">${options(Object.entries(PURPOSE), x.purpose)}</select></label>
@@ -508,13 +516,16 @@ export async function render(root, ctx) {
             const g = (k) => dlg.querySelector(`[name=${k}]`).value.trim();
             const v = { ...x, code: g('code'), date: g('date'), sku_id: g('sku_id'), purpose: g('purpose'), packs: num(g('packs')), retained: num(g('retained')) ?? 0, shelf_days: num(g('shelf_days')), qc: g('qc'), grind: g('grind'), seal: g('seal'), note: g('note') };
             if (!/^\d{4}-\d{2}-\d{2}$/.test(v.date)) return fail('請選製造日');
-            if (!(v.packs > 0)) return fail('請輸入包數');
+            if (!(v.packs > 0) || !Number.isInteger(v.packs)) return fail('包數要是 1 以上的整數');
+            if (!Number.isInteger(v.retained)) return fail('留樣要是整數');
+            if (v.code.length > CODE_MAX) return fail(`批號最多 ${CODE_MAX} 字`);
+            v.code = canonCode(v.code);
             if (!(v.shelf_days > 0)) return fail('請輸入有效天數');
             if (v.shelf_days > maxDays) return fail(`有效天數最多 ${maxDays} 天；要更長得先在「有效日期」照條件延長`);
             v.shelf_days = Math.round(v.shelf_days);
             if (!(v.retained >= 0) || v.retained > v.packs) return fail('留樣需在 0 到包數之間');
             if (!v.code) v.code = nextBatchCode(plan.batches, v.date);
-            if (plan.batches.some((y) => y.code === v.code && y.id !== x.id)) return fail(`批號「${v.code}」已經有了`);
+            if (plan.batches.some((y) => canonCode(y.code) === v.code && y.id !== x.id)) return fail(`批號「${v.code}」已經有了`);
             return { ...v, id: v.id || uid('b_') };
           },
         },

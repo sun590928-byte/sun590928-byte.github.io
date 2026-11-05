@@ -100,17 +100,23 @@ test('dripbag: 留樣檢查第 0／14／30 天、逾期；延長要第 30 天合
   const blankRec = sampleChecks([{ ...b, checks: [{ day: 0, date: '2026-01-01', result: '' }] }], '2026-01-20');
   assert.equal(blankRec[0].rec, null);
   const plan = { batches: [b], shelf: { spec_ok: true, days: 14, extended_days: 30, extended: true } };
+  b.qc = 'pass';
+  b.checks.push({ day: 14, date: '2026-01-15', result: 'pass' });
   assert.equal(canExtend(plan).ok, false);
   assert.equal(shelfDays(plan), 14);
   b.checks.push({ day: 30, date: '2026-01-20', result: 'pass' }); // 提前填的第 30 天不算
   assert.equal(canExtend(plan).ok, false);
-  b.checks[1].date = '2026-01-31';
+  b.checks[2].date = '2026-01-31';
   assert.equal(canExtend(plan, '2026-01-30').ok, false); // 檢查日在未來
   assert.equal(canExtend(plan, '2026-02-01').ok, true);
   assert.equal(shelfDays(plan, '2026-02-01'), 30);
   assert.equal(canExtend({ ...plan, shelf: { spec_ok: false } }).ok, false);
   assert.equal(canExtend({ ...plan, batches: [{ ...b, retained: 0 }] }).ok, false);
-  b.checks[1].result = 'fail';
+  assert.equal(canExtend({ ...plan, batches: [{ ...b, qc: 'fail' }] }).ok, false); // 封口抽驗不合格的批次不能當證據
+  assert.equal(canExtend({ ...plan, batches: [{ ...b, qc: '' }] }).ok, false);
+  assert.equal(canExtend({ ...plan, batches: [{ ...b, checks: b.checks.filter((c) => c.day !== 14) }] }).ok, false); // 第 14 天沒記
+  assert.equal(canExtend({ ...plan, batches: [{ ...b, checks: b.checks.map((c) => (c.day === 14 ? { ...c, result: 'fail' } : c)) }] }).ok, false); // 第 14 天不合格
+  b.checks[2].result = 'fail';
   assert.equal(canExtend(plan).ok, false);
   // 記錄留樣：結果要選、不能早於應檢日、不能是未來
   assert.ok(checkEntryProblem(b, { day: 14, date: '2026-01-15', result: '' }, '2026-02-01'));
@@ -188,7 +194,10 @@ test('dripbag: 讀取時丟掉壞資料、補 ID、同批號留最後一筆', ()
     trial_date: '2026-13-01',
   });
   assert.equal(p.name, '測試');
-  assert.equal(p.costs.grams, cleanCosts({}).grams);
+  assert.equal(p.costs.grams, null); // 有這組但值不對：留空，不補示範數字
+  assert.equal(p.costs.wage, null);
+  assert.equal(normalizePlan({}).costs.grams, emptyPlan().costs.grams); // 整組沒有（第一次）才用示範數字
+  assert.equal(packCost(A, p.costs), null);
   assert.equal(p.costs.fee, 10);
   assert.deepEqual(p.skus.map((s) => s.name), ['甲', '壞豆價']);
   assert.equal(p.skus[1].bean_kg, null);
@@ -196,7 +205,9 @@ test('dripbag: 讀取時丟掉壞資料、補 ID、同批號留最後一筆', ()
   assert.equal(p.gifts[0].items[0].qty, 0);
   assert.equal(p.gifts[0].extras[0].cost, 0);
   assert.equal(p.schedule.length, 1);
-  assert.equal(p.batches.length, 1);
+  assert.equal(p.batches.length, 2); // 同批號不蓋掉，後面那筆改號保留
+  assert.deepEqual(p.batches.map((x) => x.code).sort(), ['K', 'K#2']);
+  p.batches = p.batches.filter((x) => x.code === 'K#2');
   assert.equal(normalizePlan({ batches: [{ date: '2026-02-01', packs: 1, shelf_days: 1 }, { date: '2026-02-01', packs: 2, shelf_days: 1 }] }).batches.map((b) => b.code).join(), '260201-1,260201-2'); // 沒批號的自動補，不會互相蓋掉
   assert.equal(p.batches[0].packs, 20);
   assert.deepEqual(p.batches[0].checks, [{ day: 0, date: '2026-02-02', result: 'pass', note: '' }]);
@@ -212,7 +223,12 @@ test('dripbag: 匯入檢查要企劃標記、版本不能比程式新，列出�
   const c = checkPlanFile({ kind: PLAN_KIND, version: 1, skus: [A, { name: '壞', price: 0 }], gifts: [{ name: '禮', price: 10, items: [{ sku_id: 'nope', qty: 1 }] }], batches: [{ code: 'Z', date: '2026-02-30', packs: 1, shelf_days: 1 }], launch_date: '2026/01/01' });
   assert.equal(c.errors.length, 0);
   assert.ok(c.warnings.some((w) => w.includes('nope')));
-  assert.ok(c.warnings.some((w) => w.includes('會用示範數字'))); // 沒填共用成本要講
+  assert.ok(c.warnings.some((w) => w.includes('會留空'))); // 沒填共用成本要講
+  const long = 'X'.repeat(30);
+  assert.ok(checkPlanFile({ kind: PLAN_KIND, version: 1, batches: [{ code: long + 'A', date: '2026-02-01', packs: 1, shelf_days: 1 }, { code: long + 'B', date: '2026-02-02', packs: 1, shelf_days: 1 }] }).errors.some((e) => e.includes('批號重複'))); // 截成 30 字後才一樣也算重複
+  const gaps = monthPlan([A], C, { weekday_packs: 1, days: 7 });
+  assert.equal(gaps.profit, null);
+  assert.ok(gaps.monthMissing.length > 0);
   assert.ok(c.warnings.some((w) => w.includes('「壞」')));
   // 批號重複不能匯入
   const d = checkPlanFile({ kind: PLAN_KIND, version: 1, batches: [{ code: 'D', date: '2026-02-01', packs: 1, shelf_days: 1 }, { code: 'D', date: '2026-02-02', packs: 1, shelf_days: 1 }] });

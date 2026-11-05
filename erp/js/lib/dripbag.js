@@ -43,16 +43,19 @@ export const DEMO_MONTH = { weekday_packs: 3, weekend_packs: 10, days: 30, five_
 export const DEFAULT_RULES = { review_days: 14, target_per_day: 5, stop_per_day: 2, soon_days: 3 };
 export const CHECK_DAYS = [0, 14, 30]; // 留樣檢查：第 0、14、30 天
 
-const clean = (fields, defaults, p = {}) => {
+// 沒填或不是 0 以上的數字一律留 null（不偷偷補示範數字）；用到的計算會顯示「資料不足」
+const clean = (fields, p = {}) => {
   const out = {};
   for (const f of fields) {
-    const v = nonNeg(p[f.key]);
-    out[f.key] = v === null ? defaults[f.key] : Math.min(v, f.max);
+    const v = nonNeg(p?.[f.key]);
+    out[f.key] = v === null ? null : Math.min(v, f.max);
   }
   return out;
 };
-export const cleanCosts = (p) => clean(COST_FIELDS, DEMO_COSTS, p);
-export const cleanMonth = (p) => clean(MONTH_FIELDS, DEMO_MONTH, p);
+export const cleanCosts = (p) => clean(COST_FIELDS, p);
+export const cleanMonth = (p) => clean(MONTH_FIELDS, p);
+/** 哪些欄位沒填（回傳欄位名稱） */
+export const missingFields = (fields, obj) => fields.filter((f) => obj?.[f.key] === null || obj?.[f.key] === undefined).map((f) => f.label);
 
 // ─────────── 單包成本
 
@@ -64,6 +67,7 @@ export function packCost(sku, costs, { beanKg } = {}) {
   const c = cleanCosts(costs);
   const kg = beanKg !== undefined && beanKg !== null ? beanKg : nonNeg(sku?.bean_kg);
   if (kg === null || kg === undefined || !(c.packs_per_hour > 0)) return null; // 一小時包 0 包算不出人工，不能當 0 元
+  if (missingFields(COST_FIELDS, c).length) return null; // 共用成本有欄位沒填
   const bean = (c.grams * (1 + c.grind_loss / 100) * kg) / 1000;
   const pack = c.filter + c.outer + c.label;
   const labor = c.wage / c.packs_per_hour;
@@ -96,6 +100,8 @@ export function mixOf(skus = []) {
  */
 export function monthPlan(skus = [], costs, month, { vatRate = 0.05, beanKgOf = () => undefined } = {}) {
   const m = cleanMonth(month);
+  const monthMissing = missingFields(MONTH_FIELDS, m);
+  for (const f of MONTH_FIELDS) if (m[f.key] === null) m[f.key] = 0;
   const weekendDays = (m.days * 2) / 7;
   const packs = m.weekday_packs * (m.days - weekendDays) + m.weekend_packs * weekendDays;
   const mix = mixOf(skus);
@@ -114,7 +120,7 @@ export function monthPlan(skus = [], costs, month, { vatRate = 0.05, beanKgOf = 
   }
   const bags = ((packs * m.five_share) / 100 / 5) * m.bag_cost;
   // 有品項算不出成本時不給毛利和回本（不能把缺的成本當 0）
-  const ok = !missing.length && rows.length > 0;
+  const ok = !missing.length && !monthMissing.length && rows.length > 0;
   const profit = ok ? margin - bags : null;
   const perPack = ok && packs > 0 ? profit / packs : null;
   return {
@@ -126,6 +132,7 @@ export function monthPlan(skus = [], costs, month, { vatRate = 0.05, beanKgOf = 
     perPack: perPack === null ? null : round2(perPack),
     breakeven: perPack > 0 ? Math.ceil(m.first_order / perPack) : null,
     limited: skus.filter((s) => mix.has(s.id) && n(s.weekly_limit) > 0).map((s) => s.name),
+    monthMissing,
     rows,
     missing,
   };
@@ -139,6 +146,7 @@ export function monthPlan(skus = [], costs, month, { vatRate = 0.05, beanKgOf = 
  */
 export function giftCost(gift, skus = [], costs, { vatRate = 0.05, beanKgOf = () => undefined } = {}) {
   const c = cleanCosts(costs);
+  const costMissing = missingFields(COST_FIELDS, c).length > 0;
   const byId = new Map(skus.map((s) => [s.id, s]));
   let contents = 0;
   let packs = 0;
@@ -153,10 +161,11 @@ export function giftCost(gift, skus = [], costs, { vatRate = 0.05, beanKgOf = ()
     else contents += q * pc.noFee;
   }
   const extras = (gift?.extras || []).reduce((a, x) => a + n(x.cost), 0);
-  const labor = (n(gift?.minutes) / 60) * c.wage;
-  const fee = (n(gift?.price) * c.fee) / 100;
+  const labor = (n(gift?.minutes) / 60) * n(c.wage);
+  const fee = (n(gift?.price) * n(c.fee)) / 100;
   const total = contents + extras + labor + fee;
   const net = n(gift?.price) / (1 + vatRate);
+  if (costMissing && !missing.includes('共用成本')) missing.push('共用成本');
   const ok = !missing.length; // 缺內容物成本就不下結論
   return { packs, contents: round2(contents), extras: round2(extras), labor: round2(labor), fee: round2(fee), total: ok ? round2(total) : null, net: round2(net), profit: ok ? round2(net - total) : null, rate: ok && net > 0 ? (net - total) / net : null, missing };
 }
@@ -188,13 +197,16 @@ export function sampleChecks(batches = [], day) {
 }
 
 /**
- * 效期能不能延長：有一批有留樣、真的放滿 30 天（檢查日 ≥ 製造日＋30，而且不晚於今天）、四項都合格，
- * 而且外袋阻隔規格書已拿到。提前填的「第 30 天合格」不算。
+ * 效期能不能延長：有一批封口抽驗合格、有留樣，第 0／14／30 天都照時間檢查（檢查日 ≥ 製造日＋天數，而且不晚於今天）、
+ * 全部合格、沒有任何一次不合格，而且外袋阻隔規格書已拿到。提前填的不算。
  */
 export function canExtend(plan, day = '') {
-  const passed = (plan.batches || []).some(
-    (b) => n(b.retained) > 0 && isDate(b.date) && (b.checks || []).some((c) => c.day === 30 && c.result === 'pass' && isDate(c.date) && c.date >= addDays(b.date, 30) && (!day || c.date <= day)),
-  );
+  const passed = (plan.batches || []).some((b) => {
+    if (!(n(b.retained) > 0) || !isDate(b.date) || b.qc !== 'pass') return false;
+    const checks = b.checks || [];
+    if (checks.some((c) => c.result === 'fail')) return false;
+    return CHECK_DAYS.every((d) => checks.some((c) => c.day === d && c.result === 'pass' && isDate(c.date) && c.date >= addDays(b.date, d) && (!day || c.date <= day)));
+  });
   return { ok: passed && !!plan.shelf?.spec_ok, passed, spec: !!plan.shelf?.spec_ok };
 }
 
@@ -385,6 +397,8 @@ const uniqueIds = (rows, prefix) => {
 };
 const arr = (v) => (Array.isArray(v) ? v : []);
 const str = (v, max = 400) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+export const CODE_MAX = 30;
+export const canonCode = (v) => str(v, CODE_MAX);
 const RESULTS = ['', 'pass', 'fail'];
 
 function cleanChecks(list) {
@@ -433,7 +447,7 @@ export function normalizePlan(raw) {
     if (batchIssue(b).drop) continue;
     const row = {
       id: typeof b.id === 'string' && b.id ? b.id : '',
-      code: str(b.code, 30) || nextBatchCode([...byCode.values()], b.date),
+      code: canonCode(b.code) || nextBatchCode([...byCode.values()], b.date),
       date: b.date,
       sku_id: typeof b.sku_id === 'string' ? b.sku_id : '',
       packs: nonNeg(b.packs) ?? 0,
@@ -446,6 +460,12 @@ export function normalizePlan(raw) {
       checks: cleanChecks(b.checks),
       note: str(b.note),
     };
+    if (byCode.has(row.code)) {
+      // 同一批號（例如資料壞掉）：不要蓋掉前一筆，後面這筆改號保留
+      let i = 2;
+      while (byCode.has(`${row.code}#${i}`)) i++;
+      row.code = `${row.code}#${i}`;
+    }
     byCode.set(row.code, row);
   }
   const shelf = raw.shelf || {};
@@ -455,8 +475,9 @@ export function normalizePlan(raw) {
   return {
     ...base,
     name: str(raw.name, 80) || base.name,
-    costs: cleanCosts({ ...base.costs, ...(raw.costs || {}) }),
-    month: cleanMonth({ ...base.month, ...(raw.month || {}) }),
+    // 檔案或存檔裡沒有這一組才用示範數字（第一次打開）；有這一組但缺欄位就留空
+    costs: raw.costs && typeof raw.costs === 'object' ? cleanCosts(raw.costs) : { ...base.costs },
+    month: raw.month && typeof raw.month === 'object' ? cleanMonth(raw.month) : { ...base.month },
     skus,
     gifts,
     schedule: uniqueIds(
@@ -495,15 +516,15 @@ export function checkPlanFile(data) {
   const skuIds = new Set(arr(data.skus).map((s) => s?.id));
   arr(data.gifts).forEach((g) => arr(g?.items).forEach((it) => it && !skuIds.has(it.sku_id) && warnings.push(`禮盒「${g?.name || ''}」放了找不到的品項（${it.sku_id}），成本會缺`)));
   for (const k of ['trial_date', 'launch_date']) if (data[k] && !isDate(data[k])) warnings.push(`${k === 'trial_date' ? '試製日' : '開賣日'}「${data[k]}」格式不對，當成沒填`);
-  const codes = arr(data.batches).map((b) => b && typeof b.code === 'string' && b.code.trim()).filter(Boolean);
+  const codes = arr(data.batches).map((b) => b && canonCode(b.code)).filter(Boolean);
   const dup = [...new Set(codes.filter((c, i) => codes.indexOf(c) !== i))];
   if (dup.length) errors.push(`批號重複：${dup.join('、')}，請先在檔案裡改成不同批號`);
   arr(data.batches).forEach((b) => b && Number(b.retained) > Number(b.packs) && warnings.push(`批次${b.code ? `（${b.code}）` : ''}留樣比包數多，會改成等於包數`));
   for (const [grp, fields, label] of [['costs', COST_FIELDS, '共用成本'], ['month', MONTH_FIELDS, '月試算']]) {
     for (const f of fields) {
       const v = data[grp]?.[f.key];
-      if (v === undefined) warnings.push(`${label}「${f.label}」沒有填，會用示範數字`);
-      else if (blank(v) || badNumber(v)) warnings.push(`${label}「${f.label}」是「${v ?? '空白'}」，不是 0 以上的數字，會用示範數字`);
+      if (v === undefined) warnings.push(`${label}「${f.label}」沒有填，會留空，成本與毛利先不算`);
+      else if (blank(v) || badNumber(v)) warnings.push(`${label}「${f.label}」是「${v ?? '空白'}」，不是 0 以上的數字，會留空，成本與毛利先不算`);
       else if (Number(v) > f.max) warnings.push(`${label}「${f.label}」超過上限 ${f.max}，會改成 ${f.max}`);
       else if (f.positive && !(Number(v) > 0)) warnings.push(`${label}「${f.label}」是 0，成本會算不出來`);
     }

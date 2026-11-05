@@ -630,6 +630,11 @@ export async function render(root, ctx) {
 
   // 改資料一律走這裡：先記下改之前的樣子，存檔失敗就退回
   const setAndSave = async (fn, msg) => {
+    if (saving) {
+      toast('還在存上一個修改，等一下再改一次', 'error');
+      draw(); // 把輸入框還原成已存的內容
+      return;
+    }
     const before = structuredClone(plan);
     fn();
     await save(msg, before);
