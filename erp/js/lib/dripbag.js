@@ -24,7 +24,7 @@ export const COST_FIELDS = [
   { key: 'outer', label: '外袋', unit: '元／個', max: 100 },
   { key: 'label', label: '標籤', unit: '元／張', max: 100 },
   { key: 'wage', label: '時薪', unit: '元', max: 2000 },
-  { key: 'packs_per_hour', label: '一小時包幾包', unit: '包', max: 1000 },
+  { key: 'packs_per_hour', label: '一小時包幾包', unit: '包', max: 1000, positive: true },
   { key: 'loss', label: '損耗（試喝、封壞）', unit: '%', max: 50 },
   { key: 'fee', label: '刷卡手續費', unit: '%', max: 10 },
 ];
@@ -63,10 +63,10 @@ export const cleanMonth = (p) => clean(MONTH_FIELDS, DEMO_MONTH, p);
 export function packCost(sku, costs, { beanKg } = {}) {
   const c = cleanCosts(costs);
   const kg = beanKg !== undefined && beanKg !== null ? beanKg : nonNeg(sku?.bean_kg);
-  if (kg === null || kg === undefined) return null;
+  if (kg === null || kg === undefined || !(c.packs_per_hour > 0)) return null; // 一小時包 0 包算不出人工，不能當 0 元
   const bean = (c.grams * (1 + c.grind_loss / 100) * kg) / 1000;
   const pack = c.filter + c.outer + c.label;
-  const labor = c.packs_per_hour > 0 ? c.wage / c.packs_per_hour : 0;
+  const labor = c.wage / c.packs_per_hour;
   const base = bean + pack + labor;
   const lossRate = Math.min(c.loss, 90) / 100;
   const noFee = base / (1 - lossRate);
@@ -113,16 +113,19 @@ export function monthPlan(skus = [], costs, month, { vatRate = 0.05, beanKgOf = 
     rows.push({ id: s.id, name: s.name, packs: round2(q), margin: r.margin === null ? null : round2(q * r.margin) });
   }
   const bags = ((packs * m.five_share) / 100 / 5) * m.bag_cost;
-  const profit = margin - bags;
-  const perPack = packs > 0 ? profit / packs : 0;
+  // 有品項算不出成本時不給毛利和回本（不能把缺的成本當 0）
+  const ok = !missing.length && rows.length > 0;
+  const profit = ok ? margin - bags : null;
+  const perPack = ok && packs > 0 ? profit / packs : null;
   return {
     packs: round2(packs),
     revenue: round2(revenue),
     avgPrice: packs > 0 ? round2(revenue / packs) : 0,
     bags: round2(bags),
-    profit: round2(profit),
-    perPack: round2(perPack),
+    profit: profit === null ? null : round2(profit),
+    perPack: perPack === null ? null : round2(perPack),
     breakeven: perPack > 0 ? Math.ceil(m.first_order / perPack) : null,
+    limited: skus.filter((s) => mix.has(s.id) && n(s.weekly_limit) > 0).map((s) => s.name),
     rows,
     missing,
   };
@@ -154,7 +157,8 @@ export function giftCost(gift, skus = [], costs, { vatRate = 0.05, beanKgOf = ()
   const fee = (n(gift?.price) * c.fee) / 100;
   const total = contents + extras + labor + fee;
   const net = n(gift?.price) / (1 + vatRate);
-  return { packs, contents: round2(contents), extras: round2(extras), labor: round2(labor), fee: round2(fee), total: round2(total), net: round2(net), profit: round2(net - total), rate: net > 0 ? (net - total) / net : null, missing };
+  const ok = !missing.length; // 缺內容物成本就不下結論
+  return { packs, contents: round2(contents), extras: round2(extras), labor: round2(labor), fee: round2(fee), total: ok ? round2(total) : null, net: round2(net), profit: ok ? round2(net - total) : null, rate: ok && net > 0 ? (net - total) / net : null, missing };
 }
 
 // ─────────── 批次與效期
@@ -175,7 +179,7 @@ export function sampleChecks(batches = [], day) {
   for (const b of batches) {
     if (!(n(b.retained) > 0) || !isDate(b.date)) continue;
     for (const d of CHECK_DAYS) {
-      const rec = (b.checks || []).find((c) => c.day === d) || null;
+      const rec = (b.checks || []).find((c) => c.day === d && (c.result === 'pass' || c.result === 'fail')) || null;
       const due = addDays(b.date, d);
       out.push({ batch_id: b.id, code: b.code, day: d, due, rec, overdue: !rec && due < day });
     }
@@ -183,10 +187,28 @@ export function sampleChecks(batches = [], day) {
   return out.sort((a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : 0));
 }
 
-/** 效期能不能延長：有一批留樣第 30 天四項都合格，而且外袋阻隔規格書已拿到 */
-export function canExtend(plan) {
-  const passed = (plan.batches || []).some((b) => (b.checks || []).some((c) => c.day === 30 && c.result === 'pass'));
+/**
+ * 效期能不能延長：有一批有留樣、真的放滿 30 天（檢查日 ≥ 製造日＋30，而且不晚於今天）、四項都合格，
+ * 而且外袋阻隔規格書已拿到。提前填的「第 30 天合格」不算。
+ */
+export function canExtend(plan, day = '') {
+  const passed = (plan.batches || []).some(
+    (b) => n(b.retained) > 0 && isDate(b.date) && (b.checks || []).some((c) => c.day === 30 && c.result === 'pass' && isDate(c.date) && c.date >= addDays(b.date, 30) && (!day || c.date <= day)),
+  );
   return { ok: passed && !!plan.shelf?.spec_ok, passed, spec: !!plan.shelf?.spec_ok };
+}
+
+/** 新批次用的有效天數：延長過（而且證據還在）用延長後的，否則用一開始的天數 */
+export const shelfDays = (plan, day = '') => (plan.shelf?.extended && canExtend(plan, day).ok ? plan.shelf.extended_days : plan.shelf?.days);
+
+/** 留樣檢查能不能這樣記：結果要選、檢查日不能早於應檢日、不能是未來 */
+export function checkEntryProblem(batch, entry, day) {
+  if (!['pass', 'fail'].includes(entry.result)) return '請選結果（合格或不合格）';
+  if (!isDate(entry.date)) return '請選檢查日';
+  const due = addDays(batch.date, entry.day);
+  if (entry.date < due) return `第 ${entry.day} 天的檢查要在 ${due} 以後才能記`;
+  if (day && entry.date > day) return '檢查日不能是未來';
+  return '';
 }
 
 /** 新批號：YYMMDD-流水號（同一天第幾批） */
@@ -226,7 +248,7 @@ export function posDrip(lines = [], { from, to, keywords = '濾掛' } = {}) {
     const ord = l.order_no || `${l.date} ${l.time || ''}`;
     d.orders.add(ord);
     const text = `${l.item_raw || ''} ${l.category_raw || ''}`.toLowerCase();
-    if (keys.length && n(l.revenue) > 0 && keys.some((k) => text.includes(k))) {
+    if (keys.length && n(l.revenue) > 0 && n(l.qty, 1) > 0 && keys.some((k) => text.includes(k))) {
       d.packs += n(l.qty, 1);
       d.revenue += n(l.revenue);
       d.dripOrders.add(ord);
@@ -316,7 +338,7 @@ export function emptyPlan() {
     schedule: [],
     trial_date: '',
     launch_date: '',
-    shelf: { days: 14, extended_days: 30, spec_ok: false },
+    shelf: { days: 14, extended_days: 30, extended: false, spec_ok: false },
     batches: [],
     keywords: '濾掛',
     rules: { ...DEFAULT_RULES },
@@ -368,7 +390,7 @@ const RESULTS = ['', 'pass', 'fail'];
 function cleanChecks(list) {
   const by = new Map();
   for (const c of arr(list)) {
-    if (!c || !CHECK_DAYS.includes(Number(c.day))) continue;
+    if (!c || !CHECK_DAYS.includes(Number(c.day)) || !['pass', 'fail'].includes(c.result)) continue; // 沒有結果的不算有記
     by.set(Number(c.day), { day: Number(c.day), date: isDate(c.date) ? c.date : '', result: RESULTS.includes(c.result) ? c.result : '', note: str(c.note) });
   }
   return [...by.values()].sort((a, b) => a.day - b.day);
@@ -381,6 +403,7 @@ export function normalizePlan(raw) {
   const rules = {};
   for (const [k, v] of Object.entries(DEFAULT_RULES)) rules[k] = nonNeg(raw.rules?.[k]) ?? v;
   rules.review_days = rules.review_days >= 1 ? Math.round(rules.review_days) : DEFAULT_RULES.review_days;
+  if (rules.stop_per_day > rules.target_per_day) rules.stop_per_day = rules.target_per_day;
   const skus = uniqueIds(
     arr(raw.skus)
       .filter((s) => !skuIssue(s).drop)
@@ -415,8 +438,8 @@ export function normalizePlan(raw) {
       sku_id: typeof b.sku_id === 'string' ? b.sku_id : '',
       packs: nonNeg(b.packs) ?? 0,
       purpose: ['sale', 'trial', 'gift'].includes(b.purpose) ? b.purpose : 'sale',
-      shelf_days: nonNeg(b.shelf_days),
-      retained: nonNeg(b.retained) ?? 0,
+      shelf_days: Math.round(nonNeg(b.shelf_days)),
+      retained: Math.min(nonNeg(b.retained) ?? 0, nonNeg(b.packs) ?? 0),
       grind: str(b.grind, 60),
       seal: str(b.seal, 60),
       qc: RESULTS.includes(b.qc) ? b.qc : '',
@@ -426,6 +449,9 @@ export function normalizePlan(raw) {
     byCode.set(row.code, row);
   }
   const shelf = raw.shelf || {};
+  const batchesOut = uniqueIds([...byCode.values()], 'b').sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const shelfOut = { days: Math.round(nonNeg(shelf.days) || base.shelf.days), extended_days: Math.round(nonNeg(shelf.extended_days) || base.shelf.extended_days), extended: false, spec_ok: !!shelf.spec_ok };
+  shelfOut.extended = !!shelf.extended && canExtend({ batches: batchesOut, shelf: shelfOut }).ok; // 沒有證據的延長不收
   return {
     ...base,
     name: str(raw.name, 80) || base.name,
@@ -441,8 +467,8 @@ export function normalizePlan(raw) {
     ),
     trial_date: isDate(raw.trial_date) ? raw.trial_date : '',
     launch_date: isDate(raw.launch_date) ? raw.launch_date : '',
-    shelf: { days: Math.round(nonNeg(shelf.days) || base.shelf.days), extended_days: Math.round(nonNeg(shelf.extended_days) || base.shelf.extended_days), spec_ok: !!shelf.spec_ok },
-    batches: uniqueIds([...byCode.values()], 'b').sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
+    shelf: shelfOut,
+    batches: batchesOut,
     keywords: typeof raw.keywords === 'string' ? raw.keywords : base.keywords,
     rules,
     notes: typeof raw.notes === 'string' ? raw.notes : '',
@@ -469,6 +495,20 @@ export function checkPlanFile(data) {
   const skuIds = new Set(arr(data.skus).map((s) => s?.id));
   arr(data.gifts).forEach((g) => arr(g?.items).forEach((it) => it && !skuIds.has(it.sku_id) && warnings.push(`禮盒「${g?.name || ''}」放了找不到的品項（${it.sku_id}），成本會缺`)));
   for (const k of ['trial_date', 'launch_date']) if (data[k] && !isDate(data[k])) warnings.push(`${k === 'trial_date' ? '試製日' : '開賣日'}「${data[k]}」格式不對，當成沒填`);
+  const codes = arr(data.batches).map((b) => b && typeof b.code === 'string' && b.code.trim()).filter(Boolean);
+  const dup = [...new Set(codes.filter((c, i) => codes.indexOf(c) !== i))];
+  if (dup.length) errors.push(`批號重複：${dup.join('、')}，請先在檔案裡改成不同批號`);
+  arr(data.batches).forEach((b) => b && Number(b.retained) > Number(b.packs) && warnings.push(`批次${b.code ? `（${b.code}）` : ''}留樣比包數多，會改成等於包數`));
+  for (const [grp, fields, label] of [['costs', COST_FIELDS, '共用成本'], ['month', MONTH_FIELDS, '月試算']]) {
+    for (const f of fields) {
+      const v = data[grp]?.[f.key];
+      if (v === undefined) warnings.push(`${label}「${f.label}」沒有填，會用示範數字`);
+      else if (blank(v) || badNumber(v)) warnings.push(`${label}「${f.label}」是「${v ?? '空白'}」，不是 0 以上的數字，會用示範數字`);
+      else if (Number(v) > f.max) warnings.push(`${label}「${f.label}」超過上限 ${f.max}，會改成 ${f.max}`);
+      else if (f.positive && !(Number(v) > 0)) warnings.push(`${label}「${f.label}」是 0，成本會算不出來`);
+    }
+  }
+  if (data.shelf?.extended && !normalizePlan(data).shelf.extended) warnings.push('檔案說效期已延長，但沒有留樣第 30 天合格或規格書的紀錄，會改回一開始的天數');
   return { errors, warnings };
 }
 

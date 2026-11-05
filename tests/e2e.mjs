@@ -471,6 +471,13 @@ try {
     const t = await page.textContent('#view');
     assert(t.includes('260825-1') && t.includes('已過期') && t.includes('逾期沒記'), '濾掛批次：過期與留樣逾期要標出來');
     assert(t.includes('還不能延長'), '濾掛效期：沒有第 30 天合格不能延長');
+    assert(!(await page.$('[data-act="shelf"][data-k="days"]')), '濾掛效期：已經有批次就不能直接改天數');
+    // 留樣第 30 天還沒到、沒選結果都不能記
+    await page.click('[data-act="check"][data-day="14"]');
+    await page.waitForSelector('dialog.modal');
+    await page.click('dialog.modal .modal-foot [data-i="1"]');
+    await page.waitForFunction(() => document.querySelector('#toasts')?.textContent.includes('請選結果'));
+    await page.click('dialog.modal .modal-foot [data-i="0"]');
     await page.click('[data-act="addBatch"]');
     await page.waitForSelector('dialog.modal');
     await page.fill('dialog.modal [name=packs]', '30');

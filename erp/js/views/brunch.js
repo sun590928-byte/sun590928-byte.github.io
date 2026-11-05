@@ -79,7 +79,8 @@ export async function render(root, ctx) {
     saving = true;
     root.setAttribute('aria-busy', 'true');
     try {
-      const latest = (await store.all('settings')).find((r) => r.id === PLAN_ID);
+      // 不經快取，直接從資料來源重讀：雲端模式下別台裝置改過才看得到
+      const latest = (await store.fresh('settings')).find((r) => r.id === PLAN_ID);
       const latestStamp = latest?.value?.updated_at || null;
       if (latestStamp && latestStamp !== stamp) {
         rec = latest;
@@ -91,6 +92,16 @@ export async function render(root, ctx) {
       }
       const nextStamp = new Date().toISOString();
       await store.put('settings', { id: PLAN_ID, value: { ...plan, updated_at: nextStamp } });
+      // 寫完再讀一次：兩台裝置幾乎同時存檔時，後寫的會蓋掉先寫的；先寫的這台要知道自己的修改沒留下來
+      const after = (await store.fresh('settings')).find((r) => r.id === PLAN_ID);
+      if (after?.value?.updated_at && after.value.updated_at !== nextStamp) {
+        rec = after;
+        plan = normalizePlan(after.value);
+        stamp = after.value.updated_at;
+        sim = { ...plan.params };
+        toast('別的裝置同時存了這份企劃，你剛才的修改沒有留下來；已載入最新的內容，請再做一次。', 'error', 8000);
+        return false;
+      }
       stamp = nextStamp;
       rec = { id: PLAN_ID, value: plan };
       if (msg) toast(msg, 'good');

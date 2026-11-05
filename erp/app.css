@@ -552,3 +552,19 @@ table.grid.bp-log tr.bp-miss > * { background: color-mix(in srgb, var(--warn) 9%
 .db-check { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 12px; padding: 6px 0; border-bottom: 1px dashed var(--line); font-size: 13.5px; }
 .db-check > span:last-child { display: flex; align-items: center; gap: 8px; }
 .db-check.late > span:first-child { color: var(--bad-text); }
+.db-cost th.db-name { text-align: left; }
+.db-cost td.db-act { white-space: nowrap; }
+/* 手機：一個品項一張卡片，先看售價、成本、毛利率，明細縮小 */
+@media (max-width: 640px) {
+  .db-cost-wrap { border: 0; background: transparent; overflow: visible; }
+  table.grid.db-cost, table.grid.db-cost tbody { display: block; }
+  table.grid.db-cost thead { display: none; }
+  table.grid.db-cost tr { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px 12px; padding: 12px 14px; margin-bottom: 10px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--card); }
+  table.grid.db-cost th.db-name { grid-column: 1 / -1; border: 0; padding: 0 0 2px; font-size: 15px; background: none; position: static; }
+  table.grid.db-cost td { border: 0; padding: 0; text-align: left; display: flex; flex-direction: column; gap: 1px; font-size: 14px; }
+  table.grid.db-cost td::before { content: attr(data-label); font-size: 12px; color: var(--mute); }
+  table.grid.db-cost td.db-detail { font-size: 12.5px; color: var(--text-2); }
+  table.grid.db-cost td.db-act { grid-column: 1 / -1; margin-top: 4px; }
+  table.grid.db-cost td.db-act::before { content: none; }
+  table.grid.db-cost td.db-act .btn { width: 100%; justify-content: center; padding: 8px; }
+}

@@ -2,7 +2,7 @@
 // 數字都是虛構的整數，不對應任何店。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { packCost, skuMargin, mixOf, monthPlan, giftCost, expiryOf, batchStatus, sampleChecks, canExtend, nextBatchCode, earliestExpiry, posDrip, salesVerdict, buildSchedule, scheduleStatus, normalizePlan, checkPlanFile, mergeImport, exportPlan, emptyPlan, beanKgFrom, cleanCosts, PLAN_KIND, TASK_TEMPLATE } from '../erp/js/lib/dripbag.js';
+import { packCost, skuMargin, mixOf, monthPlan, giftCost, expiryOf, batchStatus, sampleChecks, canExtend, shelfDays, checkEntryProblem, nextBatchCode, earliestExpiry, posDrip, salesVerdict, buildSchedule, scheduleStatus, normalizePlan, checkPlanFile, mergeImport, exportPlan, emptyPlan, beanKgFrom, cleanCosts, PLAN_KIND, TASK_TEMPLATE } from '../erp/js/lib/dripbag.js';
 
 const C = { grams: 10, grind_loss: 0, filter: 2, outer: 2, label: 1, wage: 200, packs_per_hour: 40, loss: 0, fee: 0 };
 const A = { id: 'a', name: '甲', price: 105, bean_kg: 1000, mix: 50 };
@@ -61,11 +61,23 @@ test('dripbag: 禮盒成本＝內容物（不含手續費）＋其他物品＋�
   assert.equal(c.extras, 40);
   assert.equal(c.labor, 20);
   assert.equal(c.fee, 10.5);
-  assert.equal(c.total, 120 + 40 + 20 + 10.5);
   assert.equal(c.net, 500);
   assert.equal(c.packs, 6);
   assert.deepEqual(c.missing, ['已刪除的品項']);
-  assert.equal(c.rate, (500 - 190.5) / 500);
+  // 缺內容物成本就不給成本合計和貢獻率（不能當 0）
+  assert.equal(c.total, null);
+  assert.equal(c.rate, null);
+  const full = giftCost({ ...g, items: g.items.slice(0, 2) }, [A, B], { ...C, fee: 2 });
+  assert.equal(full.total, 120 + 40 + 20 + 10.5);
+  assert.equal(full.rate, (500 - 190.5) / 500);
+});
+
+test('dripbag: 一小時包 0 包算不出成本，不能把人工當 0', () => {
+  assert.equal(packCost(A, { ...C, packs_per_hour: 0 }), null);
+  assert.equal(skuMargin(A, { ...C, packs_per_hour: 0 }).rate, null);
+  const mp = monthPlan([A], { ...C, packs_per_hour: 0 }, { weekday_packs: 1, weekend_packs: 1, days: 7, five_share: 0, bag_cost: 0, first_order: 100 });
+  assert.equal(mp.profit, null);
+  assert.equal(mp.breakeven, null);
 });
 
 test('dripbag: 有效日期照批次自己的天數；過期、快到期', () => {
@@ -84,13 +96,29 @@ test('dripbag: 留樣檢查第 0／14／30 天、逾期；延長要第 30 天合
   assert.equal(list.length, 3);
   assert.deepEqual(list.map((c) => c.due), ['2026-01-01', '2026-01-15', '2026-01-31']);
   assert.deepEqual(list.map((c) => c.overdue), [false, true, false]);
-  const plan = { batches: [b], shelf: { spec_ok: true } };
+  // 沒選結果的紀錄不算有記，逾期照樣標
+  const blankRec = sampleChecks([{ ...b, checks: [{ day: 0, date: '2026-01-01', result: '' }] }], '2026-01-20');
+  assert.equal(blankRec[0].rec, null);
+  const plan = { batches: [b], shelf: { spec_ok: true, days: 14, extended_days: 30, extended: true } };
   assert.equal(canExtend(plan).ok, false);
-  b.checks.push({ day: 30, result: 'pass' });
-  assert.equal(canExtend(plan).ok, true);
+  assert.equal(shelfDays(plan), 14);
+  b.checks.push({ day: 30, date: '2026-01-20', result: 'pass' }); // 提前填的第 30 天不算
+  assert.equal(canExtend(plan).ok, false);
+  b.checks[1].date = '2026-01-31';
+  assert.equal(canExtend(plan, '2026-01-30').ok, false); // 檢查日在未來
+  assert.equal(canExtend(plan, '2026-02-01').ok, true);
+  assert.equal(shelfDays(plan, '2026-02-01'), 30);
   assert.equal(canExtend({ ...plan, shelf: { spec_ok: false } }).ok, false);
+  assert.equal(canExtend({ ...plan, batches: [{ ...b, retained: 0 }] }).ok, false);
   b.checks[1].result = 'fail';
   assert.equal(canExtend(plan).ok, false);
+  // 記錄留樣：結果要選、不能早於應檢日、不能是未來
+  assert.ok(checkEntryProblem(b, { day: 14, date: '2026-01-15', result: '' }, '2026-02-01'));
+  assert.ok(checkEntryProblem(b, { day: 14, date: '2026-01-14', result: 'pass' }, '2026-02-01'));
+  assert.ok(checkEntryProblem(b, { day: 14, date: '2026-02-02', result: 'pass' }, '2026-02-01'));
+  assert.equal(checkEntryProblem(b, { day: 14, date: '2026-01-15', result: 'pass' }, '2026-02-01'), '');
+  // 讀取時沒有證據的「已延長」不收
+  assert.equal(normalizePlan({ shelf: { days: 14, extended_days: 30, extended: true, spec_ok: true } }).shelf.extended, false);
 });
 
 test('dripbag: 批號 YYMMDD-流水號', () => {
@@ -115,6 +143,7 @@ test('dripbag: POS 依關鍵字算包數與附購率，作廢、調整、0 元�
   assert.equal(d[0].dripOrders, 1);
   assert.equal(d[1].packs, 1);
   assert.equal(posDrip(L, { keywords: '' }).reduce((a, x) => a + x.packs, 0), 0);
+  assert.equal(posDrip([{ date: '2026-02-03', order_no: '7', item_raw: '濾掛', qty: -2, revenue: 100 }], { keywords: '濾掛' })[0].packs, 0); // 負數量不算
 });
 
 test('dripbag: 開賣後滿天數才判斷，沒資料的日子也算進天數', () => {
@@ -152,7 +181,7 @@ test('dripbag: 讀取時丟掉壞資料、補 ID、同批號留最後一筆', ()
     schedule: [{ date: '2026-02-30', title: 'x' }, { date: '2026-02-01', title: 'ok' }],
     batches: [
       { code: 'K', date: '2026-02-01', packs: 10, shelf_days: 14 },
-      { code: 'K', date: '2026-02-02', packs: 20, shelf_days: 14, checks: [{ day: 7, result: 'pass' }, { day: 14, result: 'weird' }] },
+      { code: 'K', date: '2026-02-02', packs: 20, retained: 25, shelf_days: 14.4, checks: [{ day: 7, result: 'pass' }, { day: 14, result: 'weird' }, { day: 0, date: '2026-02-02', result: 'pass' }] },
       { code: 'L', date: 'bad', packs: 10, shelf_days: 14 },
       { code: 'M', date: '2026-02-03', packs: 0, shelf_days: 14 },
     ],
@@ -170,7 +199,9 @@ test('dripbag: 讀取時丟掉壞資料、補 ID、同批號留最後一筆', ()
   assert.equal(p.batches.length, 1);
   assert.equal(normalizePlan({ batches: [{ date: '2026-02-01', packs: 1, shelf_days: 1 }, { date: '2026-02-01', packs: 2, shelf_days: 1 }] }).batches.map((b) => b.code).join(), '260201-1,260201-2'); // 沒批號的自動補，不會互相蓋掉
   assert.equal(p.batches[0].packs, 20);
-  assert.deepEqual(p.batches[0].checks, [{ day: 14, date: '', result: '', note: '' }]);
+  assert.deepEqual(p.batches[0].checks, [{ day: 0, date: '2026-02-02', result: 'pass', note: '' }]);
+  assert.equal(p.batches[0].retained, 20);
+  assert.equal(p.batches[0].shelf_days, 14);
   assert.equal(p.trial_date, '');
   assert.deepEqual(normalizePlan(null), emptyPlan());
 });
@@ -180,8 +211,15 @@ test('dripbag: 匯入檢查要企劃標記、版本不能比程式新，列出�
   assert.ok(checkPlanFile({ kind: PLAN_KIND, version: 99 }).errors.length);
   const c = checkPlanFile({ kind: PLAN_KIND, version: 1, skus: [A, { name: '壞', price: 0 }], gifts: [{ name: '禮', price: 10, items: [{ sku_id: 'nope', qty: 1 }] }], batches: [{ code: 'Z', date: '2026-02-30', packs: 1, shelf_days: 1 }], launch_date: '2026/01/01' });
   assert.equal(c.errors.length, 0);
-  assert.equal(c.warnings.length, 4);
   assert.ok(c.warnings.some((w) => w.includes('nope')));
+  assert.ok(c.warnings.some((w) => w.includes('會用示範數字'))); // 沒填共用成本要講
+  assert.ok(c.warnings.some((w) => w.includes('「壞」')));
+  // 批號重複不能匯入
+  const d = checkPlanFile({ kind: PLAN_KIND, version: 1, batches: [{ code: 'D', date: '2026-02-01', packs: 1, shelf_days: 1 }, { code: 'D', date: '2026-02-02', packs: 1, shelf_days: 1 }] });
+  assert.ok(d.errors.some((e) => e.includes('批號重複')));
+  // 0 包／小時、超過上限要講
+  const z = checkPlanFile({ kind: PLAN_KIND, version: 1, costs: { packs_per_hour: 0, grams: 999 } });
+  assert.ok(z.warnings.some((w) => w.includes('成本會算不出來')) && z.warnings.some((w) => w.includes('超過上限')));
 });
 
 test('dripbag: 匯入預設保留現場的批次（同批號留現有），勾選才整份換；匯出企劃不含批次與勾選', () => {
