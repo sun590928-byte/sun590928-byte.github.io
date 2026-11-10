@@ -228,7 +228,7 @@ export async function editEntry(entry = null, { defaults = {}, title = null } = 
 // 需要附原始憑證的分錄：手動、資產購置、存摺補登，且借方有費用、成本、存貨或固定資產科目
 // （折舊、銀行手續費、利息以存摺為憑，不需另附）
 const DOC_TYPES = new Set(['expense', 'cogs', 'nonop_expense']);
-const DOC_ASSETS = /^(121[1-6]|1511|1521|1531|1541)$/;
+const DOC_ASSETS = /^(121\d|1511|1521|1531|1541)$/;
 const NO_DOC = new Set(['6124', '6131', '7501']);
 export function needsDocument(e, accMap) {
   if (!['manual', 'asset', 'bank'].includes(e.source)) return false;

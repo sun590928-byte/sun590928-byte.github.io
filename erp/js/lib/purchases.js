@@ -14,7 +14,7 @@ import { classifyExpense } from './classify.js';
 
 export const VAT_RATE = 0.05;
 
-// 會計科目 → 原料分類（1211 咖啡豆 … 1216 零售商品）
+// 會計科目 → 原料分類（1211 咖啡豆 … 1216 零售商品、1217 果汁糖漿）
 export const CATEGORY_BY_GL = {};
 for (const [k, c] of Object.entries(INVENTORY_CATEGORIES)) if (k !== 'other' && !CATEGORY_BY_GL[c.gl]) CATEGORY_BY_GL[c.gl] = k;
 
@@ -24,7 +24,8 @@ const EXTRA_RULES = [
   ['beans', /(?<![紅綠黃黑毛]|紅豆|綠豆)豆$|日曬|水洗|蜜處理|淺焙|中焙|深焙|中深焙|espresso|義式|曼特寧|藍山|西達摩|耶加/i],
   ['dairy', /奶$|乳$|奶油球|奶精|優格|優酪/],
   ['packaging', /杯$|蓋$|袋$|盒$|膜$|手套|紙$|吸管|杯套|提袋|封口/],
-  ['tea_syrup', /茶$|粉$|糖$|漿$|醬$|蜜$|果露|濃縮|氣泡|蘇打/],
+  ['juice_syrup', /漿$|汁$|果露|果糖/],
+  ['tea_syrup', /茶$|粉$|糖$|醬$|蜜$|濃縮|氣泡|蘇打/],
   ['bakery', /蛋糕|司康|餅乾|可頌|吐司|麵包|布丁|起司|乳酪|水果|莓$|堅果/],
 ];
 

@@ -25,6 +25,20 @@ test('purchases: 品名自動分類（依 12XX 原料科目），提示優先', 
   assert.equal(g('巴西日曬豆'), 'beans');
   assert.equal(g('紙杯 12oz'), 'packaging');
   assert.equal(g('抹茶粉'), 'tea_syrup');
+  // 2026-11-10 新增 1217 果汁糖漿：糖漿、果露、果汁歸這裡
+  assert.equal(g('MONIN 香草糖漿 700ml'), 'juice_syrup');
+  assert.equal(g('芒果果露'), 'juice_syrup');
+  assert.equal(g('100% 柳橙汁'), 'juice_syrup');
+  assert.equal(g('檸檬汁'), 'juice_syrup');
+  assert.equal(g('新鮮檸檬'), 'bakery');
+  assert.equal(g('果糖'), 'juice_syrup');
+  assert.equal(g('xx', '1217'), 'juice_syrup');
+  assert.equal(g('xx', '果汁糖漿'), 'juice_syrup');
+  assert.equal(g('xx', '糖漿'), 'juice_syrup');
+  assert.equal(g('xx', '茶葉／粉類／糖漿'), 'tea_syrup', '舊範本的分類名稱仍對到 1213');
+  assert.equal(g('xx', '1213'), 'tea_syrup');
+  assert.equal(INVENTORY_CATEGORIES.juice_syrup.gl, '1217');
+  assert.equal(suggestSku('juice_syrup', []), 'JS-001');
   assert.equal(g('無鹽奶油'), 'bakery');
   assert.equal(g('濾掛禮盒'), 'retail');
   assert.deepEqual(guessItemCategory('洗碗精'), { category: 'other', sure: false });

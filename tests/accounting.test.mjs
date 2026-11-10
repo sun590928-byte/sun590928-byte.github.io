@@ -6,7 +6,7 @@ import { DEFAULT_ACCOUNTS, accountMap } from '../erp/js/lib/coa.js';
 import { validateEntry, trialBalance, incomeStatement, balanceSheet, generalLedger, voucherKind, nextVoucherNo, closingEntry, renumberMonth } from '../erp/js/lib/ledger.js';
 import { salesJournal, payoutJournal, depreciationJournal, cogsJournal, documentJournal, mergeGenerated } from '../erp/js/lib/autojournal.js';
 import { schedule, defaultResidual, depreciationForMonth, assetSummary } from '../erp/js/lib/assets.js';
-import { theoreticalUsage, stockLevels, averageCosts, productCosts, supplierStats, priceHistory } from '../erp/js/lib/inventory.js';
+import { theoreticalUsage, stockLevels, averageCosts, productCosts, supplierStats, priceHistory, inventoryAccounts } from '../erp/js/lib/inventory.js';
 import { buildProfiles, memberKey, campaignStats, firstVisits, tierOf } from '../erp/js/lib/customers.js';
 import { normalizeEcpayTx, normalizePayouts, dailyCardRecon, payoutRecon, matchPayoutsToBank, matchCardOrders } from '../erp/js/lib/payments.js';
 import { normalizeBank, autoMatch, reconciliation, bookLines } from '../erp/js/lib/bank.js';
@@ -123,6 +123,10 @@ test('autojournal: 撥款、折舊、月底成本、憑證、自動分錄合併'
   assert.deepEqual(validateEntry(dep, accMap), []);
   assert.equal(dep.date, '2026-09-30');
   const cg = cogsJournal('2026-09', [{ account: '1211', name: '咖啡豆', book: 12000, counted: 4000 }, { account: '1212', name: '乳品', book: 3000, counted: 3500 }], { boss_treat: 300, scrap: 200 });
+  // 1217 果汁糖漿耗用轉 5101 銷貨成本－飲品原料
+  const cj = cogsJournal('2026-11', [{ account: '1217', name: '原料－果汁糖漿', book: 2000, counted: 500 }]);
+  assert.deepEqual(cj.lines.map((l) => [l.account, l.debit, l.credit]), [['5101', 1500, 0], ['1217', 0, 1500]]);
+  assert.deepEqual(inventoryAccounts([{ code: '1211' }, { code: '1218', active: false }, { code: '1219' }, { code: '1261' }], { items: [{ gl_account: '1218' }] }), ['1211', '1212', '1213', '1214', '1215', '1216', '1217', '1218', '1219']);
   assert.deepEqual(validateEntry(cg, accMap), []);
   const net = (code) => cg.lines.filter((l) => l.account === code).reduce((t, l) => t + l.debit - l.credit, 0);
   assert.equal(net('1211'), -8000);
@@ -291,6 +295,9 @@ test('einvoice: 財政部 M/D 格式、B2B 進項稅額、建議科目', () => {
 test('classify / docname / 統編檢查', () => {
   assert.equal(classifyExpense({ vendor: '中華電信', items: ['光世代月租'] }).account, '6115');
   assert.equal(classifyExpense({ vendor: '好市多', items: ['鮮奶油', '牛奶'] }).account, '1212');
+  assert.equal(classifyExpense({ vendor: '開元食品', items: ['MONIN 榛果糖漿'] }).account, '1217');
+  assert.equal(classifyExpense({ items: ['柳橙汁 1L'] }).account, '1217');
+  assert.equal(classifyExpense({ items: ['抹茶粉 100g'] }).account, '1213');
   assert.ok(classifyExpense({ vendor: '全聯' }).confidence <= 0.4);
   assert.equal(isValidTaxId('04595257'), true);
   assert.equal(isValidTaxId('04595258'), false);

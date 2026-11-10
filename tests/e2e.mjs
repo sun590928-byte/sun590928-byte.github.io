@@ -358,6 +358,15 @@ try {
   await go('payments');
   await shot('payments');
   await go('cost?ym=2026-09');
+  // 2026-11-10 老闆新增存貨科目 1217 果汁糖漿：啟動時自動補進科目表，存貨與成本頁要有這一列
+  const acc1217 = await page.evaluate(async () => {
+    const { store } = await import('/erp/js/store.js');
+    return (await store.all('accounts')).find((a) => a.code === '1217')?.name || '';
+  });
+  assert(acc1217 === '原料－果汁糖漿', '科目表自動補上 1217 ' + acc1217);
+  const costAccounts = await page.$$eval('.report table.grid tbody tr td:first-child', (tds) => tds.map((td) => td.textContent.trim()));
+  assert(costAccounts.includes('1217 原料－果汁糖漿'), '存貨與成本頁列出 1217 ' + costAccounts.join('｜'));
+  assert(costAccounts[0].startsWith('1211') && costAccounts.indexOf('1217 原料－果汁糖漿') === costAccounts.length - 1, '存貨科目依代號排序 ' + costAccounts.join('｜'));
   await shot('cost', false);
   await go('closing?ym=2026-09');
   await shot('closing');
@@ -838,6 +847,11 @@ try {
   // 營運：新增原料 → 進貨 → 配方 → 庫存水位扣除 POS 耗用
   await go('inventory');
   await page.click('[data-act="addItem"]');
+  const catOpts = await page.$$eval('dialog [name=category] option', (os) => os.map((o) => `${o.value}=${o.textContent.trim()}`));
+  assert(catOpts.includes('juice_syrup=果汁糖漿') && catOpts.includes('tea_syrup=茶葉／粉類'), '商品分類有果汁糖漿 ' + catOpts.join('｜'));
+  await page.selectOption('dialog [name=category]', 'juice_syrup');
+  const glHint1217 = await page.$eval('dialog', (d) => d.textContent);
+  assert(glHint1217.includes('入帳科目：1217'), '選果汁糖漿時顯示入帳科目 1217');
   await page.fill('dialog [name=name]', '花季配方豆');
   await page.selectOption('dialog [name=category]', 'beans');
   await page.fill('dialog [name=safety_stock]', '1500');

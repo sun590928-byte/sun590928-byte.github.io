@@ -6,14 +6,15 @@ import { store } from '../store.js';
 import { getSettings, getAccounts, getProductIndex, revenueLines, isLocked } from '../state.js';
 import { accountBalance, postings, nextVoucherNo } from '../lib/ledger.js';
 import { cogsJournal, mergeGenerated, COGS_ACCOUNT_BY_INVENTORY } from '../lib/autojournal.js';
-import { averageCosts, productCosts, stockLevels, theoreticalUsage } from '../lib/inventory.js';
+import { averageCosts, productCosts, stockLevels, theoreticalUsage, inventoryAccounts } from '../lib/inventory.js';
 import { VOID_REASONS } from '../lib/pos.js';
 import { monthEnd, addDays, today } from '../lib/dates.js';
 import { round2 } from '../lib/money.js';
 import { uid } from '../lib/text.js';
 import { latestMonth, reportHead } from './_shared.js';
 
-const INV = ['1211', '1212', '1213', '1214', '1215', '1216'];
+// 食材耗用（算原物料成本率）：轉入飲品原料或餐點原料銷貨成本的存貨科目；包材、零售商品不算
+const isFood = (code) => ['5101', '5102'].includes(COGS_ACCOUNT_BY_INVENTORY[code] || '5101');
 
 export async function render(root, ctx) {
   const settings = await getSettings();
@@ -24,6 +25,7 @@ export async function render(root, ctx) {
   const idx = await getProductIndex();
   const sales = await store.all('sales_lines');
   const f = { ym: ctx.params.ym || latestMonth(sales, settings.revenue_start) };
+  const INV = inventoryAccounts(accounts, { items, entries, stocktakes });
 
   async function compute() {
     const from = `${f.ym}-01`;
@@ -70,7 +72,7 @@ export async function render(root, ctx) {
     const c = await compute();
     const existing = entries.find((e) => e.source === 'cogs' && e.source_ref === f.ym);
     const used = c.rows.filter((r) => r.counted !== null).reduce((t, r) => t + (r.book - r.counted), 0);
-    const food = c.rows.filter((r) => r.counted !== null && ['1211', '1212', '1213', '1214'].includes(r.account)).reduce((t, r) => t + (r.book - r.counted), 0);
+    const food = c.rows.filter((r) => r.counted !== null && isFood(r.account)).reduce((t, r) => t + (r.book - r.counted), 0);
     const locked = isLocked(settings, `${f.ym}-01`);
     const head = await reportHead('存貨與銷貨成本表', `${Number(f.ym.slice(0, 4)) - 1911} 年 ${Number(f.ym.slice(5))} 月`);
     mount(

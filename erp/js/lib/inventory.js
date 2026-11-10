@@ -9,14 +9,28 @@ import { addDays, daysBetween } from './dates.js';
 export const INVENTORY_CATEGORIES = {
   beans: { label: '咖啡豆', gl: '1211', unit: 'g' },
   dairy: { label: '乳品', gl: '1212', unit: 'ml' },
-  tea_syrup: { label: '茶葉／粉類／糖漿', gl: '1213', unit: 'g' },
+  tea_syrup: { label: '茶葉／粉類', gl: '1213', unit: 'g' },
+  juice_syrup: { label: '果汁糖漿', gl: '1217', unit: 'ml' },
   bakery: { label: '甜點輕食原料', gl: '1214', unit: 'g' },
   packaging: { label: '包材耗材', gl: '1215', unit: '個' },
   retail: { label: '零售商品', gl: '1216', unit: '包' },
   other: { label: '其他／待分類', gl: '1215', unit: '個' },
 };
 
-const SKU_PREFIX = { beans: 'BN', dairy: 'DY', tea_syrup: 'TS', bakery: 'BK', packaging: 'PK', retail: 'RT', other: 'OT' };
+const SKU_PREFIX = { beans: 'BN', dairy: 'DY', tea_syrup: 'TS', juice_syrup: 'JS', bakery: 'BK', packaging: 'PK', retail: 'RT', other: 'OT' };
+
+// 存貨科目（存貨與成本頁的列）：固定的 1211–1217，加上會計項目裡其他 121X 資產科目（之後新增的會自動出現），
+// 以及品項、分錄、盤點用到的 121X 科目（停用的科目還有餘額也要列出來）
+const INV_BASE = ['1211', '1212', '1213', '1214', '1215', '1216', '1217'];
+const INV_RE = /^121\d$/;
+export function inventoryAccounts(accounts = [], { items = [], entries = [], stocktakes = [] } = {}) {
+  const codes = new Set(INV_BASE);
+  for (const a of accounts) if (INV_RE.test(a.code) && a.active !== false) codes.add(a.code);
+  for (const it of items) if (INV_RE.test(it.gl_account || '')) codes.add(it.gl_account);
+  for (const e of entries) for (const l of e.lines || []) if (INV_RE.test(l.account || '')) codes.add(l.account);
+  for (const st of stocktakes) if (INV_RE.test(st.account || '')) codes.add(st.account);
+  return [...codes].sort();
+}
 
 // 物品編號：分類字首 + 流水號（BN-001、DY-002…）
 export function suggestSku(cat, items) {

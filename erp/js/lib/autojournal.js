@@ -134,7 +134,7 @@ export function depreciationJournal(ym, items) {
   return { date: `${ym}-${String(last).padStart(2, '0')}`, description: `${Number(y) - 1911} 年 ${Number(m)} 月 提列折舊`, source: 'depreciation', source_ref: ym, lines };
 }
 
-export const COGS_ACCOUNT_BY_INVENTORY = { 1211: '5101', 1212: '5101', 1213: '5101', 1214: '5102', 1215: '5104', 1216: '5103' };
+export const COGS_ACCOUNT_BY_INVENTORY = { 1211: '5101', 1212: '5101', 1213: '5101', 1214: '5102', 1215: '5104', 1216: '5103', 1217: '5101' };
 
 /**
  * 月底存貨成本（定期盤存）：本月耗用 = 帳面存貨 − 期末盤點。
