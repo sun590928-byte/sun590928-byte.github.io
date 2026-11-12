@@ -84,7 +84,8 @@ export async function render(root, ctx) {
         <button class="btn primary" data-act="gen" ${locked ? 'disabled' : ''}>${existing ? '更新' : '產生'}本月成本分錄</button>
         <button class="btn" data-act="print">列印</button>
       </div>
-      <div class="callout no-print" style="margin-bottom:14px"><p>月底盤點後，在「期末盤點金額」輸入各類存貨的實際價值（數量 × 進價）。系統以「期初＋本月進貨－期末」計算本月耗用並轉入銷貨成本；若有配方資料，老闆招待／老闆測試／報廢的原料成本會自銷貨成本轉出到交際費、研究發展費、存貨報廢損失。</p></div>
+      <div class="callout no-print" style="margin-bottom:14px"><p>月底盤點後，在「期末盤點金額」輸入各類存貨的實際價值（數量 × 進價）。系統以「期初＋本月進貨－期末」計算本月耗用並轉入銷貨成本；若有配方資料，老闆招待／老闆測試／報廢的原料成本會自銷貨成本轉出到交際費、研究發展費、存貨報廢損失。</p>
+        <p>要逐項盤點：到 <a href="#/inventory">原物料進銷存</a> 按「盤點表（列印／匯出）」印出盤點表，數好後把數量填進匯出的 Excel，再按「匯入盤點結果」，系統會自動產生盤點調整，並把各科目的期末盤點金額填到這裡。</p></div>
       <div class="stats">
         ${stat('本月實際耗用', '$' + fmt(round2(used)), c.rows.some((r) => r.counted === null) ? '部分科目尚未盤點' : '全部科目已盤點')}
         ${stat('原物料成本率', c.revenue ? pct(food / (settings.vat_mode === 'general' ? c.revenue / 1.05 : c.revenue)) : '—', '食材耗用 ÷ 未稅營收')}
@@ -98,7 +99,7 @@ export async function render(root, ctx) {
             (r) => h`<tr>
             <td>${r.account} ${r.name}</td>
             <td class="num">${fmt(r.opening)}</td><td class="num">${fmt(r.purchases)}</td><td class="num">${r.decreases ? fmt(r.decreases) : ''}</td><td class="num">${fmt(r.book)}</td>
-            <td class="num"><input class="cell num" style="max-width:130px" type="number" step="1" value="${r.counted ?? ''}" data-act="count" data-acc="${r.account}" ${locked ? 'disabled' : ''} placeholder="${c.invValue[r.account] !== undefined ? '參考 ' + fmt(c.invValue[r.account]) : ''}"></td>
+            <td class="num"><input class="cell num" style="max-width:130px" type="number" step="1" value="${r.counted ?? ''}" data-act="count" data-acc="${r.account}" ${locked ? 'disabled' : ''} placeholder="${c.invValue[r.account] !== undefined ? '參考 ' + fmt(c.invValue[r.account]) : ''}">${r.note ? h`<div class="muted no-print" style="font-size:11.5px">${r.note}</div>` : ''}</td>
             <td class="num">${r.counted === null ? h`<span class="muted">未盤點</span>` : fmt(round2(r.book - r.counted))}</td>
             <td>${COGS_ACCOUNT_BY_INVENTORY[r.account]} ${accName.get(COGS_ACCOUNT_BY_INVENTORY[r.account]) || ''}</td>
           </tr>`,

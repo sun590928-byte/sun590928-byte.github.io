@@ -9,7 +9,10 @@ import { CATEGORIES } from '../lib/pos.js';
 import { uid } from '../lib/text.js';
 import { today, daysBetween } from '../lib/dates.js';
 import { round2 } from '../lib/money.js';
-import { toStockQty, unitMatches } from '../lib/purchases.js';
+import { repackMoves } from '../lib/purchases.js';
+import { safetySuggestions, normalizeSafetyRule } from '../lib/inventory.js';
+import { exportItems, importItems, suggestSafetyDialog } from './_itemsio.js';
+import { countSheetDialog, importCountDialog } from './_stocktake.js';
 
 // 庫存狀態：[status() 種類, 文字, 排序]
 const STATUS = { out: ['bad', '缺貨', 0], low: ['bad', '低於安全量', 1], watch: ['warn', '接近安全量', 2], unset: ['na', '未設安全量', 3], ok: ['good', '正常', 4] };
@@ -149,7 +152,10 @@ export async function stockSnapshot({ asOf = null } = {}) {
   const day = asOf || (lastSale > today() ? lastSale : today());
   const usage = theoreticalUsage(lines, recipes, (l) => idx.of(l).id, { to: day });
   const levels = stockLevels(items, moves, usage, { asOf: day, vatRate });
-  return { asOf: day, items, moves, recipes, levels: new Map(levels.map((r) => [r.item.id, r])), costs: averageCosts(items, moves, { asOf: day, vatRate }) };
+  // 建議安全庫存（日均耗用算到最後銷售日；銷售資料從營收起算日或第一筆銷售開始）
+  const firstSale = lines.reduce((m, l) => (!m || l.date < m ? l.date : m), '');
+  const suggest = safetySuggestions(items, moves, usage, { asOf: lastSale && lastSale < day ? lastSale : day, dataStart: [settings.revenue_start || '', firstSale].sort().pop(), rule: settings.safety_stock_rule });
+  return { asOf: day, items, moves, recipes, levels: new Map(levels.map((r) => [r.item.id, r])), costs: averageCosts(items, moves, { asOf: day, vatRate }), suggest };
 }
 
 /**
@@ -227,15 +233,12 @@ export async function editItem(item, { items, moves, recipes, suppliers, accName
   }
   if (!r) return null;
   await store.put('inventory_items', r);
-  // 包裝折合量或單位改了：以發票數量重算進貨行的庫存數量
-  const packChanged = !isNew && (r.pack_size !== it.pack_size || !unitMatches(r.pack_type, it.pack_type) || !unitMatches(r.unit, it.unit));
-  if (packChanged) {
-    const fix = moves.filter((m) => m.item_id === r.id && m.type === 'purchase' && m.pack_qty !== null && m.pack_qty !== undefined && m.unit).map((m) => ({ ...m, qty: toStockQty(r, m.unit, m.pack_qty) })).filter((m, i, arr) => m.qty !== moves.find((x) => x.id === m.id)?.qty);
-    if (fix.length) {
-      await store.put('inventory_moves', fix);
-      toast(`已儲存「${r.name}」，並依新的包裝折合量重算 ${fix.length} 行進貨的庫存數量`, 'good', 6000);
-      return r;
-    }
+  // 包裝折合量或單位改了：以發票數量重算進貨行的庫存數量（匯入原物料主檔也用同一個 repackMoves）
+  const fix = isNew ? [] : repackMoves(it, r, moves);
+  if (fix.length) {
+    await store.put('inventory_moves', fix);
+    toast(`已儲存「${r.name}」，並依新的包裝折合量重算 ${fix.length} 行進貨的庫存數量`, 'good', 6000);
+    return r;
   }
   toast(`已儲存「${r.name}」`, 'good');
   return r;
@@ -296,14 +299,19 @@ export async function render(root, ctx) {
         return { ...r, avgDaily: d, daysCover: d > 0 ? r.onHand / d : null };
       });
     }
-    return { asOf, rateAsOf, levels };
+    // 建議安全庫存（依耗用量；規則存在設定 safety_stock_rule）
+    const firstSale = lines.reduce((m, l) => (!m || l.date < m ? l.date : m), '');
+    const suggest = safetySuggestions(items, moves, usage, { asOf: rateAsOf, dataStart: [settings.revenue_start || '', firstSale].sort().pop(), rule: settings.safety_stock_rule });
+    return { asOf, rateAsOf, levels, suggest };
   }
 
   function drawStock(top, body) {
-    const { asOf, rateAsOf, levels } = computeLevels();
+    const { asOf, rateAsOf, levels, suggest } = computeLevels();
+    const safetyRule = normalizeSafetyRule(settings.safety_stock_rule);
     const rows = levels.map((r) => {
       const key = statusKey(r);
-      return { ...r, id: r.item.id, sku: r.item.sku || '', name: r.item.name, category: r.item.category, unit: r.item.unit || '', safety: Number(r.item.safety_stock) || 0, key, rank: STATUS[key][2] };
+      const sg = suggest.get(r.item.id);
+      return { ...r, id: r.item.id, sku: r.item.sku || '', name: r.item.name, category: r.item.category, unit: r.item.unit || '', safety: Number(r.item.safety_stock) || 0, suggest: sg?.value ?? null, suggestWhy: sg?.reason || '', key, rank: STATUS[key][2] };
     });
     const n = (k) => rows.filter((r) => r.key === k).length;
     const inRecipe = new Set(recipes.map((r) => r.item_id));
@@ -320,7 +328,8 @@ export async function render(root, ctx) {
         <p><b>耗用 ＝ POS 銷售份數 × 配方用量 ＋ 手動登記的耗用。</b>老闆招待、老闆測試的品項雖然金額作廢，原料確實用掉了，仍計入耗用；POS 上以「報廢」作廢的品項計入報廢量。</p>
         <p>現有庫存 ＝ 期初 ＋ 進貨 − 耗用 − 報廢 ± 盤點調整；可用天數 ＝ 現有庫存 ÷ 近 14 天日均耗用。${rateAsOf !== asOf ? `POS 銷售資料只到 ${rateAsOf}，之後的耗用尚未扣除，日均耗用以該日往前 14 天計算。` : ''}期初庫存請以營收起算日（${settings.revenue_start}）的盤點數量登記「期初」。</p>
         <p>平均成本與庫存價值一律以<b>未稅</b>金額計算（進貨紀錄的未稅金額 ÷ 數量）；進項稅額記在 1261 進項稅額去扣抵，不算原料成本。</p>
-      </div>`,
+      </div>
+      <div class="row" style="margin-bottom:12px"><b style="font-size:13.5px">原物料主檔</b><button class="btn sm" data-act="itemsExport">匯出 Excel</button><button class="btn sm" data-act="itemsImport">匯入 Excel</button><button class="btn sm" data-act="safetySuggest">依耗用量建議安全庫存</button><span class="muted" style="font-size:12.5px">安全庫存、叫貨量、進貨包裝折合可以在 Excel 一次改好再匯回；建議安全庫存＝近 ${safetyRule.lookback_days} 天日均耗用 ×（叫貨前置 ${safetyRule.lead_days} 天＋安全 ${safetyRule.safety_days} 天）</span></div>`,
     );
     dataTable(body, {
       rows,
@@ -338,6 +347,7 @@ export async function render(root, ctx) {
         { key: 'adjusted', label: '盤點調整', align: 'num', fmt: (v) => (v ? (v > 0 ? '+' : '') + fmt(v) : '') },
         { key: 'onHand', label: '現有庫存', align: 'num', fmt: (v) => h`<b>${fmt(v)}</b>`, csv: (v) => v },
         { key: 'safety', label: '安全庫存', align: 'num', fmt: (v) => (v ? fmt(v) : '—') },
+        { key: 'suggest', label: '建議安全庫存', align: 'num', fmt: (v, r) => (v === null ? h`<span class="muted" style="font-size:12px" title="${r.suggestWhy}">資料不足</span>` : v === r.safety ? fmt(v) : h`<b>${fmt(v)}</b>`), csv: (v) => (v === null ? '資料不足' : v) },
         { key: 'daysCover', label: '可用天數', align: 'num', fmt: fmtDays },
         { key: 'avgCost', label: '平均成本（未稅）', align: 'num', fmt: (v) => fmtUnitCost(v) },
         { key: 'value', label: '庫存價值（未稅）', align: 'num', fmt: (v) => '$' + fmt(v) },
@@ -423,7 +433,7 @@ export async function render(root, ctx) {
 
   function draw() {
     if (!items.length) {
-      mount(root, h`<div class="card">${emptyState('還沒有原物料品項', '新增咖啡豆、鮮奶、杯蓋等原物料並設定安全庫存，再到「配方（BOM）」設定各品項的用量，系統就會依 POS 銷售自動推算耗用與庫存。也可以直接到「進貨紀錄」登記或匯入進貨單，沒見過的品名會自動建檔。', h`<div class="row" style="justify-content:center"><button class="btn primary" data-act="addItem">＋ 新增品項</button><a class="btn" href="#/purchases">前往進貨紀錄</a></div>`)}</div>`);
+      mount(root, h`<div class="card">${emptyState('還沒有原物料品項', '新增咖啡豆、鮮奶、杯蓋等原物料並設定安全庫存，再到「配方（BOM）」設定各品項的用量，系統就會依 POS 銷售自動推算耗用與庫存。也可以直接到「進貨紀錄」登記或匯入進貨單，沒見過的品名會自動建檔。', h`<div class="row" style="justify-content:center"><button class="btn primary" data-act="addItem">＋ 新增品項</button><button class="btn" data-act="itemsImport">從 Excel 匯入主檔</button><a class="btn" href="#/purchases">前往進貨紀錄</a></div>`)}</div>`);
       return;
     }
     const tabs = [['stock', '庫存水位'], ['moves', `異動紀錄（${fmt(moves.length)}）`], ['bom', '配方（BOM）']];
@@ -435,6 +445,8 @@ export async function render(root, ctx) {
         <span class="spacer"></span>
         <button class="btn primary" data-act="addItem">＋ 新增品項</button>
         <button class="btn" data-act="addMove">登記異動</button>
+        <button class="btn" data-act="countSheet">盤點表（列印／匯出）</button>
+        <button class="btn" data-act="countImport">匯入盤點結果</button>
         <a class="btn ghost" href="#/purchases">進貨紀錄</a>
       </div>
       <div id="inv-top"></div>
@@ -542,6 +554,20 @@ export async function render(root, ctx) {
     fItem: setF('item', 'item'),
     fType: setF('mtype', 'mtype'),
     addItem: () => itemModal(null),
+    itemsExport: () => exportItems(),
+    itemsImport: async () => {
+      if (await importItems()) await reload();
+    },
+    safetySuggest: async () => {
+      if (await suggestSafetyDialog()) {
+        Object.assign(settings, await getSettings());
+        await reload();
+      }
+    },
+    countSheet: () => countSheetDialog(),
+    countImport: async () => {
+      if (await importCountDialog()) await reload();
+    },
     editItem: (el) => {
       const it = items.find((i) => i.id === el.dataset.id);
       if (it) return itemModal(it);
