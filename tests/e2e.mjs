@@ -989,6 +989,162 @@ try {
   await go('suppliers');
   const supCount = await page.$$eval('#sup-table tbody tr', (trs) => trs.length);
   assert(supCount === 3, '供應商 3 家：' + supCount);
+
+  // 11/12 需求 二-6、二-10（原物料主檔與盤點）
+  {
+    const { makeXlsx } = await import('../erp/js/lib/xlsxw.js');
+    const dbAll = (coll) => page.evaluate(async (c) => (await import('/erp/js/store.js')).store.all(c), coll);
+    const saveDl = async (click) => {
+      const [dl] = await Promise.all([page.waitForEvent('download'), click()]);
+      const file = join(OUT, dl.suggestedFilename());
+      await dl.saveAs(file);
+      return { name: dl.suggestedFilename(), sheets: await readXlsx(new Uint8Array(await readFile(file))) };
+    };
+    const writeXlsx = async (name, rows, sheet) => {
+      const file = join(OUT, name);
+      await writeFile(file, Buffer.from(await makeXlsx([{ name: sheet, rows }]).arrayBuffer()));
+      return file;
+    };
+    const upload = async (act, file) => {
+      const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click(`[data-act="${act}"]`)]);
+      await chooser.setFiles(file);
+      await page.waitForSelector('dialog .modal-foot .btn.primary');
+    };
+    const closed = () => page.waitForFunction(() => !document.querySelector('dialog'), null, { timeout: 15000 });
+    // 按「套用」後等寫入完成的提示（關掉視窗時資料可能還在寫），再等頁面重新整理
+    const applied = async (text) => {
+      await page.evaluate(() => document.querySelectorAll('#toasts .toast').forEach((t) => (t.dataset.seen = '1')));
+      await page.click('dialog .modal-foot .btn.primary');
+      await page.waitForFunction((t) => [...document.querySelectorAll('#toasts .toast:not([data-seen])')].some((x) => x.textContent.includes(t)), text, { timeout: 15000 });
+      await closed();
+      await page.waitForTimeout(500);
+    };
+    const stockTable = () => page.$$eval('#inv-body table.grid', ([t]) => ({ head: [...t.querySelectorAll('thead th')].map((th) => th.textContent.trim()), rows: [...t.querySelectorAll('tbody tr')].map((tr) => [...tr.children].map((td) => td.textContent.trim())) }));
+    await go('inventory');
+    const st0 = await stockTable();
+    const sgCol = st0.head.indexOf('建議安全庫存');
+    assert(sgCol > 0, '庫存水位有「建議安全庫存」欄 ' + st0.head.join('｜'));
+    // 二-6 匯出原物料主檔 → 讀回
+    const ex = await saveDl(() => page.click('[data-act="itemsExport"]'));
+    assert(/^原物料主檔_\d{4}-\d{2}-\d{2}\.xlsx$/.test(ex.name) && ex.sheets.map((s) => s.name).join('、') === '原物料主檔、說明', '主檔檔名與工作表 ' + ex.name);
+    const master = ex.sheets[0].rows;
+    assert(master[0].join('|') === '物品編號|品名|分類|入帳科目|庫存單位|安全庫存|建議叫貨量|進貨包裝|每包裝折合|目前庫存|日均耗用|建議安全庫存|備註', '主檔欄位 ' + master[0].join('|'));
+    const beanX = master.find((r) => r[1] === '花季配方豆');
+    const milkX = master.find((r) => r[1] === '鮮乳 936ml');
+    assert(beanX && beanX[0] === 'BN-001' && beanX[2] === '咖啡豆' && beanX[3].startsWith('1211') && beanX[5] === '1500' && Number(beanX[10]) > 0 && Number(beanX[11]) > 0, '主檔：花季配方豆有日均耗用與建議安全庫存 ' + JSON.stringify(beanX));
+    assert(milkX && milkX[7] === '瓶' && milkX[8] === '936' && milkX[9] === '11232' && milkX[11] === '資料不足', '主檔：鮮乳的包裝折合、目前庫存，沒有配方→資料不足 ' + JSON.stringify(milkX));
+    // 改安全庫存、叫貨量、備註；紙杯改成以「個」計、1 箱＝50 個；加一個新品項、一列錯誤
+    const mod = master.map((r) => [...r]);
+    const at = (name) => mod.find((r) => r[1] === name);
+    Object.assign(at('花季配方豆'), { 5: '2000', 6: '3000', 12: '每週二叫貨' });
+    Object.assign(at('紙杯 12oz'), { 4: '個', 8: '50' });
+    mod.push(['', '燕麥奶 1L', '乳品', '', 'ml', '2000', '', '瓶', '1000']);
+    mod.push(['', '測試錯誤列', '', '', '', 'abc']);
+    await upload('itemsImport', await writeXlsx('原物料主檔_修改.xlsx', mod, '原物料主檔'));
+    const prev = await page.textContent('dialog');
+    assert(prev.includes('更新 2 項') && prev.includes('新品項 1 項') && prev.includes('有問題 1 列') && prev.includes('安全庫存：1,500 → 2,000') && prev.includes('每包裝折合：1 → 50') && prev.includes('庫存單位：箱 → 個'), '主檔匯入預覽 ' + prev.slice(0, 500));
+    await shot('items-import', false);
+    await applied('已匯入原物料主檔');
+    const items1 = await dbAll('inventory_items');
+    const beanI = items1.find((i) => i.name === '花季配方豆');
+    const cupI = items1.find((i) => i.name === '紙杯 12oz');
+    const oatI = items1.find((i) => i.name === '燕麥奶 1L');
+    const milkI = items1.find((i) => i.name === '鮮乳 936ml');
+    assert(beanI.safety_stock === 2000 && beanI.reorder_qty === 3000 && beanI.note === '每週二叫貨' && milkI.pack_size === 936 && milkI.safety_stock === 5000, '主檔匯入：改到的欄位、空白不覆蓋 ' + JSON.stringify([beanI, milkI]));
+    assert(oatI && oatI.category === 'dairy' && oatI.sku === 'DY-002' && oatI.unit === 'ml' && oatI.pack_type === '瓶' && oatI.pack_size === 1000 && oatI.safety_stock === 2000, '主檔匯入：新增燕麥奶 ' + JSON.stringify(oatI));
+    assert(!items1.some((i) => i.name === '測試錯誤列'), '錯誤列沒有匯入');
+    const cupMv = (await dbAll('inventory_moves')).filter((m) => m.item_id === cupI.id && m.type === 'purchase');
+    assert(cupI.unit === '個' && cupI.pack_size === 50 && cupMv.length === 1 && cupMv[0].qty === 100, '改每包裝折合 50：進貨 2 箱重算成 100 個 ' + JSON.stringify(cupMv));
+    // 依耗用量建議安全庫存：改看最近 21 天，只套用花季配方豆
+    await page.click('[data-act="safetySuggest"]');
+    await page.waitForSelector('dialog #ss-table');
+    await page.fill('dialog [name=lookback_days]', '21');
+    const ssRows = await page.$$eval('dialog #ss-table tbody tr', (trs) => trs.map((tr) => ({ id: tr.dataset.id, name: tr.children[2].textContent.trim(), sugg: tr.querySelector('[data-sugg]').textContent.trim(), disabled: tr.querySelector('[name=pick]').disabled })));
+    const beanS = ssRows.find((r) => r.id === beanI.id);
+    const milkS = ssRows.find((r) => r.id === milkI.id);
+    assert(beanS && /^[\d,]+$/.test(beanS.sugg) && !beanS.disabled, '花季配方豆有建議值 ' + JSON.stringify(beanS));
+    assert(milkS && milkS.sugg === '資料不足' && milkS.disabled, '沒有耗用的鮮乳顯示資料不足、不能勾 ' + JSON.stringify(milkS));
+    assert((await page.textContent('dialog #ss-sum')).includes('近 21 天'), '改天數後重新計算');
+    await shot('safety-suggest', false);
+    await page.click('dialog [data-sel="none"]');
+    await page.check(`dialog #ss-table tbody tr[data-id="${beanI.id}"] [name=pick]`);
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForFunction(() => document.querySelector('dialog')?.textContent.includes('改成建議值'));
+    await applied('的安全庫存');
+    const beanSafety = Number(beanS.sugg.replace(/,/g, ''));
+    const items2 = await dbAll('inventory_items');
+    assert(items2.find((i) => i.id === beanI.id).safety_stock === beanSafety && items2.find((i) => i.id === oatI.id).safety_stock === 2000, '只有勾選的品項改成建議值 ' + beanSafety);
+    const rule = (await dbAll('settings')).find((s) => s.id === 'main')?.value?.safety_stock_rule;
+    assert(rule && rule.lookback_days === 21 && rule.lead_days === 3 && rule.safety_days === 2, '建議規則存進設定 ' + JSON.stringify(rule));
+    const st1 = await stockTable();
+    const beanRow1 = st1.rows.find((r) => r[1].includes('花季配方豆'));
+    assert(beanRow1[sgCol] === beanS.sugg, '庫存水位的建議安全庫存用存好的規則 ' + JSON.stringify(beanRow1));
+    // 二-10 盤點表：匯出 Excel（9/30）
+    await page.click('[data-act="countSheet"]');
+    await page.fill('dialog [name=date]', '2026-09-30');
+    const cs = await saveDl(() => page.click('dialog .modal-foot [data-i="1"]'));
+    assert(cs.name === '盤點表_2026-09-30.xlsx', '盤點表檔名 ' + cs.name);
+    const sheetRows = cs.sheets[0].rows;
+    const hdr = sheetRows.findIndex((r) => r.includes('初盤量'));
+    assert(hdr > 0 && sheetRows[hdr].join('|') === '物品編號|品名|分類|單位|帳面數量|初盤量|複盤量|差異|備註|系統代號（勿改）', '盤點表欄位 ' + (sheetRows[hdr] || []).join('|'));
+    assert(sheetRows.some((r) => r[0] === '盤點日' && r[1] === '2026-09-30') && sheetRows.some((r) => r[0] === '初盤人：' && r[2] === '複盤人：') && sheetRows.some((r) => /^1211 /.test(r[0] || '') && r.slice(1).every((x) => !x)), '盤點表有盤點日、科目分組、簽名欄');
+    const bookOf = (name) => Number(sheetRows.find((r) => r[1] === name)[4]);
+    const beanBook = bookOf('花季配方豆');
+    assert(bookOf('鮮乳 936ml') === 11232 && bookOf('紙杯 12oz') === 100 && Number.isFinite(beanBook), '帳面數量算到盤點日 ' + beanBook);
+    // 列印：另開視窗
+    await page.click('[data-act="countSheet"]');
+    await page.fill('dialog [name=date]', '2026-09-30');
+    const [popup] = await Promise.all([page.waitForEvent('popup'), page.click('dialog .modal-foot [data-i="2"]')]);
+    await popup.waitForFunction(() => document.querySelectorAll('table tbody tr').length > 3, null, { timeout: 15000 });
+    const ptxt = await popup.textContent('body');
+    assert(ptxt.includes('原物料盤點表') && ptxt.includes('2026-09-30') && ptxt.includes('初盤量') && ptxt.includes('複盤量') && ptxt.includes('複盤人') && ptxt.includes('花季配方豆') && ptxt.includes('11,232'), '列印盤點表內容 ' + ptxt.slice(0, 300));
+    await popup.screenshot({ path: join(OUT, `${String(++step).padStart(2, '0')}-count-sheet-print.png`), fullPage: true });
+    await popup.close();
+    await closed();
+    // 匯入盤點結果：花季配方豆初盤 1,000、複盤 900（採用複盤）；鮮乳只有初盤 11,000；其他沒填
+    const filled = sheetRows.map((r) => [...r]);
+    const rowOf = (name) => filled.find((r) => r[1] === name);
+    Object.assign(rowOf('花季配方豆'), { 5: '1000', 6: '900', 8: '開封一包' });
+    Object.assign(rowOf('鮮乳 936ml'), { 5: '11000' });
+    const countFile = await writeXlsx('盤點表_2026-09-30_填好.xlsx', filled, '盤點表');
+    await upload('countImport', countFile);
+    assert((await page.inputValue('dialog [name=date]')) === '2026-09-30', '帶入盤點表上的盤點日');
+    const stPrev = await page.textContent('dialog');
+    assert(stPrev.includes('盤點 2 項') && stPrev.includes('9 月期末盤點金額') && stPrev.includes('不會重複'), '盤點匯入預覽 ' + stPrev.slice(0, 300));
+    const stLines = await page.$$eval('dialog #st-lines tbody tr', (trs) => trs.map((tr) => [...tr.children].map((td) => td.textContent.trim())));
+    const beanL = stLines.find((r) => r[1].startsWith('花季配方豆'));
+    assert(beanL && Number(beanL[3].replace(/,/g, '')) === beanBook && beanL[4] === '1,000' && beanL[5] === '900' && beanL[6] === '900', '預覽：帳面、初盤、複盤、採用 ' + JSON.stringify(beanL));
+    if (await page.$('dialog [name=overwrite]')) await page.check('dialog [name=overwrite]');
+    await shot('stocktake-import', false);
+    await applied('的盤點');
+    const adjOf = async () => (await dbAll('inventory_moves')).filter((m) => m.type === 'adjust' && m.date === '2026-09-30');
+    const adj = await adjOf();
+    const beanAdj = adj.find((m) => m.item_id === beanI.id);
+    const milkAdj = adj.find((m) => m.item_id === milkI.id);
+    assert(adj.length === 2 && beanAdj.id === `stk_2026-09-30_${beanI.id}` && Math.abs(beanAdj.qty - (900 - beanBook)) < 1e-6 && milkAdj.qty === 11000 - 11232 && beanAdj.note.includes('初盤 1000／複盤 900') && beanAdj.note.includes('開封一包'), '盤點調整異動 ' + JSON.stringify(adj));
+    const milkPur = (await dbAll('inventory_moves')).find((m) => m.item_id === milkI.id && m.type === 'purchase');
+    const sts = (await dbAll('stocktakes')).filter((s) => s.month === '2026-09');
+    const st1211 = sts.find((s) => s.account === '1211');
+    const st1212 = sts.find((s) => s.account === '1212');
+    assert(st1211 && st1211.note === '由盤點表匯入 2026-09-30' && Number.isInteger(st1211.value), '1211 期末盤點金額 ' + JSON.stringify(st1211));
+    assert(st1212 && st1212.value === Math.round((11000 * Number(milkPur.amount_ex ?? milkPur.amount / 1.05)) / milkPur.qty), '1212 期末＝實盤 × 未稅平均成本 ' + JSON.stringify([st1212, milkPur.amount_ex, milkPur.qty]));
+    assert(!sts.some((s) => s.account === '1215'), '沒盤到任何品項的科目不寫入');
+    // 同一份再匯入一次：取代，不重複
+    await upload('countImport', countFile);
+    assert(!(await page.$('dialog [name=overwrite]')), '金額相同不用問覆蓋');
+    await applied('的盤點');
+    const adj2 = await adjOf();
+    assert(adj2.length === 2 && adj2.find((m) => m.item_id === beanI.id).qty === beanAdj.qty, '重新匯入不重複 ' + JSON.stringify(adj2));
+    const st2 = await stockTable();
+    const beanRow2 = st2.rows.find((r) => r[1].includes('花季配方豆'));
+    assert(beanRow2[st2.head.indexOf('現有庫存')] === '900' && beanRow2[st2.head.indexOf('盤點調整')] !== '', '庫存水位：盤點後現有庫存＝實盤 ' + JSON.stringify(beanRow2));
+    // 存貨與成本：期末盤點金額已填好，說明有連到盤點表
+    await go('cost?ym=2026-09');
+    assert(Number(await page.inputValue('input[data-act="count"][data-acc="1212"]')) === st1212.value && Number(await page.inputValue('input[data-act="count"][data-acc="1211"]')) === st1211.value, '存貨與成本顯示匯入的期末盤點金額');
+    const costTxt = await page.textContent('#view');
+    assert(costTxt.includes('由盤點表匯入 2026-09-30') && costTxt.includes('匯入盤點結果') && (await page.$('.callout a[href="#/inventory"]')), '存貨與成本頁說明連到盤點表');
+    await shot('cost-stocktake', false);
+  }
   await go('customers');
   await shot('customers', false);
   // 行銷活動：關鍵字「燕麥」

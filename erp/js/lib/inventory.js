@@ -157,6 +157,74 @@ export function stockLevels(items, moves, usage, { asOf, lookbackDays = 14, vatR
   });
 }
 
+// ─────────── 依耗用量建議安全庫存（11/12 需求 二-6）
+// 建議安全庫存 ＝ 近 N 天日均耗用 ×（叫貨前置天數 ＋ 安全天數）；日均耗用＝（POS 銷售 × 配方，含招待／測試／報廢）＋ 手動登記的耗用與報廢，÷ 天數
+export const SAFETY_RULE_DEFAULT = { lookback_days: 28, lead_days: 3, safety_days: 2 };
+export const SAFETY_MIN_DAYS = 7; // 銷售資料少於 7 天就不建議（資料不足）
+
+const intIn = (v, d, lo, hi) => {
+  if (v === null || v === undefined || String(v).trim() === '') return d;
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d;
+};
+export function normalizeSafetyRule(r = {}) {
+  const x = r || {};
+  return { lookback_days: intIn(x.lookback_days, SAFETY_RULE_DEFAULT.lookback_days, SAFETY_MIN_DAYS, 365), lead_days: intIn(x.lead_days, SAFETY_RULE_DEFAULT.lead_days, 0, 90), safety_days: intIn(x.safety_days, SAFETY_RULE_DEFAULT.safety_days, 0, 90) };
+}
+
+/**
+ * 各品項近 lookbackDays 天（到 asOf，含當天）的耗用量與日均耗用；dataStart（銷售資料起算日）晚於區間起點時只算有資料的天數。
+ * @returns Map(item_id → { from, to, days, total, avgDaily })
+ */
+export function usageRates(items, moves, usage, { asOf, lookbackDays = SAFETY_RULE_DEFAULT.lookback_days, dataStart = '' } = {}) {
+  let from = addDays(asOf, -lookbackDays + 1);
+  if (dataStart && dataStart > from) from = dataStart;
+  const days = from > asOf ? 0 : daysBetween(from, asOf) + 1;
+  const res = new Map(items.map((it) => [it.id, { from, to: asOf, days, total: 0, avgDaily: 0 }]));
+  for (const [id, u] of usage || []) {
+    const r = res.get(id);
+    if (r) for (const [d, q] of u.byDate || []) if (d >= from && d <= asOf) r.total += q;
+  }
+  for (const m of moves) {
+    if (m.type !== 'consume' && m.type !== 'scrap') continue;
+    const r = res.get(m.item_id);
+    if (r && m.date >= from && m.date <= asOf) r.total += Number(m.qty) || 0;
+  }
+  for (const r of res.values()) {
+    r.total = round2(r.total);
+    r.avgDaily = r.days > 0 ? r.total / r.days : 0;
+  }
+  return res;
+}
+
+// 進位：有進貨包裝（每包裝折合 > 1）進位到整包；其他進位到整數（100 以上到 10、1,000 以上到 100）
+export function roundSafety(raw, item = {}) {
+  if (!(raw > 0)) return 0;
+  const pack = Number(item.pack_size) || 0;
+  if (item.pack_type && pack > 1) return round2(Math.ceil(raw / pack - 1e-9) * pack);
+  const step = raw >= 1000 ? 100 : raw >= 100 ? 10 : 1;
+  return Math.ceil(raw / step - 1e-9) * step;
+}
+
+/** 單一品項的建議安全庫存；資料不足時 value 為 null 並附原因 */
+export function suggestSafetyStock(item, rate, rule = SAFETY_RULE_DEFAULT) {
+  const r = normalizeSafetyRule(rule);
+  const cover = r.lead_days + r.safety_days;
+  const base = { value: null, raw: null, avgDaily: rate?.avgDaily || 0, days: rate?.days || 0, total: rate?.total || 0, cover };
+  if (!rate || rate.days < SAFETY_MIN_DAYS) return { ...base, reason: `資料不足：銷售資料只有 ${rate?.days || 0} 天（至少要 ${SAFETY_MIN_DAYS} 天）` };
+  if (!(rate.total > 0)) return { ...base, reason: `資料不足：近 ${rate.days} 天沒有耗用（請確認配方）` };
+  if (cover <= 0) return { ...base, reason: '叫貨前置天數＋安全天數至少要 1 天' };
+  const raw = rate.avgDaily * cover;
+  return { ...base, raw, value: roundSafety(raw, item), reason: '' };
+}
+
+/** 全部品項的建議安全庫存：Map(item_id → suggestSafetyStock 結果) */
+export function safetySuggestions(items, moves, usage, { asOf, dataStart = '', rule = SAFETY_RULE_DEFAULT } = {}) {
+  const r = normalizeSafetyRule(rule);
+  const rates = usageRates(items, moves, usage, { asOf, lookbackDays: r.lookback_days, dataStart });
+  return new Map(items.map((it) => [it.id, suggestSafetyStock(it, rates.get(it.id), r)]));
+}
+
 // 產品理論成本（配方 × 平均成本）
 export function productCosts(products, recipes, avgCostOf) {
   const out = new Map();

@@ -9,6 +9,7 @@ import { getSettings, getAccounts } from '../state.js';
 import { INVENTORY_CATEGORIES, priceHistory } from '../lib/inventory.js';
 import { applyPurchase, groupPurchases, supplierLabel, findItem, findSupplier, guessItemCategory, completeLine, templateCSV, VAT_RATE } from '../lib/purchases.js';
 import { fmtUnitCost, itemLabel, sortItems, editItem, stockSnapshot } from './inventory.js';
+import { exportItems, importItems, suggestSafetyDialog } from './_itemsio.js';
 import { lineChart } from '../charts.js';
 import { uid } from '../lib/text.js';
 import { today, daysBetween } from '../lib/dates.js';
@@ -356,7 +357,8 @@ export async function render(root, ctx) {
       const lv = snap.levels.get(it.id);
       const avgCost = lv?.avgCost ?? 0;
       const last = [it.last_purchase_date, lastBuy.get(it.id)].filter(Boolean).sort().pop() || '';
-      return { ...it, id: it.id, onHand: lv?.onHand ?? 0, avgCost, last, recipes: inRecipe.get(it.id) || 0, supplier: supplierLabel(supBy.get(it.supplier_id)), stock: lv?.status || 'ok', pack: it.pack_type ? `${it.pack_type}${Number(it.pack_size) > 0 && Number(it.pack_size) !== 1 ? ` ＝ ${fmt(Number(it.pack_size))} ${it.unit}` : ''}` : '' };
+      const sg = snap.suggest?.get(it.id);
+      return { ...it, id: it.id, onHand: lv?.onHand ?? 0, avgCost, last, suggest: sg?.value ?? null, suggestWhy: sg?.reason || '', recipes: inRecipe.get(it.id) || 0, supplier: supplierLabel(supBy.get(it.supplier_id)), stock: lv?.status || 'ok', pack: it.pack_type ? `${it.pack_type}${Number(it.pack_size) > 0 && Number(it.pack_size) !== 1 ? ` ＝ ${fmt(Number(it.pack_size))} ${it.unit}` : ''}` : '' };
     });
     const low = rows.filter((r) => r.stock === 'low' || r.stock === 'out').length;
     const noSafety = rows.filter((r) => !(Number(r.safety_stock) > 0)).length;
@@ -369,7 +371,8 @@ export async function render(root, ctx) {
         ${stat('未設安全庫存', fmt(noSafety), noSafety ? '點「修改」設定預警線' : '都已設定', noSafety ? 'warn' : '')}
         ${stat('低於安全庫存／缺貨', fmt(low), low ? '建議叫貨' : '庫存正常', low ? 'bad' : '')}
       </div>
-      <div class="callout" style="margin-bottom:16px"><p><b>商品類別（原物料主檔）</b>由進貨單、發票自動判別歸類、計算與建檔：物品編號、品名、單位、含稅單價、進貨包裝與每包裝價格由進貨單自動帶入；成本／單位＝移動平均成本（<b>未稅</b>，每庫存單位；進貨紀錄的未稅金額 ÷ 數量，進項稅額記在 1261 扣抵、不算成本）。進貨單上的單位若是「箱、瓶、包」等包裝，請在「修改」設定每一包裝折合幾個庫存單位（例：1 瓶 ＝ 936 ml），庫存與配方就以庫存單位計算。</p></div>`,
+      <div class="callout" style="margin-bottom:16px"><p><b>商品類別（原物料主檔）</b>由進貨單、發票自動判別歸類、計算與建檔：物品編號、品名、單位、含稅單價、進貨包裝與每包裝價格由進貨單自動帶入；成本／單位＝移動平均成本（<b>未稅</b>，每庫存單位；進貨紀錄的未稅金額 ÷ 數量，進項稅額記在 1261 扣抵、不算成本）。進貨單上的單位若是「箱、瓶、包」等包裝，請在「修改」設定每一包裝折合幾個庫存單位（例：1 瓶 ＝ 936 ml），庫存與配方就以庫存單位計算。</p></div>
+      <div class="row" style="margin-bottom:12px"><button class="btn sm" data-act="itemsExport">匯出主檔 Excel</button><button class="btn sm" data-act="itemsImport">匯入主檔 Excel</button><button class="btn sm" data-act="safetySuggest">依耗用量建議安全庫存</button><span class="muted" style="font-size:12.5px">安全庫存、建議叫貨量、進貨包裝與每包裝折合可以在 Excel 一次改好再匯回（空白格不會覆蓋）</span></div>`,
     );
     dataTable(body, {
       rows,
@@ -390,6 +393,7 @@ export async function render(root, ctx) {
         { key: 'category', label: '自動分類', fmt: (v, r) => h`${INVENTORY_CATEGORIES[v]?.label || v || ''}（${INVENTORY_CATEGORIES[v]?.gl || ''}）${r.auto_category ? small('待確認') : ''}`, csv: (v) => `${INVENTORY_CATEGORIES[v]?.label || v || ''}（${INVENTORY_CATEGORIES[v]?.gl || ''}）` },
         { key: 'note', label: '備註' },
         { key: 'safety_stock', label: '安全庫存', align: 'num', fmt: (v, r) => (Number(v) > 0 ? `${fmt(Number(v))} ${r.unit}` : status('na', '未設')), csv: (v) => v ?? '' },
+        { key: 'suggest', label: '建議安全庫存', align: 'num', sort: (r) => r.suggest ?? null, fmt: (v, r) => (v === null || v === undefined ? h`<span class="muted" style="font-size:12px" title="${r.suggestWhy}">資料不足</span>` : `${fmt(v)} ${r.unit}`), csv: (v) => (v === null || v === undefined ? '資料不足' : v) },
         { key: 'recipes', label: '用於配方', align: 'num', fmt: (v) => (v ? fmt(v) : h`<a href="#/inventory?tab=bom" class="muted">去設定</a>`), csv: (v) => v },
         { key: 'id', label: '', nosort: true, fmt: (v) => h`<span style="white-space:nowrap"><button class="btn sm" data-act="editItem" data-id="${v}">修改</button> <a class="btn sm ghost" href="#/purchases?tab=price&amp;item=${v}">單價</a></span>`, csv: () => '' },
       ],
@@ -519,6 +523,13 @@ export async function render(root, ctx) {
       if (it && (await editItem(it, { items, moves, recipes, suppliers, accName }))) await reload();
     },
     template: () => downloadCSV('進貨紀錄範本.csv', templateCSV('purchases')),
+    itemsExport: () => exportItems(),
+    itemsImport: async () => {
+      if (await importItems()) await reload();
+    },
+    safetySuggest: async () => {
+      if (await suggestSafetyDialog()) await reload();
+    },
   });
   await load();
   draw();

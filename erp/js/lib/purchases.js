@@ -78,6 +78,20 @@ export function toStockQty(item, unit, qty) {
   return q;
 }
 
+/**
+ * 品項的包裝折合量、進貨包裝或庫存單位改了：以發票上的數量（pack_qty）重算該品項進貨行的庫存數量。
+ * 回傳數量有變的進貨異動（要存回 inventory_moves）；沒改到包裝相關欄位時回傳空陣列。
+ */
+export function repackMoves(before, after, moves) {
+  const changed = after.pack_size !== before.pack_size || !unitMatches(after.pack_type, before.pack_type) || !unitMatches(after.unit, before.unit);
+  if (!changed) return [];
+  return moves
+    .filter((m) => m.item_id === after.id && m.type === 'purchase' && m.pack_qty !== null && m.pack_qty !== undefined && m.unit)
+    .map((m) => [m, { ...m, qty: toStockQty(after, m.unit, m.pack_qty) }])
+    .filter(([m, next]) => next.qty !== m.qty)
+    .map(([, next]) => next);
+}
+
 export const supplierLabel = (s) => (s ? s.short_name || s.name || '' : '');
 
 /**
