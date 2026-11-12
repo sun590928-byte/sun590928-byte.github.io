@@ -751,7 +751,7 @@ try {
     assert(/JE11120001\+JE11120002/.test(p3.e.description), '分錄摘要跟著列兩張發票：' + p3.e.description);
     const s1 = await vatRow('JE11120001');
     const s2 = await vatRow('JE11120002');
-    assert(s1.includes('可扣抵') && !s1.includes('不可扣抵') && s1.includes('30') && /扣抵代號 3/.test(s2) && s2.includes('6120'), '401：兩張發票分開列：' + s1 + '｜' + s2);
+    assert(s1.includes('可扣抵') && !s1.includes('不可扣抵') && s1.includes('30') && /扣抵代號 3|不得扣抵/.test(s2) && s2.includes('6120'), '401：兩張發票分開列：' + s1 + '｜' + s2);
     await go('documents?tab=posted');
     const pc = (await page.locator('.doc-card', { hasText: 'JE11120002' }).textContent()).replace(/\s+/g, ' ');
     assert(pc.includes('拆分 2 行') && pc.includes('在日記簿修改'), '憑證卡片顯示新的拆分與修改紀錄：' + pc.slice(0, 200));

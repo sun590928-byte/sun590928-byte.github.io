@@ -129,10 +129,11 @@ export async function render(root, ctx) {
         {
           key: 'name',
           label: 'POS 品名',
+          width: '16%',
           fmt: (v, r) =>
             h`<a href="#" data-act="recipe" data-id="${r.id}" data-name="${v}"><b>${v}</b></a>${r.isNew ? h` ${badge('新品名', 'medium')}` : ''}${r.mapped ? h` ${badge('已整併', 'accent')}` : ''}${r.mapped || r.spellings.length > 1 ? small(`POS 上寫作：${r.spellings.join('、')}`) : ''}`,
         },
-        { key: 'category', label: '品類', fmt: (v) => CATEGORIES[v] || v || '' },
+        { key: 'category', label: '品類', fmt: (v) => h`<span style="white-space:nowrap">${CATEGORIES[v] || v || ''}</span>` },
         { key: 'qty', label: '售出份數', align: 'num', fmt: (v, r) => h`${fmt(v)}${r.otherQty ? small(`另招待／測試／報廢 ${fmt(r.otherQty)}`) : ''}` },
         { key: 'revenue', label: '營收', align: 'num', fmt: (v) => '$' + fmt(Math.round(v)) },
         { key: 'state', label: '配方', fmt: (v, r) => h`<span style="white-space:nowrap">${v === 1 ? status('good', `已設（${r.recipeCount} 項）`) : v === 2 ? status('na', '不需配方') : status('warn', '還沒設配方')}</span>` },
