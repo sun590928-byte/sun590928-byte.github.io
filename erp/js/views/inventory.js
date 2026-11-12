@@ -385,40 +385,14 @@ export async function render(root, ctx) {
     });
   }
 
+  // 11/12：配方搬到左側選單「BOM 配方表」（POS 品名不用先整併就能直接設），這個分頁只留說明與連結
   function drawBom(top, body) {
-    if (!idx.products.length) {
-      mount(body, emptyState('尚未建立標準品項', '配方要設定在標準品項上。請先到「品項整併」把 POS 上的品名合併成標準品項，再回來設定每一份用了哪些原料。', h`<a class="btn primary" href="#/products">前往品項整併</a>`));
-      return;
-    }
-    const costs = averageCosts(items, moves, { asOf: asOfDate(), vatRate });
-    const perProduct = productCosts(idx.products, recipes, (id) => costs.get(id)?.avg || 0);
-    const count = new Map();
-    for (const r of recipes) count.set(r.product_id, (count.get(r.product_id) || 0) + 1);
-    const rows = idx.products.map((p) => {
-      const price = priceOf(p.id);
-      const cost = perProduct.has(p.id) ? perProduct.get(p.id) : null;
-      return { id: p.id, name: p.name, category: p.category, n: count.get(p.id) || 0, qty: sold.get(p.id)?.qty || 0, cost, price, margin: marginOf(price, cost) };
-    });
+    const n = new Set(recipes.map((r) => r.product_id)).size;
     mount(
-      top,
-      h`<div class="callout" style="margin-bottom:16px"><p>配方＝每售出<b>一份</b>用掉的原料量，以原料的庫存單位計（咖啡豆 g、鮮奶 ml、杯蓋 個）；設定後 POS 每賣一份就自動扣庫存。理論成本＝Σ 用量 × 移動平均成本（未稅）；毛利率以平均售價${vatDiv > 1 ? '扣除 5% 營業稅後' : ''}計算。</p>
-        ${unmapped.size ? h`<p>另有 <b>${unmapped.size}</b> 個 POS 品名尚未整併到標準品項，這些銷售不會扣庫存 → <a href="#/products">前往品項整併</a></p>` : ''}</div>`,
+      body,
+      h`<div class="callout" style="margin:4px 0"><p>配方（BOM）已搬到左側選單的 <b>BOM 配方表</b>：直接列出近 30 天 POS 賣出的品名，每個品名都能直接設配方，<b>不用先做品項整併</b>；也可以匯入／匯出 Excel、從別的品名複製配方。${n ? `目前已有 ${n} 個品名設了配方。` : ''}</p>
+        <p><a class="btn primary" href="#/bom">前往 BOM 配方表</a></p></div>`,
     );
-    dataTable(body, {
-      rows,
-      exportName: '配方成本與毛利.csv',
-      initialSort: { key: 'qty', dir: -1 },
-      columns: [
-        { key: 'name', label: '品項', fmt: (v) => h`<b>${v}</b>`, csv: (v) => v },
-        { key: 'category', label: '品類', fmt: (v) => CATEGORIES[v] || v || '' },
-        { key: 'qty', label: '售出份數', align: 'num', fmt: (v) => fmt(v) },
-        { key: 'n', label: '配方原料數', align: 'num', fmt: (v) => (v ? fmt(v) : status('warn', '未設定')), csv: (v) => v },
-        { key: 'cost', label: '理論成本／份', align: 'num', fmt: (v) => (v === null ? '—' : fmtUnitCost(v)) },
-        { key: 'price', label: '平均售價', align: 'num', fmt: (v) => (v === null ? '—' : '$' + fmt(round2(v))) },
-        { key: 'margin', label: '估計毛利率', align: 'num', fmt: (v) => (v === null ? '—' : v < 0 ? status('bad', pct(v)) : pct(v)), csv: (v) => (v === null ? '' : pct(v)) },
-        { key: 'id', label: '', nosort: true, fmt: (v, r) => h`<button class="btn sm ${r.n ? '' : 'primary'}" data-act="recipe" data-id="${v}">${r.n ? '修改配方' : '設定配方'}</button>`, csv: () => '' },
-      ],
-    });
   }
 
   function draw() {

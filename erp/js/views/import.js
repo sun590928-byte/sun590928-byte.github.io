@@ -2,7 +2,7 @@
 
 import { h, raw, mount, bindActions, dataTable, toast, pickFiles, confirmBox, options, fmt, setBusy, badge, downloadCSV } from '../ui.js';
 import { store } from '../store.js';
-import { getSettings, getAccounts } from '../state.js';
+import { getSettings, getAccounts, getProductIndex } from '../state.js';
 import { decodeBytes, parseCSV } from '../lib/csv.js';
 import { readXlsx } from '../lib/xlsx.js';
 import { TARGETS, detectHeaderRow, autoMap, headerSignature, guessTarget, extract } from '../lib/importer.js';
@@ -20,6 +20,7 @@ import { normalizePurchaseRows, normalizeSupplierRows, templateCSV, supplierLabe
 import { ASSET_CATEGORIES } from '../lib/coa.js';
 import { PROVIDERS } from '../lib/autojournal.js';
 import { syncAll, describeSync } from '../sync.js';
+import { recipeGaps } from '../lib/bom.js';
 
 const TARGET_STORE = { sales: 'sales_lines', ecpay_tx: 'payment_tx', payouts: 'payouts', bank: 'bank_lines', journal: 'journal_entries', suppliers: 'suppliers', purchases: 'inventory_moves', assets: 'fixed_assets', customers: 'customers', einvoice: 'einvoices' };
 // 供應商、進貨紀錄頁的「從匯入中心匯入」會帶 ?target=，這裡先固定資料類型並提供範本
@@ -30,6 +31,7 @@ export async function render(root, ctx) {
   let queue = [];
   let cur = null; // 目前處理中的檔案
   let prepared = null;
+  let bomNotice = null; // 匯入 POS 銷售後：還沒設配方的品名
   const forced = TARGETS[ctx.params.target] ? ctx.params.target : null;
 
   const settings = await getSettings();
@@ -169,6 +171,18 @@ export async function render(root, ctx) {
     return { rows: r.rows, all: r.preview, preview: r.preview, dup: r.unchanged, skipped: r.skipped, dates: [], added: r.preview.filter((x) => x._state === 'new').length, updated: r.preview.filter((x) => x._state === 'update').length };
   }
 
+  // 這次匯入的 POS 銷售裡還沒設配方的品名（之前沒賣過的標「新品名」），匯入完提醒到 BOM 配方表設定
+  async function salesRecipeGaps(newRows) {
+    const s = await getSettings();
+    const fresh = newRows.filter((l) => l.date >= s.revenue_start);
+    if (!fresh.length) return null;
+    const [idx, recipes, all] = await Promise.all([getProductIndex(), store.all('recipes'), store.all('sales_lines')]);
+    const ids = new Set(newRows.map((l) => l.id));
+    const seen = new Set(all.filter((l) => !ids.has(l.id)).map((l) => idx.of(l).id));
+    const gaps = recipeGaps(fresh, (l) => idx.of(l), recipes, { skip: s.bom_skip || [], seen });
+    return gaps.length ? gaps : null;
+  }
+
   async function commit() {
     const f = cur;
     const p = prepared;
@@ -179,6 +193,7 @@ export async function render(root, ctx) {
       return;
     }
     setBusy(true, '匯入中…');
+    bomNotice = null;
     try {
       const batchId = 'b_' + f.hash.slice(0, 12);
       let rows = p.rows;
@@ -197,6 +212,7 @@ export async function render(root, ctx) {
         if (p.newSups.length) await store.put('suppliers', p.newSups);
       }
       await store.put(TARGET_STORE[t], rows);
+      if (t === 'sales') bomNotice = await salesRecipeGaps(rows).catch((e) => (console.error(e), null)); // 提醒失敗不影響匯入
       const dates = p.dates.sort();
       await store.put('import_batches', {
         id: batchId + '_' + t,
@@ -298,7 +314,12 @@ export async function render(root, ctx) {
 
   function dropZone() {
     const back = { suppliers: ['suppliers', '供應商'], purchases: ['purchases', '進貨紀錄'] }[forced];
+    const list = (gs) => gs.slice(0, 8).map((g) => g.name + (g.isNew ? '（新品名）' : '')).join('、') + (gs.length > 8 ? '…' : '');
     return h`${
+      bomNotice
+        ? h`<div class="callout warn" id="bom-notice" style="margin-bottom:12px"><p><b>這次匯入有 ${bomNotice.length} 個品名還沒設配方</b>：${list(bomNotice)}。沒有配方，賣出時不會扣原物料庫存、也算不出成本。 <a class="btn sm" href="#/bom?filter=missing">到 BOM 配方表設定</a></p></div>`
+        : ''
+    }${
       forced
         ? h`<div class="callout" style="margin-bottom:12px"><p><b>匯入「${TARGETS[forced].label}」</b>：${TARGETS[forced].hint}。欄位順序不限，表頭文字相近即可自動對應。${TEMPLATE_NAME[forced] ? h` <button class="btn sm" data-act="template" data-target="${forced}">下載範本 CSV</button>` : ''}${back ? h` <a class="btn sm ghost" href="#/${back[0]}">回${back[1]}</a>` : ''}</p></div>`
         : ''

@@ -864,17 +864,177 @@ try {
   await page.fill('dialog [name=amount]', '5500');
   await page.click('dialog .modal-foot .btn.primary');
   await page.waitForTimeout(400);
+  // 配方改在左側選單「BOM 配方表」設（11/12），進銷存的配方分頁只留連結
   await page.click('[data-act="tab"][data-tab="bom"]');
-  await page.click('[data-act="recipe"]');
+  assert((await page.textContent('#inv-body')).includes('前往 BOM 配方表'), '進銷存的配方分頁改成連到 BOM 配方表');
+  await go('bom');
+  await page.click('#bom-table button[data-act="recipe"]');
   await page.selectOption('dialog [name=item]', { index: 1 });
   await page.fill('dialog [name=qty]', '18');
   await page.click('dialog .modal-foot .btn.primary');
   await page.waitForTimeout(400);
+  await go('inventory');
   await page.click('[data-act="tab"][data-tab="stock"]');
   await page.waitForTimeout(300);
   const onHand = await page.$$eval('table.grid tbody tr', (trs) => trs.map((tr) => [...tr.children].map((td) => td.textContent.trim())));
   console.log('庫存水位：', onHand[0]);
   await shot('inventory', false);
+
+  // 11/12 需求 一-1、二-7～二-9（BOM 與品項整併）
+  {
+    const viewText = () => page.textContent('#view');
+    const optValue = (sel, text) => page.$eval(sel, (s, t) => ([...s.options].find((o) => o.textContent.trim() === t) || [...s.options].find((o) => o.textContent.includes(t)))?.value || '', text);
+    const bomRow = (name) => page.$$eval('#bom-table tbody tr', (trs, n) => trs.find((tr) => [...tr.querySelectorAll('[data-name]')].some((el) => el.dataset.name === n))?.textContent || '', name);
+    const lastToast = () => page.$$eval('#toasts .toast', (ts) => ts.map((t) => t.textContent).join('｜'));
+
+    // 一-1：原物料進銷存還在讀資料（雲端、資料多時較慢）就切到品項整併，舊頁面不能蓋掉新頁面，之後點「全部品名」也不能跑出庫存水位
+    await page.evaluate(async () => {
+      const { store } = await import('/erp/js/store.js');
+      window.__realAll = store.all;
+      store.all = async (...a) => {
+        await new Promise((r) => setTimeout(r, 150));
+        return window.__realAll.apply(store, a);
+      };
+      location.hash = '#/inventory';
+      setTimeout(() => (location.hash = '#/products'), 60);
+    });
+    await page.waitForTimeout(3500);
+    await page.evaluate(async () => {
+      const { store } = await import('/erp/js/store.js');
+      store.all = window.__realAll;
+    });
+    assert(!(await viewText()).includes('庫存水位') && (await viewText()).includes('疑似同品項'), '換頁後還在載入的進銷存不會蓋掉品項整併');
+    await go('dashboard');
+    await go('products');
+    await page.click('[data-act="tab"][data-tab="all"]');
+    await page.waitForTimeout(300);
+    assert((await viewText()).includes('POS 品名') && !(await viewText()).includes('庫存水位'), '品項整併「全部品名」顯示全部品名，不是庫存水位');
+    assert(page.url().endsWith('#/products?tab=all'), '網址 ' + page.url());
+    await go('dashboard');
+    await go('products?tab=all');
+    assert((await viewText()).includes('POS 品名') && !(await viewText()).includes('庫存水位'), '直接開 #/products?tab=all 顯示全部品名');
+    // 二-9：品項整併改為選用
+    assert((await page.textContent('#nav-links')).includes('品項整併（選用）'), '選單標示品項整併為選用');
+    assert((await viewText()).includes('品項整併是選用的'), '品項整併頁說明是選用、設配方不用先整併');
+
+    // 二-7：左側選單 BOM 配方表，直接列出近 30 天賣出的品名
+    await go('bom');
+    assert((await page.textContent('#nav-links')).includes('BOM 配方表'), '左側選單有 BOM 配方表');
+    assert((await viewText()).includes('期間內賣出的品名') && (await viewText()).includes('2026-08-24 ～ 2026-09-22'), 'BOM 配方表預設近 30 天（到 POS 最後一天）');
+    const missing0 = Number(await page.textContent('[data-missing-count]'));
+    assert(missing0 > 0 && (await page.$$('#bom-table tr.bom-missing')).length === missing0, `還沒設配方的品名標色並計數 ${missing0}`);
+    // 沒整併的品名直接設配方
+    const rawNames = await page.$$eval('#bom-table button[data-act="recipe"][data-raw="1"]', (bs) => bs.filter((b) => b.textContent.includes('設定配方')).map((b) => b.dataset.name));
+    console.log('沒整併、還沒設配方的品名：', rawNames);
+    const [nameA, nameB] = rawNames.filter((n) => !n.includes('燕麥')); // 燕麥：行銷活動測試用的關鍵字，不動它
+    assert(nameA && nameB, '至少有兩個沒整併的品名');
+    await page.click(`#bom-table button[data-act="recipe"][data-name="${nameA}"]`);
+    await page.waitForSelector('dialog #bom-lines');
+    await page.selectOption('dialog [name=item]', await optValue('dialog [name=item]', '花季配方豆'));
+    await page.fill('dialog [name=qty]', '9');
+    assert((await page.textContent('dialog [data-unit]')) === 'g', '配方視窗顯示原料單位');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForTimeout(500);
+    assert((await bomRow(nameA)).includes('已設（1 項）') && (await bomRow(nameA)).includes('花季配方豆 9 g'), `「${nameA}」不用整併就設好配方：` + (await bomRow(nameA)));
+    assert(Number(await page.textContent('[data-missing-count]')) === missing0 - 1, '未設配方數少 1');
+    // 複製配方：從 nameA 帶入再改用量
+    await page.click(`#bom-table button[data-act="recipe"][data-name="${nameB}"]`);
+    await page.waitForSelector('dialog [name=copyFrom]');
+    await page.selectOption('dialog [name=copyFrom]', await optValue('dialog [name=copyFrom]', nameA));
+    await page.click('dialog [data-copy]');
+    assert((await page.inputValue('dialog [name=qty]')) === '9', '複製配方帶入用量');
+    await page.fill('dialog [name=qty]', '7');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForTimeout(500);
+    assert((await bomRow(nameB)).includes('花季配方豆 7 g'), `複製「${nameA}」的配方到「${nameB}」再改用量`);
+    await shot('bom', false);
+
+    // 匯出（Excel）→ 改一改再匯入：品名對到原始品名、還沒賣過的新品名也收；找不到原料、用量 0 的列略過並說明
+    let sku = '';
+    {
+      const [dl] = await Promise.all([page.waitForEvent('download'), page.click('[data-act="export"]')]);
+      assert(/^BOM配方表_2026-09-22\.xlsx$/.test(dl.suggestedFilename()), '匯出檔名 ' + dl.suggestedFilename());
+      const file = join(OUT, dl.suggestedFilename());
+      await dl.saveAs(file);
+      const [sheet] = await readXlsx(new Uint8Array(await readFile(file)));
+      assert(sheet.rows[0].join('|') === 'POS 品名|原料物品編號|原料品名|用量|單位', '匯出表頭 ' + sheet.rows[0].join('|'));
+      const rowA = sheet.rows.find((r) => r[0] === nameA);
+      assert(rowA && rowA[2] === '花季配方豆' && Number(rowA[3]) === 9 && rowA[4] === 'g', '匯出含 nameA 的配方 ' + JSON.stringify(rowA));
+      assert(sheet.rows.some((r) => r[0] && !r[2]), '還沒設配方的品名也列出來當範本');
+      sku = rowA[1];
+    }
+    {
+      const csv = join(OUT, 'bom-import.csv');
+      await writeFile(csv, ['POS 品名,原料物品編號,原料品名,用量,單位', `${nameA},${sku},,12,g`, '新品測試拿鐵,,花季配方豆,15,g', `${nameB},,不存在的原料,5,g`, `${nameB},${sku},,0,g`].join('\r\n'));
+      const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="import"]')]);
+      await chooser.setFiles(csv);
+      await page.waitForSelector('dialog #rcp-sum');
+      const prev = await page.textContent('dialog');
+      assert(prev.includes('讀到 2 個品名') && prev.includes('略過 2 列'), '匯入預覽：' + prev.slice(0, 120));
+      assert(prev.includes('找不到原料「不存在的原料」') && prev.includes('用量要填大於 0') && prev.includes('取代現有配方') && prev.includes('POS 目前還沒有這個品名'), '匯入預覽列出略過原因與匯入後狀態');
+      await shot('bom-import', false);
+      await page.click('dialog .modal-foot .btn.primary');
+      await page.waitForTimeout(600);
+      assert((await bomRow(nameA)).includes('花季配方豆 12 g'), '匯入後換成新用量');
+      assert((await bomRow(nameB)).includes('花季配方豆 7 g'), '匯入檔被略過的品名配方不變');
+      const recs = await page.evaluate(async () => (await (await import('/erp/js/store.js')).store.all('recipes')).map((r) => r.product_id));
+      assert(recs.includes('raw:新品測試拿鐵'), '還沒賣過的品名配方先存著');
+    }
+
+    // 二-8：還沒設配方的提醒——儀表板、BOM 只看未設配方、匯入 POS 出現新品名
+    await go('dashboard');
+    const gaps = await page.textContent('#bom-gaps');
+    assert(gaps.includes(`近 30 天有 ${missing0 - 2} 個賣出的品名還沒設配方`) && (await page.$('#bom-gaps a[href="#/bom?filter=missing"]')), '儀表板提醒還沒設配方：' + gaps);
+    await page.click('#bom-gaps a');
+    await page.waitForFunction(() => document.querySelector('#bom-table tbody'));
+    await page.waitForTimeout(300);
+    const states = await page.$$eval('#bom-table tbody tr', (trs) => trs.map((tr) => tr.children[4]?.textContent.trim()));
+    assert(states.length === missing0 - 2 && states.every((s) => s === '!還沒設配方'), '只看未設配方 ' + JSON.stringify(states));
+    assert(await page.isChecked('[data-act="missing"]'), '網址帶 filter=missing 時勾選「只看未設配方」');
+    {
+      const csv = join(OUT, 'pos-new-item.csv');
+      await writeFile(csv, ['結帳時間,訂單編號,品項名稱,規格,數量,單價,小計,付款方式,備註,會員電話', '2026/09/22 15:10:00,Z9001,季節氣泡飲,,1,120,120,現金,老闆招待,'].join('\r\n'));
+      await go('import');
+      const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pick"]')]);
+      await chooser.setFiles(csv);
+      await page.waitForSelector('[data-act="commit"]');
+      assert((await page.$eval('[data-act="target"]', (el) => el.value)) === 'sales', '新品名測試檔判斷為 POS 銷售');
+      await commit();
+      const notice = await page.textContent('#bom-notice');
+      assert(notice.includes('這次匯入有 1 個品名還沒設配方') && notice.includes('季節氣泡飲') && notice.includes('新品名') && (await page.$('#bom-notice a[href="#/bom?filter=missing"]')), '匯入 POS 後提醒新品名還沒設配方：' + notice);
+      await shot('import-bom-notice', false);
+      await go('bom?filter=missing');
+      assert((await bomRow('季節氣泡飲')).includes('新品名'), 'BOM 配方表標出新品名');
+      // 刪掉這次測試匯入，不影響後面的報表
+      await go('import');
+      const delBtn = await page.$$eval('#batches tbody tr', (trs) => trs.findIndex((tr) => tr.textContent.includes('pos-new-item.csv')));
+      assert(delBtn >= 0, '匯入紀錄有測試檔');
+      await page.click(`#batches tbody tr:nth-child(${delBtn + 1}) [data-act="delBatch"]`);
+      await page.click('dialog .modal-foot .btn.danger');
+      await page.waitForTimeout(800);
+    }
+
+    // 二-7：整併時把原始品名的配方帶到合併後的品項（品項整併仍可用，但不是設 BOM 的必要步驟）
+    await go('products?tab=all');
+    const keyB = await page.$$eval('#all-table tbody tr', (trs, n) => trs.find((tr) => tr.children[1]?.textContent.trim().startsWith(n))?.querySelector('[data-act="sel"]')?.dataset.k || '', nameB);
+    assert(keyB, '全部品名找得到 ' + nameB);
+    await page.check(`[data-act="sel"][data-k="${keyB}"]`);
+    await page.click('[data-act="mergeSelected"]');
+    await page.fill('dialog [name=nm]', '測試合併品項');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForTimeout(600);
+    assert((await lastToast()).includes(`「${nameB}」設好的配方已帶到「測試合併品項」`), '合併時告知配方已帶過去：' + (await lastToast()));
+    await go('bom');
+    const merged = await bomRow('測試合併品項');
+    assert(merged.includes('已整併') && merged.includes('花季配方豆 7 g') && merged.includes(nameB), '合併後的品項沿用原本的配方：' + merged);
+    // 取消合併：原始品名的配方還在
+    await go('products?tab=master');
+    await page.click(`[data-act="unmap"][data-k="${keyB}"]`);
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForTimeout(600);
+    await go('bom');
+    assert((await bomRow(nameB)).includes('花季配方豆 7 g') && !(await bomRow(nameB)).includes('已整併'), '取消合併後原始品名的配方還在');
+  }
 
   // 供應商：基本資料＋付款條件（匯款銀行、戶名、帳號）
   await go('suppliers');
