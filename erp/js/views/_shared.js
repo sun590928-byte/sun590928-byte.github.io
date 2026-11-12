@@ -9,6 +9,7 @@ import { accountMap } from '../lib/coa.js';
 import { uid } from '../lib/text.js';
 import { monthEnd, addMonths, eachMonth, today } from '../lib/dates.js';
 import { attachmentEditor, linkDocumentsToEntry } from '../attach.js';
+import { sourceDocumentOf } from '../lib/docedit.js';
 import { makeXlsx } from '../lib/xlsxw.js';
 import { download } from '../ui.js';
 
@@ -120,6 +121,14 @@ export async function editEntry(entry = null, { defaults = {}, title = null } = 
   if (entry && isLocked(settings, entry.date)) {
     toast('這個月份已結帳鎖定，無法修改', 'error');
     return null;
+  }
+  // 憑證入帳的分錄：直接改憑證的課稅別、扣抵代號、拆分明細，存檔後同步憑證與 401（_docentry.js）；
+  // 憑證已刪除、或是電子發票入帳的，照舊用下面的分錄編輯器；按「直接改分錄（不改憑證）」也回到這裡
+  const srcDoc = entry?.source === 'document' ? sourceDocumentOf(entry, await store.all('documents')) : null;
+  if (srcDoc) {
+    const { editDocumentEntry, MANUAL } = await import('./_docentry.js');
+    const r = await editDocumentEntry(entry, srcDoc);
+    if (r !== MANUAL) return r;
   }
   const readonly = entry && AUTO_SOURCES.has(entry.source);
   const prevAtt = [...(e.attachments || [])];
