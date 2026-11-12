@@ -655,6 +655,119 @@ try {
     await shot('assets-auto', false);
   }
 
+  // 11/12 需求 二-1（日記簿修改同步憑證）：憑證入帳的分錄 → 日記簿「修改」直接改扣抵代號、拆分明細 → 分錄（同傳票號）、憑證、401 一起變
+  {
+    // 廠商名稱不要和後面辨識測試的「測試烘豆」「測試商行」相近（廠商資料庫會學起來）
+    const NAME = '20260925_晨光食品_咖啡豆禮盒_1050_JE11120001.png';
+    const jeDoc = () =>
+      page.evaluate(async (name) => {
+        const { store } = await import('/erp/js/store.js');
+        const d = (await store.all('documents')).find((x) => x.original_name === name);
+        const e = d && (await store.all('journal_entries')).find((x) => x.id === d.entry_id);
+        return { d, e };
+      }, NAME);
+    const sig = (e) => e.lines.map((l) => `${l.account}:${l.debit || 0}/${l.credit || 0}`).join(' ');
+    await go('documents?tab=inbox');
+    const [ch] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pick"]')]);
+    await ch.setFiles([{ name: NAME, mimeType: 'image/png', buffer: await readFile(FX('20260902_全聯_鮮乳2瓶_356.png')) }]);
+    const card = page.locator('.doc-card', { hasText: NAME });
+    await card.waitFor();
+    await card.locator('[name=tax_amount]').fill('50');
+    await card.locator('[name=account]').selectOption('1211');
+    await card.locator('[name=deductible]').check();
+    await card.locator('[data-act="post"]').click();
+    let p0 = null;
+    for (const t0 = Date.now(); !p0; await page.waitForTimeout(200)) {
+      const r = await jeDoc();
+      if (r.d?.status === 'posted' && r.e) p0 = r;
+      else if (Date.now() - t0 > 15000) throw new Error('檢查失敗：憑證入帳逾時');
+    }
+    assert(p0.e && p0.d.ded_code === '1' && sig(p0.e) === '1211:1000/0 1261:50/0 2134:0/1050', '憑證入帳：' + (p0.e && sig(p0.e)));
+    const { id: entryId, voucher_no: voucher } = p0.e;
+    const row = (i) => page.locator('dialog #de-rows tr').nth(i);
+    const openEdit = async () => {
+      await go(`journal?ym=2026-09&q=${voucher}`);
+      await page.evaluate(() => document.querySelectorAll('.toast').forEach((t) => t.remove()));
+      await page.click(`[data-act="edit"][data-id="${entryId}"]`);
+      await page.waitForSelector('dialog #de-rows');
+    };
+    const save = async () => {
+      await page.click('dialog .modal-foot .btn.primary');
+      await page.waitForSelector('.toast >> text=憑證與 401 進項已同步'); // 全部寫完才出現
+    };
+    const vatRow = async (inv) => {
+      await go('vat?p=2026-09');
+      return (await page.locator('#items tr', { hasText: inv }).textContent()).replace(/\s+/g, ' ');
+    };
+    // 扣抵代號 1 → 3：稅額 50 併入 1211，不再列 1261
+    await openEdit();
+    assert((await row(0).locator('[name=dc]').inputValue()) === '1' && (await row(0).locator('.de-ok').textContent()).includes('可扣抵'), '修改視窗帶入扣抵代號 1、可扣抵');
+    await row(0).locator('[name=dc]').selectOption('3');
+    const pv = await page.textContent('dialog #de-preview');
+    assert(pv.includes('1,050') && !pv.includes('1261'), '預覽：代號 3 稅額併入費用：' + pv);
+    await shot('journal-docedit-3', false);
+    await save();
+    const p1 = await jeDoc();
+    assert(sig(p1.e) === '1211:1050/0 2134:0/1050', '1→3 後分錄：' + sig(p1.e));
+    assert(p1.e.id === entryId && p1.e.voucher_no === voucher && p1.e.attachments.includes(p1.d.id), '同一張分錄、同一個傳票號、附件還在');
+    assert(p1.d.status === 'posted' && p1.d.ded_code === '3' && p1.d.deductible === false && p1.d.tax_amount === 50 && p1.d.edit_log?.length === 1, '憑證跟著改成代號 3（仍已入帳、留修改紀錄）');
+    const v3 = await vatRow('JE11120001');
+    assert(/扣抵代號 3/.test(v3), '401 進項清單：JE11120001 不可扣抵（代號 3）：' + v3);
+    // 扣抵代號 3 → 1：稅額回到 1261
+    await openEdit();
+    await row(0).locator('[name=dc]').selectOption('1');
+    await save();
+    const p2 = await jeDoc();
+    assert(sig(p2.e) === '1211:1000/0 1261:50/0 2134:0/1050' && p2.d.deductible === true, '3→1 後分錄：' + sig(p2.e));
+    const v1 = await vatRow('JE11120001');
+    assert(v1.includes('可扣抵') && !v1.includes('不可扣抵') && v1.includes('50'), '401：JE11120001 可扣抵 50：' + v1);
+    // 「直接改分錄（不改憑證）」回到原本的分錄編輯器
+    await openEdit();
+    await page.click('dialog .modal-foot .btn >> text=直接改分錄');
+    await page.waitForSelector('dialog #je-lines');
+    await page.click('dialog .modal-foot .btn >> text=取消');
+    await page.waitForSelector('dialog', { state: 'detached' });
+    // 拆成兩行不同科目：咖啡豆 600（稅 30，代號 1）＋ 交際費 450（稅 20，代號 3）
+    await openEdit();
+    await page.click('dialog [data-de="add"]');
+    await row(0).locator('[name=amt]').fill('600');
+    await row(0).locator('[name=tax]').fill('30');
+    await row(1).locator('[name=inv]').fill('JE11120002');
+    await row(1).locator('[name=acc]').selectOption('6120');
+    await row(1).locator('[name=amt]').fill('400');
+    await row(1).locator('[name=tax]').fill('20');
+    await row(1).locator('[name=dc]').selectOption('3');
+    await row(1).locator('[name=memo]').fill('招待禮盒');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('.toast >> text=不符');
+    assert(await page.isVisible('dialog #de-rows'), '合計不符不能存，視窗還在');
+    await row(1).locator('[name=amt]').fill('450');
+    assert((await row(1).locator('.de-ok').textContent()).includes('不可扣抵'), '第 2 行顯示不可扣抵');
+    await shot('journal-docedit-split', false);
+    await save();
+    const p3 = await jeDoc();
+    assert(sig(p3.e) === '1211:570/0 6120:450/0 1261:30/0 2134:0/1050', '拆分後分錄：' + sig(p3.e));
+    assert(p3.e.voucher_no === voucher && p3.d.lines?.length === 2 && p3.d.tax_amount === 50 && p3.d.lines[1].ded_code === '3' && p3.d.lines[1].deductible === false, '憑證拆成兩行：' + JSON.stringify(p3.d.lines));
+    assert(/JE11120001\+JE11120002/.test(p3.e.description), '分錄摘要跟著列兩張發票：' + p3.e.description);
+    const s1 = await vatRow('JE11120001');
+    const s2 = await vatRow('JE11120002');
+    assert(s1.includes('可扣抵') && !s1.includes('不可扣抵') && s1.includes('30') && /扣抵代號 3/.test(s2) && s2.includes('6120'), '401：兩張發票分開列：' + s1 + '｜' + s2);
+    await go('documents?tab=posted');
+    const pc = (await page.locator('.doc-card', { hasText: 'JE11120002' }).textContent()).replace(/\s+/g, ' ');
+    assert(pc.includes('拆分 2 行') && pc.includes('在日記簿修改'), '憑證卡片顯示新的拆分與修改紀錄：' + pc.slice(0, 200));
+    // 已申報 401 的期別：要勾「我知道了」才能存，申報紀錄不自動改
+    await page.evaluate(async () => { const { store } = await import('/erp/js/store.js'); await store.put('tax_filings', { id: '2026-09', period_from: '2026-09', period_to: '2026-10', status: 'filed', filed_on: '2026-11-10', claimed: [] }); });
+    await openEdit();
+    assert((await page.textContent('dialog #de-filed')).includes('已經申報 401'), '已申報期別的提醒');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('.toast >> text=我知道了');
+    assert(await page.isVisible('dialog #de-rows'), '沒勾「我知道了」不能存');
+    await page.click('dialog .modal-foot .btn >> text=取消');
+    await page.waitForSelector('dialog', { state: 'detached' });
+    await page.evaluate(async () => { const { store } = await import('/erp/js/store.js'); await store.remove('tax_filings', '2026-09'); });
+    assert(sig((await jeDoc()).e) === sig(p3.e), '取消後分錄不變');
+  }
+
   // 本機辨識（瀏覽器內，不用外部 AI）：電子發票 QR 碼 → 自動帶入；沒有 QR 的收據 → 文字辨識 → 標「需確認」
   {
     await setRecognize(true, '12345675');
