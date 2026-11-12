@@ -11,6 +11,7 @@ import { monthEnd } from '../lib/dates.js';
 import { latestMonth, needsDocument, downloadWorkbook } from './_shared.js';
 import { journalSheet, ledgerSheet, trialSheet, incomeSheet, balanceSheetRows, assetsSheet, documentsSheet } from '../lib/reportbook.js';
 import { accountMap } from '../lib/coa.js';
+import { recipeGaps } from '../lib/bom.js';
 
 export async function render(root, ctx) {
   const settings = await getSettings();
@@ -18,6 +19,7 @@ export async function render(root, ctx) {
   const [sales, entries, txs, payouts, docs, bank, stocktakes, assets] = await Promise.all(['sales_lines', 'journal_entries', 'payment_tx', 'payouts', 'documents', 'bank_lines', 'stocktakes', 'fixed_assets'].map((c) => store.all(c)));
   let checks = await store.all('checklist');
   const idx = await getProductIndex();
+  const recipes = await store.all('recipes');
   const f = { ym: ctx.params.ym || latestMonth(sales, settings.revenue_start) };
 
   function context() {
@@ -46,7 +48,7 @@ export async function render(root, ctx) {
     return {
       monthEnd: to,
       lastSaleDate: lastSale,
-      unmappedProducts: new Set(live.filter((l) => !l.is_adjustment && !idx.of(l).mapped).map((l) => l.item_raw)).size,
+      missingRecipes: recipeGaps(mLines, (l) => idx.of(l), recipes, { skip: settings.bom_skip || [] }).length,
       salesDays: salesDays.size,
       posEntryDays: [...salesDays].filter((d) => posDays.has(d)).length,
       unknownPaymentLines: live.filter((l) => l.payment === 'unknown').length,
@@ -110,8 +112,8 @@ export async function render(root, ctx) {
     switch (key) {
       case 'pos_imported':
         return c.lastSaleDate ? `銷售資料只到 ${c.lastSaleDate}` : '本月尚無銷售資料';
-      case 'products_mapped':
-        return `${c.unmappedProducts} 個品名未整併`;
+      case 'recipes_set':
+        return `${c.missingRecipes} 個品名還沒設配方（到 BOM 配方表設定）`;
       case 'pos_journal':
         return `${c.salesDays - c.posEntryDays} 天缺營收分錄（到日記簿按「同步自動分錄」）`;
       case 'unknown_payment':

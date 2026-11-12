@@ -11,11 +11,12 @@ installAccountPicker(); // 會計項目下拉可打字篩選
 export const ROUTES = [
   { group: '總覽', path: 'dashboard', title: '營運儀表板', load: () => import('./views/dashboard.js') },
   { group: '資料匯入', path: 'import', title: '匯入中心', load: () => import('./views/import.js') },
-  { group: '資料匯入', path: 'products', title: '品項整併', load: () => import('./views/products.js') },
+  { group: '資料匯入', path: 'products', title: '品項整併（選用）', load: () => import('./views/products.js') },
   { group: '資料匯入', path: 'documents', title: '憑證歸檔（AI）', load: () => import('./views/documents.js') },
   { group: '營運分析', path: 'sales', title: '銷售明細與作廢', load: () => import('./views/sales.js') },
   { group: '營運分析', path: 'payments', title: '金流對帳', load: () => import('./views/payments.js') },
   { group: '營運分析', path: 'inventory', title: '原物料進銷存', load: () => import('./views/inventory.js') },
+  { group: '營運分析', path: 'bom', title: 'BOM 配方表', load: () => import('./views/bom.js') },
   { group: '營運分析', path: 'suppliers', title: '供應商', load: () => import('./views/suppliers.js') },
   { group: '營運分析', path: 'purchases', title: '進貨紀錄', load: () => import('./views/purchases.js') },
   { group: '營運分析', path: 'customers', title: '會員消費輪廓', load: () => import('./views/customers.js') },
@@ -109,15 +110,24 @@ async function render() {
   try {
     const mod = await route.load();
     if (current !== token) return;
-    view.replaceChildren();
-    const ctx = { params, actions, go, setParams, rerender: render };
-    const cleanup = await mod.render(view, ctx);
-    if (current !== token) return;
+    // 每次換頁都給頁面一個新的容器：還沒載入完就被換掉的頁面（例如原物料進銷存資料多、讀得慢時先點了別頁），
+    // 之後才畫出來的內容與掛上的按鈕事件都落在已拿掉的舊容器，不會蓋掉新頁面，也不會接走新頁面同名的按鈕
+    // （11/12：品項整併點「全部品名」卻跑出庫存水位，就是舊的進銷存頁接走了 data-act="tab"）
+    const host = document.createElement('div');
+    host.className = 'view-host';
+    host.style.display = 'contents';
+    view.replaceChildren(host);
+    const ctx = { params, actions, go, setParams: (p) => current === token && setParams(p), rerender: render };
+    const cleanup = await mod.render(host, ctx);
+    if (current !== token) {
+      if (typeof cleanup === 'function') cleanup();
+      return;
+    }
     unbind = typeof cleanup === 'function' ? cleanup : null;
     view.focus({ preventScroll: true });
   } catch (e) {
     console.error(e);
-    mount(view, h`<div class="callout bad"><p><b>頁面載入失敗：</b>${e.message || e}</p></div>`);
+    if (current === token) mount(view, h`<div class="callout bad"><p><b>頁面載入失敗：</b>${e.message || e}</p></div>`);
   }
 }
 

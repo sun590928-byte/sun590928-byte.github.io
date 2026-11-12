@@ -280,7 +280,7 @@ export async function render(root, ctx) {
         ${stat('平均成本率', ms.avgRate === null ? '—' : pct(ms.avgRate), '目標 35% 以內', ms.avgRate === null ? '' : ms.avgRate <= 0.35 ? 'good' : 'bad')}
         ${stat('每份毛利', ms.margin === null ? '—' : cash(ms.margin), '扣營業稅、食材、金流')}
       </div>
-      <div class="callout" style="margin-bottom:16px"><p><b>成本怎麼來：</b>品項連到 ERP 的品項主檔、而且在 <a href="#/inventory?tab=bom">原物料進銷存 → 配方</a> 設好配方，就用「配方 × 原物料平均進價（未稅）」自動算；沒有配方的用手填成本。成本率 ＝ 成本 ÷ 含稅售價。</p></div>
+      <div class="callout" style="margin-bottom:16px"><p><b>成本怎麼來：</b>品項連到 ERP 的品項主檔、而且在 <a href="#/bom">BOM 配方表</a> 設好配方，就用「配方 × 原物料平均進價（未稅）」自動算；沒有配方的用手填成本。成本率 ＝ 成本 ÷ 含稅售價。</p></div>
       <div class="card">${
         plan.menu.length
           ? h`<div class="table-wrap"><table class="grid"><thead><tr><th scope="col">品項</th><th scope="col" class="num">售價</th><th scope="col" class="num">成本</th><th scope="col" class="num">成本率</th><th scope="col" class="num">每份毛利</th><th scope="col">過敏原</th><th scope="col"></th></tr></thead><tbody>${plan.menu.map((d) => {

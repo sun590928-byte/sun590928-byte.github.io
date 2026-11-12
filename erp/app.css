@@ -531,6 +531,8 @@ tr.muted-row td { color: var(--mute); }
 .bp-how p { font-size: 13.5px; margin: 6px 0 0; }
 table.grid.bp-log th.bp-date { font-weight: 600; text-align: left; white-space: nowrap; background: none; position: static; font-size: 14px; color: var(--ink); }
 table.grid.bp-log tr.bp-miss > * { background: color-mix(in srgb, var(--warn) 9%, transparent); }
+/* BOM 配方表：還沒設配方的品名 */
+table.grid tr.bom-missing > * { background: color-mix(in srgb, var(--warn) 9%, transparent); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 /* 每日紀錄在手機改成一天一張卡片，份數、多賺、修改都看得到 */
 @media (max-width: 640px) {

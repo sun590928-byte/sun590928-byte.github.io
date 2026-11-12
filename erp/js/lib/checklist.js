@@ -2,7 +2,8 @@
 
 export const CHECK_ITEMS = [
   { key: 'pos_imported', group: '營收', title: 'POS 銷售明細已匯入至月底最後一天', auto: (c) => c.lastSaleDate && c.lastSaleDate >= c.monthEnd },
-  { key: 'products_mapped', group: '營收', title: '新品項已完成整併／歸類（無未歸類品項）', auto: (c) => c.unmappedProducts === 0 },
+  // 11/12：品項整併改為選用，月結改檢查「賣出的品名都設了配方」（POS 才會扣庫存、估成本）
+  { key: 'recipes_set', group: '營收', title: '本月賣出的品名都已設配方（BOM 配方表；品項整併為選用）', auto: (c) => c.missingRecipes === 0 },
   { key: 'voids_reviewed', group: '營收', title: '老闆招待／老闆測試／報廢 明細已確認（金額作廢）', auto: null },
   { key: 'pos_journal', group: '營收', title: 'POS 營收分錄已產生（每營業日一張）', auto: (c) => c.salesDays > 0 && c.salesDays === c.posEntryDays },
   { key: 'unknown_payment', group: '營收', title: '付款方式皆可辨識（無「未指定」）', auto: (c) => c.unknownPaymentLines === 0 },

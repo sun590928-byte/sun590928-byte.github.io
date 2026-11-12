@@ -12,6 +12,7 @@ import { monthEnd, addDays, today } from '../lib/dates.js';
 import { round2 } from '../lib/money.js';
 import { uid } from '../lib/text.js';
 import { latestMonth, reportHead } from './_shared.js';
+import { recipeCosts } from '../lib/bom.js';
 
 // 食材耗用（算原物料成本率）：轉入飲品原料或餐點原料銷貨成本的存貨科目；包材、零售商品不算
 const isFood = (code) => ['5101', '5102'].includes(COGS_ACCOUNT_BY_INVENTORY[code] || '5101');
@@ -40,9 +41,9 @@ export async function render(root, ctx) {
       const st = stocktakes.find((s) => s.id === `${f.ym}|${code}`);
       return { account: code, name: accName.get(code) || code, opening, purchases, decreases, book, counted: st ? Number(st.value) : null, note: st?.note || '' };
     });
-    // 理論成本（配方 × 平均進價）
+    // 理論成本（配方 × 平均進價）：合併過的品項與沒合併的 POS 品名（BOM 配方表直接設的）都算
     const avg = averageCosts(items, moves, { asOf: to, vatRate });
-    const pCost = productCosts(idx.products, recipes, (id) => avg.get(id)?.avg || 0);
+    const pCost = recipeCosts(recipes, (id) => avg.get(id)?.avg || 0);
     const lines = (await revenueLines({ from, to })).filter((l) => !l.is_adjustment && l.qty > 0);
     const voidCost = { boss_treat: 0, boss_test: 0, scrap: 0 };
     let theoretical = 0;

@@ -6,6 +6,7 @@ import { DEFAULT_VOID_RULES, guessCategory } from './lib/pos.js';
 import { aliasKey } from './lib/dedupe.js';
 import { DEFAULT_TIERS } from './lib/customers.js';
 import { uid } from './lib/text.js';
+import { planRecipeCarryOver, rawProductId } from './lib/bom.js';
 
 export const DEFAULT_SETTINGS = {
   business_name: '午月咖啡廳',
@@ -111,8 +112,9 @@ export async function getProductIndex() {
   return productIndex;
 }
 
-// 合併：選定名稱建立（或沿用）標準品項，並把各原始名稱指向它
-export async function mergeProducts(rawNames, { name, category, productId } = {}) {
+// 合併：選定名稱建立（或沿用）標準品項，並把各原始名稱指向它。
+// 原始品名先設好的配方（BOM 配方表不用先整併）：品項還沒有配方就帶過去，已有就保留品項的；結果交給 onRecipeCarry
+export async function mergeProducts(rawNames, { name, category, productId, onRecipeCarry } = {}) {
   const idx = await getProductIndex();
   let product = productId ? idx.byId.get(productId) : null;
   if (!product) {
@@ -126,6 +128,9 @@ export async function mergeProducts(rawNames, { name, category, productId } = {}
     rawNames.map((raw) => ({ id: aliasKey(raw), raw_name: raw, product_id: product.id, updated_at: now })),
   );
   productIndex = null;
+  const carry = planRecipeCarryOver(await store.all('recipes'), rawNames.map(rawProductId), product.id, product.name);
+  if (carry.put.length) await store.put('recipes', carry.put);
+  onRecipeCarry?.(carry);
   return product;
 }
 

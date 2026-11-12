@@ -1,4 +1,5 @@
-// 品項整併：找出 POS 與進銷存系統迭代後「名稱不同、其實同一商品」的品項，勾選確認後合併。
+// 品項整併（選用）：找出 POS 與進銷存系統迭代後「名稱不同、其實同一商品」的品項，勾選確認後合併。
+// 只有想把同一商品的不同寫法合在一起看報表時才需要；設配方（BOM）不用先整併，在「BOM 配方表」直接設在 POS 品名上。
 
 import { h, raw, mount, bindActions, dataTable, toast, modal, options, fmt, stat, badge, downloadCSV, emptyState, confirmBox } from '../ui.js';
 import { store } from '../store.js';
@@ -58,7 +59,8 @@ export async function render(root, ctx) {
     const byConf = (c) => dups.filter((x) => x.confidence === c).length;
     mount(
       root,
-      h`<div class="stats">
+      h`<div class="callout" style="margin-bottom:14px"><p><b>品項整併是選用的</b>：只有想把同一商品的不同寫法（例如「美式」「美式咖啡」）合在一起看報表時才需要做。設定配方（BOM）不用先整併，到 <a href="#/bom">BOM 配方表</a> 直接在 POS 品名上設；之後合併時，各寫法先設好的配方會自動帶到合併後的品項。</p></div>
+      <div class="stats">
         ${stat('品名數（去除空白／全半形差異）', fmt(analysis.names.length), analysis.autoMerged.length ? `其中 ${analysis.autoMerged.length} 個僅格式不同，已自動視為同名` : '')}
         ${stat('疑似同品項群組', fmt(dups.length), `高 ${byConf('high')}・中 ${byConf('medium')}・低 ${byConf('low')}`)}
         ${stat('冰熱／容量變體群組', fmt(vars.length), '核心名稱相同')}
@@ -195,7 +197,7 @@ export async function render(root, ctx) {
     mount(body, h`<div id="master-table"></div>`);
     dataTable(body.querySelector('#master-table'), {
       rows,
-      empty: '尚未建立標準品項。在「疑似同品項」合併，或在「全部品名」勾選後設定。',
+      empty: '尚未建立標準品項（選用，不影響配方設定）。需要合併報表時，在「疑似同品項」合併，或在「全部品名」勾選後設定。',
       exportName: '標準品項.csv',
       columns: [
         { key: 'name', label: '標準品項', fmt: (v, r) => h`<b>${v}</b> <button class="btn sm ghost" data-act="rename" data-id="${r.id}">改名</button>` },
@@ -208,17 +210,26 @@ export async function render(root, ctx) {
     });
   }
 
+  // 回傳配方的處理說明（原始品名先設好的配方帶到合併後的品項）
   async function doMerge(keys, name, category, excludedKeys = []) {
     const rawNames = keys.flatMap((k) => analysis.names.find((n) => n.key === k)?.spellings || []);
     const existingIds = [...new Set(keys.map((k) => idx.aliasToProductId.get(k)).filter(Boolean))];
-    await mergeProducts(rawNames, { name, category, productId: existingIds[0] });
+    let carry = null;
+    await mergeProducts(rawNames, { name, category, productId: existingIds[0], onRecipeCarry: (c) => (carry = c) });
+    const nameOf = (rid) => analysis.names.find((n) => 'raw:' + n.key === rid)?.name || rid.slice(4);
+    let note = '';
+    if (carry?.from) note = `「${nameOf(carry.from)}」設好的配方已帶到「${name}」`;
+    else if (carry?.kept.length) note = `「${name}」已有配方，保留原本的`;
+    if (carry?.kept.length) note += `；${carry.kept.map(nameOf).map((s) => `「${s}」`).join('、')}另外設的配方沒有套用，需要時到 BOM 配方表調整`;
     // 使用者取消勾選的品名：記為「不是同一品項」
     if (excludedKeys.length) {
       const now = new Date().toISOString();
       await store.put('product_not_same', excludedKeys.flatMap((x) => keys.map((k) => ({ id: pairKey(x, k), a: x, b: k, updated_at: now }))));
     }
     scheduleSync();
+    return note;
   }
+  const mergedToast = (msg, note) => toast(note ? `${msg}；${note}` : msg, 'good', note ? 8000 : 3800);
 
   const unbind = bindActions(root, {
     tab: (el) => {
@@ -258,8 +269,7 @@ export async function render(root, ctx) {
       const name = (state.names[c.id] ?? root.querySelector(`[data-act="name"][data-id="${c.id}"]`).value).trim();
       if (!name) return toast('請輸入標準名稱', 'error');
       const cat = state.cats[c.id] ?? root.querySelector(`[data-act="cat"][data-id="${c.id}"]`).value;
-      await doMerge(keys, name, cat, excluded);
-      toast(`已合併為「${name}」`, 'good');
+      mergedToast(`已合併為「${name}」`, await doMerge(keys, name, cat, excluded));
       await analyze();
       draw();
     },
@@ -303,9 +313,9 @@ export async function render(root, ctx) {
         ],
       });
       if (!r || !r.name) return;
-      await doMerge(keys, r.name, r.cat);
+      const note = await doMerge(keys, r.name, r.cat);
       state.selected.clear();
-      toast(`已設定為「${r.name}」`, 'good');
+      mergedToast(`已設定為「${r.name}」`, note);
       await analyze();
       draw();
     },

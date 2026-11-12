@@ -8,6 +8,7 @@ import { CATEGORIES, PAYMENT_TYPES, VOID_REASONS } from '../lib/pos.js';
 import { eachDay, addDays, weekdayIndex, WEEKDAYS, today, daysBetween } from '../lib/dates.js';
 import { round2 } from '../lib/money.js';
 import { upcomingFilings, filingReminder } from './tax.js';
+import { recipeGaps } from '../lib/bom.js';
 
 const CAT_ORDER = ['coffee', 'non_coffee', 'food', 'retail', 'other'];
 const CAT_COLOR = { coffee: 'var(--series-1)', non_coffee: 'var(--series-2)', food: 'var(--series-3)', retail: 'var(--series-4)', other: 'var(--series-5)' };
@@ -23,6 +24,8 @@ export async function render(root, ctx) {
   const maxDate = all.reduce((m, l) => (l.date > m ? l.date : m), '');
   const state = { range: ctx.params.range || 'all' };
   const idx = await getProductIndex();
+  // 近 30 天賣出、還沒設配方的品名（BOM 配方表；不論上面選的期間）
+  const gaps = recipeGaps(await revenueLines({ from: addDays(maxDate, -29), to: maxDate }), (l) => idx.of(l), await store.all('recipes'), { skip: settings.bom_skip || [] });
 
   async function draw() {
     const to = maxDate;
@@ -89,7 +92,6 @@ export async function render(root, ctx) {
       const hi = hours.indexOf(l.time.slice(0, 2));
       if (hi >= 0) heat[weekdayIndex(l.date)][hi] += l.revenue;
     }
-    const unmapped = new Set(products.filter((l) => !idx.of(l).mapped).map((l) => l.item_raw)).size;
     const unknownPay = live.filter((l) => l.payment === 'unknown').length;
 
     mount(
@@ -116,8 +118,13 @@ export async function render(root, ctx) {
         ${stat('作廢金額（招待／測試／報廢）', '$' + fmt(voids.reduce((t, l) => t + l.amount, 0)), `${fmt(voids.reduce((t, l) => t + l.qty, 0))} 份，已從營收剔除`)}
       </div>
       ${
-        unmapped || unknownPay
-          ? h`<div class="callout" style="margin-bottom:14px"><p>${unmapped ? h`有 <b>${unmapped}</b> 個品名尚未整併，熱銷排行可能被拆散 → <a href="#/products">前往品項整併</a>。` : ''}${unknownPay ? h` 有 <b>${unknownPay}</b> 筆付款方式無法辨識（暫列現金）。` : ''}</p></div>`
+        unknownPay
+          ? h`<div class="callout" style="margin-bottom:14px"><p>有 <b>${unknownPay}</b> 筆付款方式無法辨識（暫列現金）。</p></div>`
+          : ''
+      }
+      ${
+        gaps.length
+          ? h`<div class="callout warn" id="bom-gaps" style="margin-bottom:14px"><p>近 30 天有 <b>${gaps.length}</b> 個賣出的品名還沒設配方（${gaps.slice(0, 5).map((g) => g.name).join('、')}${gaps.length > 5 ? '…' : ''}），賣出時不會扣原物料庫存、也算不出成本 → <a href="#/bom?filter=missing">到 BOM 配方表設定</a></p></div>`
           : ''
       }
       <div class="card">
@@ -125,7 +132,7 @@ export async function render(root, ctx) {
         <div id="c-daily"></div>
       </div>
       <div class="grid-2" style="margin-top:16px">
-        <div class="card"><div class="card-head"><h2>熱銷品項</h2><span class="card-note">依營收，已套用品項整併</span></div><div id="c-top"></div></div>
+        <div class="card"><div class="card-head"><h2>熱銷品項</h2><span class="card-note">依營收；有做品項整併的會合在一起算</span></div><div id="c-top"></div></div>
         <div class="card"><div class="card-head"><h2>時段熱度</h2><span class="card-note">星期 × 小時的營收</span></div><div id="c-heat">${hasTime ? '' : h`<p class="muted">銷售明細沒有時間欄位。</p>`}</div></div>
       </div>
       <div class="grid-3" style="margin-top:16px">
@@ -148,7 +155,7 @@ export async function render(root, ctx) {
       series: catSeries.length ? catSeries : [{ key: 'other', label: '營收', color: CAT_COLOR.other }],
       ariaLabel: '每日營收長條圖',
     });
-    barList(root.querySelector('#c-top'), top.map((p) => ({ label: p.name, sub: `${fmt(p.qty)} 份${p.mapped ? '' : '・未整併'}`, value: p.revenue })), { format: (v) => '$' + fmt(v) });
+    barList(root.querySelector('#c-top'), top.map((p) => ({ label: p.name, sub: `${fmt(p.qty)} 份`, value: p.revenue })), { format: (v) => '$' + fmt(v) });
     if (hasTime) heatmap(root.querySelector('#c-heat'), { rows: WEEKDAYS, cols: hours.map((x) => String(Number(x))), values: heat, title: (r, c) => `週${r} ${c} 點` });
     const catSum = Object.values(catTotals).reduce((a, b) => a + b, 0) || 1;
     const catItems = CAT_ORDER.filter((c) => catTotals[c] > 0).map((c) => ({ label: CATEGORIES[c], value: catTotals[c], sub: pct(catTotals[c] / catSum), color: CAT_COLOR[c] }));
