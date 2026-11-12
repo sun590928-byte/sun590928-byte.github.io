@@ -90,7 +90,7 @@ const INSTRUCTIONS = `你是「午月咖啡廳」的記帳助理，透過這個�
 - 統一發票號碼＝2 碼英文字軌 + 8 碼數字；收據沒有發票號碼。
 - vendor_name：發票填賣方的公司全名（例如「範例電機有限公司」，看賣方名稱或統一發票專用章），不要只填簡稱；收據填收據上的店名。
 - amount_total 是含稅總額；收據的金額以「合計新台幣」大寫金額為準（與阿拉伯數字不同時寫在 notes）。三聯式或載明買方統編的發票才有可扣抵的 tax_amount；二聯式、收據的稅額不填。
-- 只有載明本店統編（get_context 會給）的統一發票，deductible 才是 true；交際費（6120）、職工福利（6127）用途一律不可扣抵。
+- 只有載明本店統編（get_context 會給）的統一發票，deductible 才是 true；交際費（6120）、伙食費（6126）、職工福利（6127）用途一律不可扣抵（扣抵代號 3）；水電瓦斯（6118）、郵電（6115）帳單沒有載明本店統編的也不可扣抵（扣抵代號 3）。
 - summary 是 10 字內的品項摘要，會用在歸檔檔名，例如「鮮乳4瓶」「咖啡豆2kg」。
 - account 只能從 get_context 的清單選：咖啡豆、乳品、茶葉粉類、果汁糖漿（1217：果汁、果露、糖漿）、甜點原料、包材屬於原料／存貨（12xx）；水電、電信、修繕、文具、運費屬於費用（61xx）；單價 8 萬元以上的設備屬於固定資產（15xx），未達 8 萬的器具列「雜項購置」。
 - pay_account（付款方式）只能從 get_context 的「付款方式」清單選；檔案上傳時所在的資料夾（source_folder）就是付款來源：員工代墊支出→2134 員工代墊、負責人代墊支出→2133（名稱可能已改為負責人借款）、銀行名稱的資料夾→該銀行存款（依科目名稱比對）。綠界、LINE Pay 的手續費發票由撥款中扣除，付款方式選對應的「應收帳款－…未撥款項」（信用卡 1111、LINE Pay 1112）。
@@ -393,6 +393,7 @@ export function buildPatch(args: Record<string, unknown>, accounts: Account[], s
   } else patch.status = "reviewed";
 
   // 扣抵規則：買方統編不是本店、二聯式／收據、交際費／職工福利 → 不可扣抵；老闆指定的扣抵代號優先
+  // （伙食費 6126、水電電信帳單沒有本店統編 → 不可扣抵：寫在說明文字，ERP 入帳時依 lib/vat.js 的規則再判斷一次）
   const shopTaxId = String(settings.tax_id ?? "").trim();
   const buyer = (patch.buyer_tax_id ?? current.buyer_tax_id ?? "") as string;
   const invoiceType = (patch.invoice_type ?? current.invoice_type ?? "") as string;
@@ -464,7 +465,7 @@ async function callTool(name: string, args: Record<string, unknown>, ctx: Ctx): 
         "付款方式（pay_account，依科目表）：",
         ...payAccounts(await getAccounts(ctx)).map((a) => `- ${a.code} ${a.name}`),
         "",
-        "扣抵規則：只有載明本店統編的統一發票（電子發票證明聯、三聯式、收銀機發票）進項稅額可扣抵；二聯式、收據、交際費（6120）、職工福利（6127）不可扣抵。",
+        "扣抵規則：只有載明本店統編的統一發票（電子發票證明聯、三聯式、收銀機發票）進項稅額可扣抵；二聯式、收據、交際費（6120）、伙食費（6126）、職工福利（6127）不可扣抵（扣抵代號 3）；水電瓦斯（6118）、郵電（6115）帳單沒有本店統編的不可扣抵（扣抵代號 3），有本店統編的照常可扣抵。",
         "申報代號：課稅別 tax_type（1 應稅、2 零稅率、3 免稅）；扣抵代號 ded_code（1 可扣抵進貨及費用、2 可扣抵固定資產、3 不可扣抵進貨及費用、4 不可扣抵固定資產）。",
       ];
       return text(lines.join("\n"));

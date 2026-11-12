@@ -241,6 +241,8 @@ export async function render(root, ctx) {
       }
       toast(msg, 'good', 6000);
       next();
+      // 國稅局進項發票：自動列出「國稅局有、ERP 沒入帳」的發票（營業稅頁也看得到）
+      if (t === 'einvoice') import('./vat.js').then((m) => m.einvoiceGapNotice(p.all)).catch((e) => console.warn(e));
     } finally {
       setBusy(false);
     }

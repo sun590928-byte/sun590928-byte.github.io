@@ -1,11 +1,14 @@
 // 營業稅申報（401）工作表：雙月一期。銷項（POS 開立發票基礎、帳上銷項稅額、電子發票平台數字）、
 // 進項憑證清單（可否扣抵與原因）、稅額計算（留抵、退稅）、申報前檢查、結轉分錄與繳稅登錄、匯出 Excel。
+// 申報媒體檔：匯入已申報的 TXT 逐張核對；一鍵產生本期 TXT（進項＋銷項＋空白發票）。國稅局進項發票 vs ERP 入帳。
 
 import { h, raw, mount, bindActions, fmt, toast, confirmBox, modal, badge, status, download, options, stat, dataTable, pickFiles } from '../ui.js';
 import { store } from '../store.js';
-import { getSettings, getAccounts, getProductIndex, isLocked } from '../state.js';
-import { periodInfo, periodsBetween, periodKeyOf, internalTargets, inputItems, assignPeriods, deductibility, posInvoiceBase, computeTax, settlementEntry, netMovement, taxCodes, docParts, parseMediaFile, summarizeMedia, reconcileMedia, TAX_TYPES, DED_CODES } from '../lib/vat.js';
-import { decodeBytes } from '../lib/csv.js';
+import { getSettings, saveSettings, getAccounts, getProductIndex, isLocked } from '../state.js';
+import { periodInfo, periodsBetween, periodKeyOf, internalTargets, inputItems, assignPeriods, deductibility, posInvoiceBase, computeTax, settlementEntry, netMovement, taxCodes, docParts, parseMediaFile, summarizeMedia, reconcileMedia, overclaimed, mediaInputRecords, normalizeSalesInvoices, mediaSalesRecords, parseBlankRanges, mediaBlankRecords, buildMediaFile, einvoiceGaps, TAX_TYPES, DED_CODES } from '../lib/vat.js';
+import { decodeBytes, parseCSV } from '../lib/csv.js';
+import { detectHeaderRow, autoMap, extract } from '../lib/importer.js';
+import { isMofFormat, parseMofInvoices } from '../lib/einvoice.js';
 import { nextVoucherNo, validateEntry } from '../lib/ledger.js';
 import { accountMap } from '../lib/coa.js';
 import { addMonths, addDays, today, daysBetween, weekdayIndex, WEEKDAYS } from '../lib/dates.js';
@@ -13,10 +16,43 @@ import { round2 } from '../lib/money.js';
 import { uid } from '../lib/text.js';
 import { makeXlsx } from '../lib/xlsxw.js';
 import { VOID_REASONS } from '../lib/pos.js';
-import { reportHead, payAccountSelect } from './_shared.js';
+import { reportHead, payAccountSelect, accountSelect } from './_shared.js';
 
 const md = (ymd) => `${Number(ymd.slice(5, 7))}/${Number(ymd.slice(8))}（${WEEKDAYS[weekdayIndex(ymd)]}）`;
 const FILED = new Set(['filed', 'paid']);
+const DOC_STATUS = { inbox: '待覆核', reviewed: '已覆核' };
+const invLine = (x) => `${x.invoice_no}｜${x.date || ''}｜${x.seller_name || x.seller_tax_id || ''}｜${fmt(x.total)}${Number(x.tax) ? `（稅 ${fmt(x.tax)}）` : ''}`;
+
+// 匯入國稅局進項發票（匯入中心）後：自動列出「國稅局有、ERP 沒入帳」與金額不符的發票，並連到各期營業稅頁逐張處理
+export async function einvoiceGapNotice(imported) {
+  const ids = new Set(imported.map((x) => x.id));
+  const [einvoices, docs, assets, entries] = await Promise.all(['einvoices', 'documents', 'fixed_assets', 'journal_entries'].map((c) => store.all(c)));
+  const g = einvoiceGaps(einvoices.filter((x) => ids.has(x.id) && x.date), { docs, assets, entries });
+  if (!g.missing.length && !g.mismatch.length && !g.voidedBooked.length) {
+    if (g.total) toast(`國稅局的 ${g.total} 張進項發票都已在 ERP 入帳`, 'good', 6000);
+    return;
+  }
+  const periods = [...new Set([...g.missing, ...g.mismatch, ...g.voidedBooked].map((x) => periodKeyOf(x.inv.date)))].sort();
+  const li = (list, fn) => h`<ul class="plain-list" style="max-height:240px;overflow:auto">${list.slice(0, 80).map((x) => h`<li>${fn(x)}</li>`)}${list.length > 80 ? h`<li class="muted">…另有 ${list.length - 80} 張</li>` : ''}</ul>`;
+  await modal({
+    title: '國稅局有、ERP 沒入帳的發票',
+    wide: true,
+    body: h`<p>這次匯入的國稅局進項發票 ${g.total} 張：已在 ERP 入帳 ${g.booked.length} 張、<b>沒入帳 ${g.missing.length} 張</b>${g.mismatch.length ? h`、<b>金額不符 ${g.mismatch.length} 張</b>` : ''}${g.voidedBooked.length ? `、國稅局已作廢但 ERP 已入帳 ${g.voidedBooked.length} 張` : ''}。</p>
+      ${g.missing.length ? h`<h3 style="font-size:14px;margin:10px 0 4px">沒入帳</h3>${li(g.missing, (x) => `${invLine(x.inv)}${x.pending ? `｜照片已上傳（${DOC_STATUS[x.pending.status] || ''}），還沒入帳` : ''}`)}` : ''}
+      ${g.mismatch.length ? h`<h3 style="font-size:14px;margin:10px 0 4px">金額不符</h3>${li(g.mismatch, (x) => `${x.inv.invoice_no}｜${x.book.label}｜${x.diffs.join('；')}`)}` : ''}
+      ${g.voidedBooked.length ? h`<h3 style="font-size:14px;margin:10px 0 4px">國稅局已作廢、ERP 卻已入帳</h3>${li(g.voidedBooked, (x) => `${x.inv.invoice_no}｜${x.book.label}`)}` : ''}
+      <p style="margin-top:10px">逐張入帳或核對：${periods.map((k) => h`<a href="#/vat?p=${k}" data-go>營業稅 ${periodInfo(k).label}</a>　`)}<a href="#/documents?tab=einvoice" data-go>憑證歸檔「電子發票」分頁</a></p>
+      <p class="muted" style="font-size:12.5px">這份清單隨時可在「營業稅申報 → 國稅局進項發票核對」看到（依發票日期歸期）。</p>`,
+    onMount: (dlg) =>
+      dlg.querySelectorAll('a[data-go]').forEach((a) =>
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          dlg.querySelector('[data-close]').click();
+          location.hash = a.getAttribute('href');
+        }),
+      ),
+  });
+}
 
 // 科目截至某日的餘額（借 − 貸），可排除特定分錄
 function balance(entries, account, to, skip = () => false) {
@@ -33,7 +69,7 @@ export async function render(root, ctx) {
   const accounts = await getAccounts();
   const accMap = accountMap(accounts);
   const idx = await getProductIndex();
-  let [entries, docs, einvoices, filings, sales] = await Promise.all(['journal_entries', 'documents', 'einvoices', 'tax_filings', 'sales_lines'].map((c) => store.all(c)));
+  let [entries, docs, einvoices, filings, sales, assets] = await Promise.all(['journal_entries', 'documents', 'einvoices', 'tax_filings', 'sales_lines', 'fixed_assets'].map((c) => store.all(c)));
   const t = today();
   const periods = periodsBetween(settings.revenue_start < t ? settings.revenue_start : t, t).reverse();
   const defaultKey = () => {
@@ -96,9 +132,8 @@ export async function render(root, ctx) {
     const pendingDocs = docs.filter((d) => ['inbox', 'reviewed'].includes(d.status) && (!d.doc_date || d.doc_date <= info.end));
     const pendingInv = einvoices.filter((e) => !e.entry_id && !e.voided && e.date && e.date <= info.end);
     // 分錄實際列了進項稅額（1261），但依規定不能扣抵者
-    const byEntry = new Map(entries.map((e) => [e.id, e]));
-    const claims1261 = (x) => (byEntry.get(x.entry_id)?.lines || []).some((l) => l.account === '1261' && l.debit > 0);
-    const wrongFlag = items.filter((x) => !x.check.ok && claims1261(x));
+    // 逐行判斷：拆分的憑證一行可扣抵、一行不可扣抵時，分錄的 1261 只要等於可扣抵那幾行的稅額
+    const wrongFlag = overclaimed(items, assigned, entries, opts);
     const invCount = new Map();
     for (const d of docs) if (d.invoice_no && d.status === 'posted') invCount.set(d.invoice_no, (invCount.get(d.invoice_no) || 0) + 1);
     const dupInv = [...invCount.entries()].filter(([, n]) => n > 1).map(([k]) => k);
@@ -121,7 +156,9 @@ export async function render(root, ctx) {
     ];
     // 已匯入申報媒體檔：逐張核對（系統所有憑證，含尚未入帳者）
     const recon = filing.filed_inputs?.length ? reconcileMedia(filing.filed_inputs, allParts(assigned), { periodKey: f.p }) : null;
-    return { info, filing, pos, lines, bookOutput, bookInput, output, platformSales, platformTax, items, ok, exp, ast, sum, prevCf, prevDefault, tax, sysTax, filedTax, targets, checks, recon };
+    // 國稅局（財政部電子發票平台）匯入的進項發票：本期（依發票日期）有哪些 ERP 還沒入帳、金額不符
+    const gaps = einvoiceGaps(einvoices.filter((x) => x.date && x.date >= info.start && x.date <= info.end), { docs, assets, entries });
+    return { info, filing, pos, lines, bookOutput, bookInput, output, platformSales, platformTax, items, ok, exp, ast, sum, prevCf, prevDefault, tax, sysTax, filedTax, targets, checks, recon, gaps };
   }
 
   // 系統內所有憑證明細（含待入帳），供申報媒體檔核對
@@ -171,6 +208,166 @@ export async function render(root, ctx) {
     </div>`;
   }
 
+  // 國稅局進項發票核對：國稅局有、ERP 沒入帳（可直接入帳）、金額不符（連到分錄）
+  function gapCard(c) {
+    const g = c.gaps;
+    const head = h`<div class="card-head"><h2>國稅局進項發票核對</h2><span class="card-note">${g.total ? `國稅局本期進項 ${g.total} 張（依發票日期）` : ''}</span></div>`;
+    if (!g.total && !g.voidedBooked.length) {
+      return h`<div class="card" id="vat-gaps" style="margin-bottom:16px">${head}<p class="muted">本期還沒有國稅局（財政部電子發票平台）的進項發票。到<a href="#/import">匯入中心</a>匯入平台下載的進項發票 CSV，這裡會列出「國稅局有、ERP 沒入帳」的發票。</p></div>`;
+    }
+    const entryLink = (id) => {
+      const e = entries.find((x) => x.id === id);
+      return e ? h`<a href="#/journal?ym=${e.date.slice(0, 7)}&q=${encodeURIComponent(e.voucher_no || '')}">${e.voucher_no || '查看分錄'}</a>` : '';
+    };
+    const row = (ok, warn, text) => h`<div class="row" style="gap:8px">${ok ? status('good', '') : status(warn ? 'warn' : 'bad', '')}<span>${text}</span></div>`;
+    return h`<div class="card" id="vat-gaps" style="margin-bottom:16px">${head}
+      <div class="stack" style="gap:6px">
+        ${row(true, false, `國稅局有、ERP 已入帳：${g.booked.length} 張`)}
+        ${row(!g.missing.length, true, `國稅局有、ERP 沒入帳：${g.missing.length} 張`)}
+        ${row(!g.mismatch.length, false, `金額或稅額不符：${g.mismatch.length} 張`)}
+        ${g.voidedBooked.length ? row(false, false, `國稅局已作廢、ERP 卻已入帳：${g.voidedBooked.length} 張`) : ''}
+      </div>
+      ${g.missing.length ? h`<h3 style="font-size:14px;margin:12px 0 4px">國稅局有、ERP 沒入帳</h3>
+        <div class="table-wrap"><table class="grid"><thead><tr><th>發票號碼</th><th>日期</th><th>賣方</th><th class="num">金額</th><th class="num">稅額</th><th></th></tr></thead><tbody>${g.missing.map(
+          (x) => h`<tr data-gap="${x.inv.invoice_no}"><td>${x.inv.invoice_no}</td><td>${x.inv.date}</td><td>${x.inv.seller_name || ''}${x.inv.seller_tax_id ? h`<div class="muted" style="font-size:12px">${x.inv.seller_tax_id}</div>` : ''}</td><td class="num">${fmt(x.inv.total)}</td><td class="num">${Number(x.inv.tax) ? fmt(x.inv.tax) : ''}</td>
+            <td>${x.pending ? h`照片已上傳（${DOC_STATUS[x.pending.status] || ''}）<a href="#/documents?tab=inbox">到憑證歸檔入帳</a>` : h`<button class="btn sm" data-act="gapPost" data-id="${x.inv.id}">入帳</button>`}</td></tr>`,
+        )}</tbody></table></div>` : ''}
+      ${g.mismatch.length ? h`<h3 style="font-size:14px;margin:12px 0 4px">金額不符</h3><ul class="plain-list">${g.mismatch.map((x) => h`<li>${x.inv.invoice_no}｜${x.book.label}｜${x.diffs.join('；')} ${entryLink(x.book.entry_id)}</li>`)}</ul>` : ''}
+      ${g.voidedBooked.length ? h`<h3 style="font-size:14px;margin:12px 0 4px">國稅局已作廢、ERP 卻已入帳</h3><ul class="plain-list">${g.voidedBooked.map((x) => h`<li>${x.inv.invoice_no}｜${x.book.label} ${entryLink(x.book.entry_id)}</li>`)}</ul>` : ''}
+      <p class="muted" style="font-size:12.5px;margin-top:8px">以發票號碼比對已入帳的照片憑證、電子發票、固定資產與分錄摘要。按「入帳」會用國稅局的金額、稅額記一筆分錄（和「憑證歸檔 → 電子發票」分頁的入帳相同）。</p>
+    </div>`;
+  }
+
+  // 從「國稅局有、ERP 沒入帳」直接入帳：選會計項目 → 照電子發票入帳（扣抵依規則判斷）
+  async function postGap(id) {
+    const inv = einvoices.find((x) => x.id === id);
+    if (!inv || inv.entry_id) return;
+    if (isLocked(settings, inv.date)) return toast(`${inv.date.slice(0, 7)} 已結帳鎖定`, 'error');
+    const acc = await modal({
+      title: `入帳：${inv.invoice_no}`,
+      body: h`<p>${invLine(inv)}</p>
+        <label class="field" style="margin-top:8px"><span>會計項目</span>${accountSelect(accounts, inv.account || inv.suggested_account, 'name="acc"')}</label>
+        <p class="muted" style="font-size:12.5px;margin-top:8px">付款方式先列 ${settings.doc_pay_account || '2134'}（設定的憑證預設付款方式），之後可在日記簿修改。進項稅額可否扣抵依發票與科目自動判斷。</p>`,
+      actions: [
+        { label: '取消', value: null },
+        { label: '入帳', primary: true, value: (d) => d.querySelector('[name=acc]').value || (toast('請選會計項目', 'error'), false) },
+      ],
+    });
+    if (!acc) return;
+    const { postEinvoice } = await import('./documents.js');
+    if (!(await postEinvoice(inv, acc, { settings, docs }))) return toast('沒有入帳（已入帳、作廢或月份已鎖定）', 'error');
+    [entries, einvoices] = await Promise.all([store.all('journal_entries'), store.all('einvoices')]);
+    toast(`${inv.invoice_no} 已入帳`, 'good');
+    draw();
+  }
+
+  // 一鍵產生申報媒體檔（TXT）：進項（本期已入帳的發票）＋銷項（選銷項明細檔）＋空白發票（老闆輸入號碼區間）
+  async function exportMedia() {
+    const c = compute();
+    const s = await getSettings();
+    if (!/^\d{8}$/.test(s.tax_id || '')) return toast('請先到「設定」填本店統一編號（8 碼）：檔名與每一筆資料都要用到', 'error', 7000);
+    const inp = mediaInputRecords(c.items, { taxId: s.tax_id });
+    let sales = null; // { name, records, outside, problems }
+    let cur = null;
+    const tr = (label, v) => h`<tr><td>${label}</td><td class="amt">${v}</td></tr>`;
+    const warnList = (title, list) => (list.length ? h`<div class="callout warn" style="margin-top:8px"><p><b>${title}（${list.length}）</b></p><ul class="plain-list" style="max-height:160px;overflow:auto">${list.map((x) => h`<li>${typeof x === 'string' ? x : `${x.label}：${x.reason}`}</li>`)}</ul></div>` : '');
+    const refresh = (dlg) => {
+      const regNo = dlg.querySelector('[name=reg]').value.trim();
+      const { ranges, errors: blankErr } = parseBlankRanges(dlg.querySelector('[name=blank]').value);
+      const blanks = mediaBlankRecords(ranges, { taxId: s.tax_id, ym: c.info.to, fmt: dlg.querySelector('[name=bfmt]').value });
+      const salesRecs = sales?.records || [];
+      const inRange = (no, r) => no.slice(0, 2) === r.start.slice(0, 2) && no >= r.start && no <= r.end;
+      const clash = salesRecs.filter((x) => x.tax_type !== 'D' && ranges.some((r) => inRange(x.invoice_no, r))).map((x) => `${x.invoice_no} 已開立，卻在空白發票區間內`);
+      const built = buildMediaFile({ regNo: /^\d{9}$/.test(regNo) ? regNo : '000000000', records: [...inp.records, ...salesRecs, ...blanks] });
+      const sm = summarizeMedia(parseMediaFile(built.text).rows);
+      cur = { regNo, built, sm, blank: dlg.querySelector('[name=blank]').value, bfmt: dlg.querySelector('[name=bfmt]').value };
+      const o = sm.outputs;
+      const posIncl = c.pos.receipts;
+      mount(
+        dlg.querySelector('#mx-prev'),
+        h`<table class="fin" style="margin:10px 0">
+          <tr class="h"><td>進項 ${sm.inputs.count} 張</td><td class="amt"></td></tr>
+          ${tr('可扣抵進貨及費用（扣抵代號 1）：金額／稅額', `${fmt(sm.inputs.expense.amount)}／${fmt(sm.inputs.expense.tax)}`)}
+          ${tr('可扣抵固定資產（扣抵代號 2）：金額／稅額', `${fmt(sm.inputs.asset.amount)}／${fmt(sm.inputs.asset.tax)}`)}
+          ${tr(`不可扣抵（扣抵代號 3、4）${sm.inputs.nonDeductible.count} 張：金額`, fmt(sm.inputs.nonDeductible.amount))}
+          <tr class="h"><td>銷項 ${o.count - o.blankRecords} 筆</td><td class="amt"></td></tr>
+          ${tr(`有買方統編 ${o.b2b.count} 張：未稅／稅額`, `${fmt(o.b2b.amount)}／${fmt(o.b2b.tax)}`)}
+          ${tr(`沒有買方統編 ${o.b2c.count} 筆：含稅`, fmt(o.b2c.amountIncl))}
+          ${tr('作廢', `${o.voided} 張`)}
+          <tr class="h"><td>空白發票</td><td class="amt">${o.blank} 張（${o.blankRecords} 段）</td></tr>
+          <tr class="t"><td>檔案共</td><td class="amt">${built.count} 筆</td></tr>
+        </table>
+        ${sales ? h`<p class="muted" style="font-size:12.5px">銷項明細「${sales.name}」：估算未稅銷售額 ${fmt(o.salesEx)}、銷項稅額 ${fmt(o.tax)}；本期 POS 應開立發票（含稅）${fmt(posIncl)}，未稅 ${fmt(c.pos.salesEx)}、稅額 ${fmt(c.pos.tax)}。${sales.outside ? `另有 ${sales.outside} 張不在本期，已略過。` : ''}</p>` : h`<div class="callout warn"><p><b>還沒有銷項明細。</b>ERP 的 POS 資料只有營業額、沒有發票號碼，產生不了逐張的銷項資料（本期 POS 應開立發票含稅 ${fmt(posIncl)} 元，未稅 ${fmt(c.pos.salesEx)}、稅額 ${fmt(c.pos.tax)}）。請到電子發票平台或加值中心（例如綠界）下載本期的「銷項發票明細」CSV 或申報檔 TXT，按上面的按鈕選進來；沒有的話，這個檔只有進項與空白發票。</p></div>`}
+        ${warnList('無法寫入檔案、請先修正的資料', [...inp.problems, ...(sales?.problems || []), ...built.errors])}
+        ${warnList('請確認', inp.cautions)}
+        ${warnList('空白發票號碼的問題', [...blankErr, ...clash])}
+        ${!/^\d{9}$/.test(regNo) ? h`<div class="callout warn" style="margin-top:8px"><p>請填 9 碼稅籍編號才能下載。</p></div>` : ''}
+        ${inp.skipped.length ? h`<details style="margin-top:8px"><summary class="muted">不列入媒體檔的進項 ${inp.skipped.length} 張（收據、沒有本店統編）</summary><ul class="plain-list">${inp.skipped.map((x) => h`<li>${x.label}：${x.reason}</li>`)}</ul></details>` : ''}`,
+      );
+    };
+    const pickSales = async (dlg) => {
+      const [file] = await pickFiles({ accept: '.csv,.txt,.CSV,.TXT,text/csv,text/plain', multiple: false });
+      if (!file) return;
+      const { text } = decodeBytes(new Uint8Array(await file.arrayBuffer()));
+      const media = parseMediaFile(text).rows.filter((r) => r.fmt[0] === '3');
+      if (media.length) {
+        // 加值中心／平台的申報檔：只取本期的銷項（含作廢、空白），格式照原檔
+        const mine = media.filter((r) => periodKeyOf(`${r.ym}-01`) === c.info.key);
+        sales = { name: file.name, records: mine.map((r) => ({ ...r, label: r.invoice_no })), outside: media.length - mine.length, problems: [] };
+      } else {
+        let list;
+        if (isMofFormat(text)) list = parseMofInvoices(text).map((x) => ({ invoice_no: x.invoice_no, date: x.date, buyer: String(x.buyer_tax_id || '').replace(/\D/g, ''), total: x.total, ex: null, tax: null, voided: x.voided }));
+        else {
+          const rows = parseCSV(text);
+          const { index } = detectHeaderRow(rows, 'einvoice');
+          list = normalizeSalesInvoices(extract(rows, index, autoMap(rows[index] || [], 'einvoice')));
+        }
+        if (!list.length) return toast('讀不到發票：請選電子發票平台下載的「銷項發票」明細 CSV，或申報檔 TXT', 'error', 7000);
+        const r = mediaSalesRecords(list, { taxId: s.tax_id, start: c.info.start, end: c.info.end });
+        sales = { name: file.name, ...r };
+      }
+      dlg.querySelector('#mx-sales').textContent = `已選「${file.name}」：本期銷項 ${sales.records.length} 筆`;
+      refresh(dlg);
+    };
+    const r = await modal({
+      title: `產生申報媒體檔：${c.info.label}`,
+      wide: true,
+      body: h`<p class="muted" style="font-size:13px">依財政部「營業人進銷項資料」格式（每筆 81 字元）產生 <b>${s.tax_id}.TXT</b>，可在財政部營業稅電子申報系統匯入。進項：本期已入帳、載明本店統編的發票（扣抵代號照本頁判斷）；銷項：選電子發票平台或加值中心的銷項明細；空白發票：在下面輸入號碼。</p>
+        <div class="form-grid">
+          <label class="field"><span>稅籍編號（9 碼，在 401 申報書或營業稅繳款書上）</span><input type="text" name="reg" maxlength="9" inputmode="numeric" autocomplete="off" value="${s.tax_reg_no || ''}"></label>
+          <label class="field"><span>空白發票的格式代號</span><select name="bfmt">${options([['35', '35 電子發票／三聯式收銀機'], ['32', '32 二聯式（收銀機）'], ['31', '31 三聯式']], c.filing.blank_fmt || '35')}</select></label>
+          <label class="field" style="grid-column:1/-1"><span>空白（沒用到）的發票號碼：一行一段，例如 AB12345650-AB12345699；只有一張就寫一個號碼</span><textarea name="blank" rows="3" autocomplete="off">${c.filing.blank_ranges || ''}</textarea></label>
+        </div>
+        <div class="row" style="margin-top:8px;gap:10px"><button type="button" class="btn sm" data-x="sales">選擇銷項發票明細（CSV 或 TXT）</button><span id="mx-sales" class="muted">還沒選</span></div>
+        <div id="mx-prev"></div>`,
+      onMount: (dlg) => {
+        refresh(dlg);
+        dlg.addEventListener('input', () => refresh(dlg));
+        dlg.addEventListener('change', () => refresh(dlg));
+        dlg.querySelector('[data-x="sales"]').addEventListener('click', () => pickSales(dlg));
+      },
+      actions: [
+        { label: '取消', value: null },
+        {
+          label: `下載 ${s.tax_id}.TXT`,
+          primary: true,
+          value: () => {
+            if (!/^\d{9}$/.test(cur.regNo)) return toast('稅籍編號要 9 碼數字', 'error'), false;
+            if (!cur.built.count) return toast('沒有可以寫入的資料', 'error'), false;
+            return cur;
+          },
+        },
+      ],
+    });
+    if (!r) return;
+    download(`${s.tax_id}.TXT`, new Blob([r.built.text], { type: 'text/plain' }));
+    if (r.regNo !== s.tax_reg_no) await saveSettings({ tax_reg_no: r.regNo });
+    await store.put('tax_filings', { ...c.filing, blank_ranges: r.blank.trim(), blank_fmt: r.bfmt, media_export: { at: new Date().toISOString(), records: r.built.count, inputs: r.sm.inputs.count, outputs: r.sm.outputs.count }, updated_at: new Date().toISOString() });
+    filings = await store.all('tax_filings');
+    toast(`已產生 ${s.tax_id}.TXT（${r.built.count} 筆）`, 'good', 7000);
+    draw();
+  }
+
   // 匯入財政部申報媒體檔（TXT）：標記該期已申報、保存申報的進項清單，之後逐張核對
   async function importMedia() {
     const [file] = await pickFiles({ accept: '.txt,.TXT,text/plain', multiple: false });
@@ -179,8 +376,9 @@ export async function render(root, ctx) {
     const { rows, errors } = parseMediaFile(text);
     if (!rows.length) return toast('讀不到申報資料：請選財政部申報系統產生的「統編.TXT」媒體檔', 'error', 7000);
     const sm = summarizeMedia(rows);
-    if (sm.periods.length !== 1) return toast(`這個檔案含 ${sm.periods.length} 個申報期別，請一次匯入一期`, 'error');
-    f.p = sm.periods[0];
+    // 逾期扣抵的進項，所屬年月是發票開立的月份：期別以銷項為準（只有進項時取最晚的一期）
+    if (sm.salesPeriods.length > 1) return toast(`這個檔案的銷項含 ${sm.salesPeriods.length} 個申報期別，請一次匯入一期`, 'error');
+    f.p = sm.period;
     ctx.setParams({ p: f.p });
     const info = periodInfo(f.p);
     const cur = filings.find((x) => x.id === f.p) || { id: f.p, period_from: info.from, period_to: info.to, status: 'draft' };
@@ -279,6 +477,7 @@ export async function render(root, ctx) {
       h`<div class="toolbar no-print">
         <label class="field"><span>申報期別</span><select data-act="period">${options(periods.map((p) => [p.key, `${p.label}（${FILED.has(filings.find((x) => x.id === p.key)?.status) ? '已申報' : '未申報'}）`]), f.p)}</select></label>
         <span class="spacer"></span>
+        <button class="btn" data-act="mediaOut">產生申報媒體檔（TXT）</button>
         <button class="btn" data-act="media">匯入已申報媒體檔（TXT）</button>
         <button class="btn" data-act="xlsx">匯出 Excel</button>
         <button class="btn" data-act="print">列印</button>
@@ -363,6 +562,7 @@ export async function render(root, ctx) {
           </ol>
         </div>
       </div>
+      ${gapCard(c)}
       ${reconCard(c)}
       <div class="card">
         <div class="card-head"><h2>本期進項憑證</h2><span class="card-note">${c.items.length} 張・可扣抵 ${c.ok.length} 張${nd.length ? `・不可扣抵 ${nd.length} 張` : ''}</span></div>
@@ -530,6 +730,8 @@ export async function render(root, ctx) {
       ]));
     },
     media: () => importMedia(),
+    mediaOut: () => exportMedia(),
+    gapPost: (el) => postGap(el.dataset.id),
     print: () => window.print(),
   });
   draw();

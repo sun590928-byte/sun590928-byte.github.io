@@ -55,6 +55,29 @@ export function queueFiles(files) {
   pending.push(...files);
 }
 
+/**
+ * 電子發票入帳（「電子發票」分頁、營業稅頁「國稅局有、ERP 沒入帳」共用）：已有入帳的照片就只連結，不重複入帳。
+ * 申報代號（課稅別、扣抵代號）入帳時存下來，之後規則改了也不會回頭改已入帳的發票。
+ */
+export async function postEinvoice(inv, account, { settings, docs }) {
+  if (inv.entry_id || inv.voided) return false;
+  if (isLocked(settings, inv.date)) return false;
+  const photo = docs.find((d) => d.invoice_no && d.invoice_no === inv.invoice_no && d.entry_id);
+  if (photo) {
+    await store.put('einvoices', { ...inv, entry_id: photo.entry_id, document_id: photo.id });
+    return true;
+  }
+  const entries = await store.all('journal_entries');
+  const item = { invoice_no: inv.invoice_no, tax: inv.tax, account, buyer_tax_id: inv.buyer_tax_id, deductible: inv.deductible, tax_type: inv.tax_type || '', ded_code: inv.ded_code || '' };
+  const ded = deductibility(item, { taxId: settings.tax_id, vatMode: settings.vat_mode });
+  const ok = !!inv.deductible && ded.ok;
+  const je = documentJournal({ id: inv.id, doc_date: inv.date, vendor_name: inv.seller_name, invoice_no: inv.invoice_no, amount_total: inv.total, tax_amount: inv.tax, summary: (inv.items || []).map((i) => i.name).slice(0, 3).join('、'), account, pay_account: settings.doc_pay_account || '2134' }, { deductible: ok });
+  const e = { ...je, source: 'document', source_ref: inv.id, id: uid('je_'), voucher_no: nextVoucherNo(entries, inv.date), status: 'posted', created_at: new Date().toISOString() };
+  await store.put('journal_entries', e);
+  await store.put('einvoices', { ...inv, account, entry_id: e.id, ...taxCodes(item, ok) });
+  return true;
+}
+
 export async function render(root, ctx) {
   const settings = await getSettings();
   const accounts = await getAccounts();
@@ -344,7 +367,7 @@ export async function render(root, ctx) {
       say('此發票已由電子發票入帳，照片已連結，不重複入帳', 'info', 6000);
       return { ok: true, note: '已與電子發票連結' };
     }
-    // 進項稅額可否扣抵：統一發票、載明本店統編、有稅額、非交際／職工福利；手動指定的扣抵代號優先
+    // 進項稅額可否扣抵：統一發票、載明本店統編、有稅額、非交際／伙食／職工福利（水電電信要有本店統編）；手動指定的扣抵代號優先
     const ev = evalDoc(d);
     if (ev.tax !== null && ev.tax !== undefined && Number(ev.tax) !== Number(d.tax_amount)) d = { ...d, tax_amount: ev.tax };
     let deductible = d.deductible;
@@ -719,22 +742,7 @@ export async function render(root, ctx) {
     });
   }
 
-  async function postInvoice(inv, account) {
-    if (inv.entry_id || inv.voided) return false;
-    if (isLocked(settings, inv.date)) return false;
-    const photo = docs.find((d) => d.invoice_no && d.invoice_no === inv.invoice_no && d.entry_id);
-    if (photo) {
-      await store.put('einvoices', { ...inv, entry_id: photo.entry_id, document_id: photo.id });
-      return true;
-    }
-    const entries = await store.all('journal_entries');
-    const ded = deductibility({ invoice_no: inv.invoice_no, tax: inv.tax, account, buyer_tax_id: inv.buyer_tax_id, deductible: inv.deductible }, { taxId: settings.tax_id, vatMode: settings.vat_mode });
-    const je = documentJournal({ id: inv.id, doc_date: inv.date, vendor_name: inv.seller_name, invoice_no: inv.invoice_no, amount_total: inv.total, tax_amount: inv.tax, summary: (inv.items || []).map((i) => i.name).slice(0, 3).join('、'), account, pay_account: settings.doc_pay_account || '2134' }, { deductible: !!inv.deductible && ded.ok });
-    const e = { ...je, source: 'document', source_ref: inv.id, id: uid('je_'), voucher_no: nextVoucherNo(entries, inv.date), status: 'posted', created_at: new Date().toISOString() };
-    await store.put('journal_entries', e);
-    await store.put('einvoices', { ...inv, account, entry_id: e.id });
-    return true;
-  }
+  const postInvoice = (inv, account) => postEinvoice(inv, account, { settings, docs });
 
   const unbind = bindActions(root, {
     tab: (el) => {

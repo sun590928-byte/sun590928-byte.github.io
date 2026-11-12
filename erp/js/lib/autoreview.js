@@ -7,7 +7,7 @@
 import { classifyExpense } from './classify.js';
 import { lookupVendor, predictAccount, isCompanyName, shortVendorName } from './vendorkb.js';
 import { parseDocName } from './docname.js';
-import { INVOICE_NO_RE, NON_DEDUCTIBLE_ACCOUNTS, FIXED_ASSET_ACCOUNTS, DED_CODES, TAX_TYPES } from './vat.js';
+import { INVOICE_NO_RE, NON_DEDUCTIBLE_ACCOUNTS, FIXED_ASSET_ACCOUNTS, DED_CODES, TAX_TYPES, nonDeductibleByRule } from './vat.js';
 import { round2 } from './money.js';
 import { compactKey, levRatio } from './text.js';
 
@@ -299,10 +299,13 @@ export function autoReview(doc, ctx = {}) {
     out.deductible = fil.ded_code === '1' || fil.ded_code === '2';
     if (fil.tax_type && fil.tax_type !== '1') reasons.push(`申報課稅別 ${fil.tax_type}（${TAX_TYPES[fil.tax_type] || ''}）`);
   } else if (manual && has(doc.deductible)) out.deductible = doc.deductible;
-  else out.deductible = isInvoice && toShop && !NON_DEDUCTIBLE_ACCOUNTS[account];
-  if (NON_DEDUCTIBLE_ACCOUNTS[account] && out.deductible && sources.account !== 'user') {
+  // 交際費、伙食費、職工福利一律不可扣抵；水電電信帳單要有本店統編（老闆指定的扣抵代號優先，入帳時再判斷）
+  const ruleNd = nonDeductibleByRule({ account, buyer_tax_id: buyer }, shop);
+  const autoDed = !(fil || (manual && has(doc.deductible)));
+  if (autoDed) out.deductible = isInvoice && toShop;
+  if (ruleNd && out.deductible && (autoDed || sources.account !== 'user')) {
     out.deductible = false;
-    reasons.push(NON_DEDUCTIBLE_ACCOUNTS[account]);
+    reasons.push(ruleNd);
   }
   // 老闆以前對這家店一律不扣抵（例如外送平台）
   const ded = hit?.entry?.ded;
