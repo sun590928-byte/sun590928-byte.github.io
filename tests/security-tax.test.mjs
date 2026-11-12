@@ -110,7 +110,7 @@ test('vat: 進項清單去重、逾期順延、稅額計算與結轉分錄', () 
   const docs = [
     { id: 'd1', status: 'posted', entry_id: 'e1', doc_date: '2026-09-02', invoice_no: 'AB00000001', amount_total: 1050, tax_amount: 50, account: '1211', deductible: true },
     { id: 'd2', status: 'posted', entry_id: 'e2', doc_date: '2026-10-05', invoice_no: 'AB00000002', amount_total: 210000, tax_amount: 10000, account: '1511', deductible: true },
-    { id: 'd3', status: 'posted', entry_id: 'e3', doc_date: '2026-07-20', invoice_no: 'AB00000003', amount_total: 525, tax_amount: 25, account: '6118', deductible: true },
+    { id: 'd3', status: 'posted', entry_id: 'e3', doc_date: '2026-07-20', invoice_no: 'AB00000003', amount_total: 525, tax_amount: 25, account: '6118', deductible: true, buyer_tax_id: '12345675' }, // 水電帳單載明本店統編才可扣抵（11/12 規則）
     { id: 'd4', status: 'inbox', doc_date: '2026-09-03', invoice_no: 'AB00000004', amount_total: 100, tax_amount: 5 },
   ];
   const einv = [{ id: 'i1', invoice_no: 'AB00000001', date: '2026-09-02', total: 1050, tax: 50, entry_id: 'e1' }, { id: 'i2', invoice_no: 'CD00000009', date: '2026-10-10', total: 315, tax: 15, entry_id: 'e9', account: '6120', deductible: true }];

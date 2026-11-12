@@ -829,6 +829,122 @@ try {
   assert(await page.isVisible('text=目標 11/12（四）'), '行事曆顯示 9–10 月營業稅目標日 11/12');
   await go('journal?ym=2026-10');
   assert((await page.textContent('table.grid')).includes('營業稅結轉（115 年 9–10 月）'), '日記簿有營業稅結轉分錄');
+
+  // 11/12 需求 二-2～二-4（稅務）：伙食費／水電電信沒有本店統編 → 自動扣抵代號 3；匯入國稅局進項 CSV 後列出 ERP 沒入帳的；一鍵產生申報媒體檔 TXT（全為合成資料）
+  {
+    const SHOP = '12345675';
+    await setRecognize(false, SHOP);
+    await page.evaluate(async (shop) => {
+      const { store } = await import('/erp/js/store.js');
+      const base = { kind: 'receipt', status: 'reviewed', mime: 'image/png', pay_account: '2134', invoice_type: '電子發票', deductible: true, created_at: new Date().toISOString() };
+      await store.put('documents', [
+        { ...base, id: 'doc_t1112a', original_name: '1112-伙食.png', doc_date: '2026-11-03', vendor_name: '測試便當', vendor_tax_id: '10047514', buyer_tax_id: shop, invoice_no: 'QA11120001', amount_total: 1050, tax_amount: 50, account: '6126', summary: '員工餐' },
+        { ...base, id: 'doc_t1112b', original_name: '1112-電費-無統編.png', doc_date: '2026-11-04', vendor_name: '測試電力', vendor_tax_id: '10324679', buyer_tax_id: '', invoice_no: 'BB11120002', amount_total: 2100, tax_amount: 100, account: '6118', summary: '電費' },
+        { ...base, id: 'doc_t1112c', original_name: '1112-電話-本店.png', doc_date: '2026-11-05', vendor_name: '測試電信', vendor_tax_id: '10324679', buyer_tax_id: shop, invoice_no: 'QA11120003', amount_total: 1365, tax_amount: 65, account: '6115', summary: '電話費' },
+      ]);
+    }, SHOP);
+    await go('documents?tab=inbox');
+    const autoCode = (name) => page.$eval(`.doc-card:has-text("${name}") [name=ded_code] option[value=""]`, (o) => o.textContent.trim());
+    assert((await autoCode('1112-伙食.png')).includes('自動（3）'), '伙食費自動判斷扣抵代號 3');
+    assert((await autoCode('1112-電費-無統編.png')).includes('自動（3）'), '電費帳單沒有本店統編 → 3');
+    assert((await autoCode('1112-電話-本店.png')).includes('自動（1）'), '電話費帳單有本店統編 → 照常 1');
+    for (const name of ['1112-伙食.png', '1112-電費-無統編.png', '1112-電話-本店.png']) {
+      await page.locator('.doc-card', { hasText: name }).locator('[data-act="post"]').click();
+      // 等憑證標「已入帳」而且分錄讀得到，再點下一張
+      await page.waitForFunction(
+        async (n) => {
+          const { store } = await import('/erp/js/store.js');
+          const d = (await store.all('documents')).find((x) => x.original_name === n);
+          return d?.status === 'posted' && (await store.all('journal_entries')).some((e) => e.id === d.entry_id);
+        },
+        name,
+        { timeout: 15000 },
+      );
+      await page.waitForTimeout(300);
+    }
+    const posted = await page.evaluate(async () => {
+      const { store } = await import('/erp/js/store.js');
+      const docs = await store.all('documents');
+      const entries = await store.all('journal_entries');
+      return Object.fromEntries(['doc_t1112a', 'doc_t1112b', 'doc_t1112c'].map((id) => { const d = docs.find((x) => x.id === id); const e = entries.find((x) => x.id === d?.entry_id); return [id, { status: d?.status, entry: d?.entry_id, ded: d?.ded_code, lines: (e?.lines || []).map((l) => [l.account, l.debit, l.credit]) }]; }));
+    });
+    console.log('11/12 扣抵入帳：', JSON.stringify(posted));
+    assert(posted.doc_t1112a.ded === '3' && posted.doc_t1112a.lines.some(([a, d]) => a === '6126' && d === 1050) && !posted.doc_t1112a.lines.some(([a]) => a === '1261'), '伙食費稅額併入費用、不進 1261');
+    assert(posted.doc_t1112b.ded === '3' && posted.doc_t1112b.lines.some(([a, d]) => a === '6118' && d === 2100) && !posted.doc_t1112b.lines.some(([a]) => a === '1261'), '電費沒有本店統編：稅額併入費用');
+    assert(posted.doc_t1112c.ded === '1' && posted.doc_t1112c.lines.some(([a, d]) => a === '1261' && d === 65), '電話費有本店統編：進項稅額 65');
+
+    // 二-4：匯入國稅局進項發票 CSV → 自動列出「國稅局有、ERP 沒入帳」與金額不符
+    const einvCsv = [
+      '發票號碼,發票日期,賣方統一編號,賣方名稱,買方統一編號,銷售額,稅額,總計,發票狀態',
+      'QA11120001,2026/11/03,10047514,測試便當,12345675,1000,50,1050,開立',
+      'QA11120003,2026/11/05,10324679,測試電信,12345675,1250,63,1313,開立',
+      'QA11120004,2026/11/06,10047514,測試烘豆,12345675,2000,100,2100,開立',
+      'QA11120005,2026/11/07,10324679,測試包材,12345675,500,25,525,開立',
+    ].join('\r\n');
+    await go('import');
+    const [ch1] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pick"]')]);
+    await ch1.setFiles([{ name: '國稅局進項發票-測試.csv', mimeType: 'text/csv', buffer: Buffer.from('﻿' + einvCsv, 'utf8') }]);
+    await page.waitForSelector('[data-act="commit"]', { timeout: 15000 });
+    assert((await page.$eval('[data-act="target"]', (el) => el.value)) === 'einvoice', '國稅局進項 CSV 判斷為電子發票（進項）');
+    await page.click('[data-act="commit"]');
+    await page.waitForSelector('dialog >> text=國稅局有、ERP 沒入帳的發票', { timeout: 15000 });
+    const gapMsg = (await page.textContent('dialog .modal-body')).replace(/\s+/g, ' ');
+    console.log('匯入後列出：', gapMsg.slice(0, 200));
+    assert(/沒入帳 2 張/.test(gapMsg) && /金額不符 1 張/.test(gapMsg) && gapMsg.includes('QA11120004') && gapMsg.includes('QA11120005') && gapMsg.includes('金額 國稅局 1313／ERP 1365'), '匯入後自動列出國稅局有、ERP 沒入帳的發票');
+    await shot('einvoice-gaps-after-import', false);
+    await page.click('dialog a[data-go][href="#/vat?p=2026-11"]');
+    await page.waitForSelector('#vat-gaps >> text=國稅局有、ERP 沒入帳：2 張');
+    assert(!(await page.isVisible('dialog.modal')), '點連結後關閉清單');
+    const gapView = (await page.textContent('#vat-gaps')).replace(/\s+/g, ' ');
+    assert(gapView.includes('金額或稅額不符：1 張') && gapView.includes('稅額 國稅局 63／ERP 65'), '營業稅頁也看得到金額不符');
+    // 直接從清單入帳
+    await page.click('#vat-gaps tr[data-gap="QA11120004"] [data-act="gapPost"]');
+    await page.waitForSelector('dialog [name=acc]');
+    await page.selectOption('dialog [name=acc]', '1211');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('#vat-gaps >> text=國稅局有、ERP 沒入帳：1 張');
+    const vt1112 = (await page.textContent('#view')).replace(/\s+/g, ' ');
+    assert(vt1112.includes('伙食費（員工餐）屬職工福利性質') && vt1112.includes('水電瓦斯費帳單沒有載明本店統編'), '401 進項清單寫出不可扣抵原因');
+    await shot('vat-einvoice-gaps', false);
+
+    // 二-3：一鍵產生申報媒體檔（進項＋銷項明細 CSV＋空白發票）
+    await page.click('[data-act="mediaOut"]');
+    await page.waitForSelector('dialog >> text=產生申報媒體檔');
+    assert((await page.textContent('dialog #mx-prev')).includes('還沒有銷項明細'), '沒選銷項明細時說明缺什麼');
+    await page.fill('dialog [name=reg]', '123456789');
+    await page.fill('dialog [name=blank]', 'QZ11120050-QZ11120099\nQZ11120100');
+    const salesCsv = ['發票號碼,發票日期,買方統一編號,銷售額,稅額,總計,發票狀態', 'XA11120001,2026/11/01,,,,105,開立', 'XA11120002,2026/11/02,10332598,2000,100,2100,開立', 'XA11120003,2026/11/02,,,,50,作廢'].join('\r\n');
+    const [ch2] = await Promise.all([page.waitForEvent('filechooser'), page.click('dialog [data-x="sales"]')]);
+    await ch2.setFiles([{ name: '銷項發票-測試.csv', mimeType: 'text/csv', buffer: Buffer.from('﻿' + salesCsv, 'utf8') }]);
+    await page.waitForSelector('dialog #mx-sales >> text=本期銷項 3 筆');
+    const prev = (await page.textContent('dialog #mx-prev')).replace(/\s+/g, ' ');
+    console.log('媒體檔預覽：', prev.slice(0, 300));
+    assert(prev.includes('51 張（2 段）') && /作廢\s*1 張/.test(prev) && !prev.includes('還沒有銷項明細'), '預覽列出空白發票與銷項');
+    await shot('vat-media-export', false);
+    const [dl] = await Promise.all([page.waitForEvent('download'), page.click('dialog .modal-foot .btn.primary')]);
+    assert(dl.suggestedFilename() === `${SHOP}.TXT`, '媒體檔檔名 ' + dl.suggestedFilename());
+    const txtFile = join(OUT, dl.suggestedFilename());
+    await dl.saveAs(txtFile);
+    const raw = (await readFile(txtFile)).toString('latin1');
+    const recs = raw.split('\r\n');
+    assert(raw.endsWith('\r\n') && recs.pop() === '' && recs.every((l) => l.length === 81 && /^[\x20-\x7E]+$/.test(l)), '每筆 81 字元、CRLF');
+    const byInv = Object.fromEntries(recs.map((l) => [l.slice(39, 49).trim(), l]));
+    const fld = (l) => ({ fmt: l.slice(0, 2), reg: l.slice(2, 11), ym: l.slice(18, 23), buyer: l.slice(23, 31), seller: l.slice(31, 39), amount: Number(l.slice(49, 61)), tt: l[61], tax: Number(l.slice(62, 72)), ded: l[72], agg: l[79] });
+    console.log('媒體檔：', recs.length, '筆；', Object.keys(byInv).join(' '));
+    assert(fld(byInv.QA11120001).ded === '3' && fld(byInv.QA11120001).tax === 50 && fld(byInv.QA11120001).amount === 1000 && fld(byInv.QA11120001).reg === '123456789' && fld(byInv.QA11120001).ym === '11511', '伙食費進項：扣抵代號 3');
+    assert(fld(byInv.QA11120003).ded === '1' && fld(byInv.QA11120003).tax === 65 && fld(byInv.QA11120004).ded === '1' && fld(byInv.QA11120004).seller === '10047514', '可扣抵進項：扣抵代號 1');
+    assert(!byInv.BB11120002, '沒有本店統編的電費不列入媒體檔');
+    assert(fld(byInv.XA11120002).buyer === '10332598' && fld(byInv.XA11120002).tax === 100 && fld(byInv.XA11120001).amount === 105 && fld(byInv.XA11120003).tt === 'F', '銷項：三聯、二聯（含稅）、作廢');
+    const bl = fld(byInv.QZ11120050);
+    assert(bl.fmt === '35' && bl.tt === 'D' && bl.agg === 'A' && bl.buyer === '11120099' && bl.seller === SHOP && bl.ym === '11512', '空白發票彙加：課稅別 D、訖號在買方統編欄、彙加註記 A');
+    assert(fld(byInv.QZ11120100).agg === ' ' && fld(byInv.QZ11120100).tt === 'D', '單張空白發票');
+    // 重新打開：稅籍編號與空白發票號碼記住了
+    await page.click('[data-act="mediaOut"]');
+    await page.waitForSelector('dialog >> text=產生申報媒體檔');
+    assert((await page.inputValue('dialog [name=reg]')) === '123456789' && (await page.inputValue('dialog [name=blank]')).includes('QZ11120050-QZ11120099'), '稅籍編號與空白發票號碼會記住');
+    await page.click('dialog .modal-foot .btn');
+    await setRecognize(false, '');
+  }
   // 月結：下載本月帳冊（Excel）
   await go('closing?ym=2026-09');
   {
