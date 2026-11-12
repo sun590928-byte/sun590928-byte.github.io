@@ -323,7 +323,7 @@ export async function render(root, ctx) {
         ${stat('缺貨', fmt(n('out')), n('out') ? '現有庫存 ≤ 0，請盡快叫貨' : '沒有缺貨品項', n('out') ? 'bad' : '')}
         ${stat('庫存總值（未稅）', '$' + fmt(round2(rows.reduce((t, r) => t + r.value, 0))), `移動平均成本（未稅）・${asOf}`)}
       </div>
-      ${recipes.length ? '' : h`<div class="callout warn" style="margin-bottom:12px"><p>尚未設定任何配方，POS 銷售不會自動扣庫存。請到「配方（BOM）」分頁設定每個品項用了哪些原料。</p></div>`}
+      ${recipes.length ? '' : h`<div class="callout warn" style="margin-bottom:12px"><p>尚未設定任何配方，POS 銷售不會自動扣庫存。請到左側選單 <a href="#/bom">BOM 配方表</a> 設定每個 POS 品名用了哪些原料（不用先做品項整併）。</p></div>`}
       <div class="callout" style="margin-bottom:16px">
         <p><b>耗用 ＝ POS 銷售份數 × 配方用量 ＋ 手動登記的耗用。</b>老闆招待、老闆測試的品項雖然金額作廢，原料確實用掉了，仍計入耗用；POS 上以「報廢」作廢的品項計入報廢量。</p>
         <p>現有庫存 ＝ 期初 ＋ 進貨 − 耗用 − 報廢 ± 盤點調整；可用天數 ＝ 現有庫存 ÷ 近 14 天日均耗用。${rateAsOf !== asOf ? `POS 銷售資料只到 ${rateAsOf}，之後的耗用尚未扣除，日均耗用以該日往前 14 天計算。` : ''}期初庫存請以營收起算日（${settings.revenue_start}）的盤點數量登記「期初」。</p>
@@ -407,7 +407,7 @@ export async function render(root, ctx) {
 
   function draw() {
     if (!items.length) {
-      mount(root, h`<div class="card">${emptyState('還沒有原物料品項', '新增咖啡豆、鮮奶、杯蓋等原物料並設定安全庫存，再到「配方（BOM）」設定各品項的用量，系統就會依 POS 銷售自動推算耗用與庫存。也可以直接到「進貨紀錄」登記或匯入進貨單，沒見過的品名會自動建檔。', h`<div class="row" style="justify-content:center"><button class="btn primary" data-act="addItem">＋ 新增品項</button><button class="btn" data-act="itemsImport">從 Excel 匯入主檔</button><a class="btn" href="#/purchases">前往進貨紀錄</a></div>`)}</div>`);
+      mount(root, h`<div class="card">${emptyState('還沒有原物料品項', '新增咖啡豆、鮮奶、杯蓋等原物料並設定安全庫存，再到左側選單「BOM 配方表」設定各品名的用量，系統就會依 POS 銷售自動推算耗用與庫存。也可以直接到「進貨紀錄」登記或匯入進貨單，沒見過的品名會自動建檔。', h`<div class="row" style="justify-content:center"><button class="btn primary" data-act="addItem">＋ 新增品項</button><button class="btn" data-act="itemsImport">從 Excel 匯入主檔</button><a class="btn" href="#/purchases">前往進貨紀錄</a></div>`)}</div>`);
       return;
     }
     const tabs = [['stock', '庫存水位'], ['moves', `異動紀錄（${fmt(moves.length)}）`], ['bom', '配方（BOM）']];

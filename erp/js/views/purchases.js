@@ -394,7 +394,7 @@ export async function render(root, ctx) {
         { key: 'note', label: '備註' },
         { key: 'safety_stock', label: '安全庫存', align: 'num', fmt: (v, r) => (Number(v) > 0 ? `${fmt(Number(v))} ${r.unit}` : status('na', '未設')), csv: (v) => v ?? '' },
         { key: 'suggest', label: '建議安全庫存', align: 'num', sort: (r) => r.suggest ?? null, fmt: (v, r) => (v === null || v === undefined ? h`<span class="muted" style="font-size:12px" title="${r.suggestWhy}">資料不足</span>` : `${fmt(v)} ${r.unit}`), csv: (v) => (v === null || v === undefined ? '資料不足' : v) },
-        { key: 'recipes', label: '用於配方', align: 'num', fmt: (v) => (v ? fmt(v) : h`<a href="#/inventory?tab=bom" class="muted">去設定</a>`), csv: (v) => v },
+        { key: 'recipes', label: '用於配方', align: 'num', fmt: (v) => (v ? fmt(v) : h`<a href="#/bom" class="muted">去設定</a>`), csv: (v) => v },
         { key: 'id', label: '', nosort: true, fmt: (v) => h`<span style="white-space:nowrap"><button class="btn sm" data-act="editItem" data-id="${v}">修改</button> <a class="btn sm ghost" href="#/purchases?tab=price&amp;item=${v}">單價</a></span>`, csv: () => '' },
       ],
     });
