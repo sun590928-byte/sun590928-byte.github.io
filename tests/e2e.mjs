@@ -363,10 +363,10 @@ try {
     const { store } = await import('/erp/js/store.js');
     return (await store.all('accounts')).find((a) => a.code === '1217')?.name || '';
   });
-  assert(acc1217 === '原料－果汁糖漿', '科目表自動補上 1217 ' + acc1217);
+  assert(acc1217 === '原料－各項果汁糖漿', '科目表自動補上 1217 ' + acc1217);
   const costAccounts = await page.$$eval('.report table.grid tbody tr td:first-child', (tds) => tds.map((td) => td.textContent.trim()));
-  assert(costAccounts.includes('1217 原料－果汁糖漿'), '存貨與成本頁列出 1217 ' + costAccounts.join('｜'));
-  assert(costAccounts[0].startsWith('1211') && costAccounts.indexOf('1217 原料－果汁糖漿') === costAccounts.length - 1, '存貨科目依代號排序 ' + costAccounts.join('｜'));
+  assert(costAccounts.includes('1217 原料－各項果汁糖漿'), '存貨與成本頁列出 1217 ' + costAccounts.join('｜'));
+  assert(costAccounts[0].startsWith('1211') && costAccounts.indexOf('1217 原料－各項果汁糖漿') === costAccounts.length - 1, '存貨科目依代號排序 ' + costAccounts.join('｜'));
   await shot('cost', false);
   await go('closing?ym=2026-09');
   await shot('closing');

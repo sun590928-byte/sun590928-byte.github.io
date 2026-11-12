@@ -66,7 +66,7 @@ store.on((coll) => {
 });
 
 // 首次使用：寫入咖啡業會計項目；之後版本才加入、分錄一定會用到的科目若缺少也補上
-// 1105 現金（2026-11-01 營業現金）、1217 原料－果汁糖漿（2026-11-10 老闆新增的存貨科目）
+// 1105 現金（2026-11-01 營業現金）、1217 原料－各項果汁糖漿（2026-11-10 老闆新增的存貨科目）
 const REQUIRED_CODES = ['1105', '1217'];
 export async function ensureAccounts() {
   const accs = await store.all('accounts');

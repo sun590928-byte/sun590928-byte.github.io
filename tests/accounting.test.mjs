@@ -124,7 +124,7 @@ test('autojournal: 撥款、折舊、月底成本、憑證、自動分錄合併'
   assert.equal(dep.date, '2026-09-30');
   const cg = cogsJournal('2026-09', [{ account: '1211', name: '咖啡豆', book: 12000, counted: 4000 }, { account: '1212', name: '乳品', book: 3000, counted: 3500 }], { boss_treat: 300, scrap: 200 });
   // 1217 果汁糖漿耗用轉 5101 銷貨成本－飲品原料
-  const cj = cogsJournal('2026-11', [{ account: '1217', name: '原料－果汁糖漿', book: 2000, counted: 500 }]);
+  const cj = cogsJournal('2026-11', [{ account: '1217', name: '原料－各項果汁糖漿', book: 2000, counted: 500 }]);
   assert.deepEqual(cj.lines.map((l) => [l.account, l.debit, l.credit]), [['5101', 1500, 0], ['1217', 0, 1500]]);
   assert.deepEqual(inventoryAccounts([{ code: '1211' }, { code: '1218', active: false }, { code: '1219' }, { code: '1261' }], { items: [{ gl_account: '1218' }] }), ['1211', '1212', '1213', '1214', '1215', '1216', '1217', '1218', '1219']);
   assert.deepEqual(validateEntry(cg, accMap), []);

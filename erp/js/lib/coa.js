@@ -25,7 +25,7 @@ export const DEFAULT_ACCOUNTS = [
   A('1214', '原料－甜點輕食原料', 'asset', { grp: 'current', hint: '麵粉、奶油、起司、雞蛋、水果' }),
   A('1215', '原料－包材耗材', 'asset', { grp: 'current', hint: '杯、蓋、吸管、提袋、濾紙' }),
   A('1216', '原料－零售商品', 'asset', { grp: 'current', hint: '販售用豆、濾掛、周邊' }),
-  A('1217', '原料－果汁糖漿', 'asset', { grp: 'current', hint: '果汁、濃縮果汁、果露、糖漿、果糖' }),
+  A('1217', '原料－各項果汁糖漿', 'asset', { grp: 'current', hint: '果汁、濃縮果汁、果露、糖漿、果糖' }),
   A('1251', '預付費用', 'asset', { grp: 'current' }),
   A('1252', '預付租金', 'asset', { grp: 'current' }),
   A('1261', '進項稅額', 'asset', { grp: 'current', hint: '可扣抵之進項營業稅' }),
