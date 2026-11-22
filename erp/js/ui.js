@@ -144,7 +144,8 @@ export function modal({ title, body, actions = [{ label: '關閉', value: null }
 }
 
 export async function confirmBox(message, { ok = '確定', danger = false } = {}) {
-  const r = await modal({ title: '請確認', body: h`<p>${message}</p>`, actions: [{ label: '取消', value: false }, { label: ok, value: true, primary: !danger, danger }] });
+  // 取消用 null：modal 把 false 當成「驗證失敗、保持開啟」，用 false 時按「取消」關不掉視窗
+  const r = await modal({ title: '請確認', body: h`<p>${message}</p>`, actions: [{ label: '取消', value: null }, { label: ok, value: true, primary: !danger, danger }] });
   return !!r;
 }
 

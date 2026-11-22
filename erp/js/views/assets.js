@@ -7,7 +7,7 @@ import { getSettings, getAccounts, isLocked } from '../state.js';
 import { accountBalance } from '../lib/ledger.js';
 import { monthEnd } from '../lib/dates.js';
 import { ASSET_CATEGORIES } from '../lib/coa.js';
-import { assetSummary, schedule, normalizeAsset, defaultResidual } from '../lib/assets.js';
+import { assetSummary, schedule, normalizeAsset, defaultResidual, assetInvoiceNos } from '../lib/assets.js';
 import { addMonths, today } from '../lib/dates.js';
 import { round2 } from '../lib/money.js';
 import { uid } from '../lib/text.js';
@@ -204,6 +204,10 @@ export async function render(root, ctx) {
       ],
     });
     if (!r) return;
+    // 11/20 需求 2：發票號碼和另一項資產相同 → 可能是同一台設備登錄兩次
+    const mine = new Set(assetInvoiceNos(r));
+    const twin = assets.find((x) => x.id !== r.id && !x.disposed_on && assetInvoiceNos(x).some((n) => mine.has(n)));
+    if (twin && !(await confirmBox(`可能重複：資產「${twin.name}」（${twin.acquired_on || ''}，成本 ${fmt(Number(twin.cost) || 0)}）的發票號碼也是 ${assetInvoiceNos(twin).filter((n) => mine.has(n)).join('、')}。同一台設備登錄兩次，折舊會重複提列。確定要${isNew ? '另外新增' : '儲存'}「${r.name}」嗎？`, { ok: isNew ? '仍要新增' : '仍要儲存' }))) return;
     r.doc_ids = att.ids;
     docs = await store.all('documents');
     // 附上的發票若已在「憑證歸檔」入帳，直接視為購置分錄，避免重複入帳
@@ -307,6 +311,9 @@ export async function render(root, ctx) {
       const a = assets.find((x) => x.id === el.dataset.id);
       if (!(await confirmBox(`刪除「${a.name}」？相關折舊分錄會重新計算（已鎖定月份不變）。${entryOf(a) ? `購置分錄 ${entryOf(a).voucher_no} 不會自動刪除，請到日記簿處理。` : ''}`, { danger: true, ok: '刪除' }))) return;
       await store.remove('fixed_assets', a.id);
+      // 連到這項資產的發票解除連結（之後可以在另一項資產「修改」→「從憑證匣選擇」連過去）；憑證本身、分錄都不動
+      const unlinked = (await store.all('documents')).filter((d) => d.asset_id === a.id).map((d) => ({ ...d, asset_id: null }));
+      if (unlinked.length) await store.put('documents', unlinked);
       assets = await store.all('fixed_assets');
       await syncDepreciation();
       entries = await store.all('journal_entries');

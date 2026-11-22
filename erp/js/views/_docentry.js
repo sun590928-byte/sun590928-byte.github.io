@@ -8,7 +8,7 @@ import { getAccounts, getSettings, isLocked } from '../state.js';
 import { accountMap, ASSET_CATEGORIES } from '../lib/coa.js';
 import { validateEntry, nextVoucherNo, voucherKind } from '../lib/ledger.js';
 import { TAX_TYPES, DED_CODES } from '../lib/vat.js';
-import { applyDocEdit, docEditRows, sameLines, filedPeriodsFor, assetGroups, isBlankRow } from '../lib/docedit.js';
+import { applyDocEdit, docEditRows, sameLines, filedPeriodsFor, assetGroups, isBlankRow, entryPayAccount } from '../lib/docedit.js';
 import { attachmentEditor, linkDocumentsToEntry, archivePatch, previewDocument, docLabel } from '../attach.js';
 import { syncDepreciation } from '../sync.js';
 import { accountSelect, payAccountSelect } from './_shared.js';
@@ -27,9 +27,11 @@ export async function editDocumentEntry(entry, doc) {
     ...docs.filter((d) => d.id !== doc.id && d.status === 'posted').flatMap((d) => [d.invoice_no, ...(Array.isArray(d.lines) ? d.lines.map((p) => p.invoice_no) : [])]),
     ...einvoices.filter((i) => i.entry_id && !i.voided && i.id !== linkedInv?.id).map((i) => i.invoice_no),
   ].filter(Boolean));
-  const opts = { taxId: settings.tax_id, vatMode: settings.vat_mode, payAccount: settings.doc_pay_account || '2134', accounts: new Set(accounts.map((a) => a.code)), takenInvoiceNos: taken, linkedInvoiceNo: linkedInv?.invoice_no || '' };
+  // entryLines（11/20 需求 1）：重新產生時保留傳票原本的付款科目與手續費那一行，不換成憑證的預設付款方式
+  const opts = { taxId: settings.tax_id, vatMode: settings.vat_mode, payAccount: settings.doc_pay_account || '2134', accounts: new Set(accounts.map((a) => a.code)), takenInvoiceNos: taken, linkedInvoiceNo: linkedInv?.invoice_no || '', entryLines: entry.lines || [] };
+  const entryPay = entryPayAccount(entry.lines) || doc.pay_account || opts.payAccount;
   const rows0 = docEditRows(doc, opts);
-  const first = applyDocEdit(doc, { rows: rows0 }, opts);
+  const first = applyDocEdit(doc, { rows: rows0, pay_account: entryPay }, opts);
   const drift = first.journal && !sameLines(first.journal.lines, entry.lines);
   const myAssets = assets.filter((a) => a.purchase_entry_id === entry.id && (a.doc_ids || []).includes(doc.id));
   const prevAtt = [...(entry.attachments || [])];
@@ -40,6 +42,7 @@ export async function editDocumentEntry(entry, doc) {
 
   const rowHtml = (r = {}) => h`<tr>
     <td><input class="cell" name="inv" value="${r.invoice_no || ''}" placeholder="AB12345678" style="width:112px" autocomplete="off" aria-label="發票號碼"></td>
+    <td><input class="cell" type="date" name="ldate" value="${r.date || ''}" style="width:132px" aria-label="這一行的日期（空白＝憑證日期）" title="合併憑證裡這張發票自己的日期；空白＝上面的日期"></td>
     <td>${accountSelect(accounts, r.account || '', 'name="acc" aria-label="會計項目" style="width:170px"')}</td>
     <td><input class="cell num" name="amt" inputmode="decimal" value="${r.amount ?? ''}" style="width:92px" autocomplete="off" aria-label="含稅金額"></td>
     <td><input class="cell num" name="tax" inputmode="decimal" value="${r.tax || ''}" style="width:72px" autocomplete="off" aria-label="稅額"></td>
@@ -52,24 +55,25 @@ export async function editDocumentEntry(entry, doc) {
 
   const body = h`
     <div class="callout" style="margin-bottom:10px"><p>這張分錄是憑證「<b>${docLabel(doc)}</b>」入帳產生的。<button type="button" class="btn sm ghost" data-de="photo">看照片</button><br>
-      直接改下面的<b>課稅別、扣抵代號、拆分明細</b>，按「儲存並同步」後：憑證一起更新、分錄依入帳規則重新產生（傳票號不變），「營業稅 401」的進項清單也會跟著變。</p></div>
-    ${drift ? h`<div class="callout warn" style="margin-bottom:10px"><p>這張分錄和憑證算出來的不一樣（可能以前手動改過分錄）。儲存並同步會依憑證重新產生分錄；要保留手動的分錄，請按「直接改分錄（不改憑證）」。</p></div>` : ''}
-    ${myAssets.length ? h`<div class="callout warn" style="margin-bottom:10px"><p>這張憑證入帳時建立了固定資產「${myAssets.map((a) => a.name).join('、')}」。改了扣抵或金額，儲存時會照新的未稅金額更新取得成本並重算折舊（已結帳鎖定月份的折舊不會變）。</p></div>` : ''}
+      直接改下面的<b>課稅別、扣抵代號、拆分明細</b>，按「儲存並同步」後：憑證一起更新、分錄依入帳規則重新產生（傳票號不變），「營業稅 401」的進項清單也會跟著變。<b>付款方式和手續費那一行照這張傳票原本的保留</b>，不會換成憑證的預設付款方式。</p></div>
+    ${drift ? h`<div class="callout warn" style="margin-bottom:10px"><p>這張分錄和憑證算出來的不一樣（可能以前手動改過分錄）。儲存並同步會依憑證重新產生費用和稅額那幾行（付款方式、手續費照原本的）；要整張保留手動的分錄，請按「直接改分錄（不改憑證）」。</p></div>` : ''}
+    ${myAssets.length ? h`<div class="callout warn" style="margin-bottom:10px"><p>這張憑證連結固定資產「${myAssets.map((a) => a.name).join('、')}」。改了扣抵或金額，儲存時會照新的未稅金額更新取得成本並重算折舊（資產成本本來就和發票不同的不自動改；已結帳鎖定月份的折舊不會變）。</p></div>` : ''}
     <div id="de-filed"></div>
     <div class="form-grid" style="margin-bottom:10px">
       <label class="field"><span>日期</span><input type="date" name="date" value="${entry.date}"></label>
       <label class="field" style="grid-column:span 2"><span>摘要</span><input type="text" name="desc" value="${entry.description || ''}"></label>
       <label class="field"><span>憑證金額（含稅）</span><input type="text" value="${fmt(Number(doc.amount_total) || 0)}" disabled></label>
-      <label class="field" style="grid-column:span 2"><span>付款方式</span>${payAccountSelect(accounts, doc.pay_account || opts.payAccount, 'name="pay"')}</label>
+      <label class="field" style="grid-column:span 2"><span>付款方式（這張傳票原本的）</span>${payAccountSelect(accounts, entryPay, 'name="pay"')}</label>
     </div>
     <h3 style="font-size:14px;margin:4px 0">憑證明細（課稅別、扣抵代號、拆分）</h3>
-    <p class="muted" style="font-size:12.5px;margin-bottom:6px">一行＝一張發票或一個科目；含稅金額合計要等於憑證金額。要拆成兩張發票或兩個科目就按「＋ 拆成多行」，再把金額分開填。扣抵代號 1、2 可扣抵（稅額記進項稅額 1261），3、4 不可扣抵（稅額併入費用或成本）。</p>
-    <div class="table-wrap"><table class="grid"><thead><tr><th>發票號碼</th><th>會計項目</th><th class="num">含稅金額</th><th class="num">稅額</th><th>課稅別</th><th>扣抵代號</th><th>說明</th><th>可否扣抵</th><th></th></tr></thead>
+    <p class="muted" style="font-size:12.5px;margin-bottom:6px">一行＝一張發票或一個科目；含稅金額合計要等於憑證金額。要拆成兩張發票或兩個科目就按「＋ 拆成多行」，再把金額分開填。扣抵代號 1、2 可扣抵（稅額記進項稅額 1261），3、4 不可扣抵（稅額併入費用或成本）。合併憑證裡某張發票的日期不同時，填那一行的「日期」（營業稅依這個日期歸期別；空白＝上面的日期，傳票日期不變）。</p>
+    <div class="table-wrap"><table class="grid"><thead><tr><th>發票號碼</th><th>日期</th><th>會計項目</th><th class="num">含稅金額</th><th class="num">稅額</th><th>課稅別</th><th>扣抵代號</th><th>說明</th><th>可否扣抵</th><th></th></tr></thead>
       <tbody id="de-rows">${rows0.map(rowHtml)}</tbody>
-      <tfoot><tr><td colspan="2"><button type="button" class="btn sm" data-de="add">＋ 拆成多行</button></td><td class="num" id="de-sum"></td><td colspan="6" id="de-sumnote"></td></tr></tfoot></table></div>
+      <tfoot><tr><td colspan="3"><button type="button" class="btn sm" data-de="add">＋ 拆成多行</button></td><td class="num" id="de-sum"></td><td colspan="6" id="de-sumnote"></td></tr></tfoot></table></div>
     <div id="de-err" style="margin-top:6px"></div>
     <h3 style="font-size:14px;margin:12px 0 4px">儲存後的分錄</h3>
     <div class="table-wrap"><table class="grid"><thead><tr><th style="width:38%">會計項目</th><th class="num">借方</th><th class="num">貸方</th><th>說明</th></tr></thead><tbody id="de-preview"></tbody></table></div>
+    <div id="de-keep" style="margin-top:6px"></div>
     <div id="je-att" style="margin-top:12px"></div>
     ${others ? h`<p class="muted" style="font-size:12.5px;margin-top:6px">另外附的 ${others} 張憑證只當附件，不會被這次修改改到。</p>` : ''}`;
 
@@ -79,7 +83,7 @@ export async function editDocumentEntry(entry, doc) {
     pay: dlg.querySelector('[name=pay]').value,
     rows: [...dlg.querySelectorAll('#de-rows tr')].map((tr) => {
       const v = (n) => tr.querySelector(`[name=${n}]`).value;
-      return { invoice_no: v('inv'), account: v('acc'), amount: v('amt'), tax: v('tax'), tax_type: v('tt'), ded_code: v('dc'), memo: v('memo') };
+      return { invoice_no: v('inv'), date: v('ldate'), account: v('acc'), amount: v('amt'), tax: v('tax'), tax_type: v('tt'), ded_code: v('dc'), memo: v('memo') };
     }),
   });
 
@@ -112,10 +116,18 @@ export async function editDocumentEntry(entry, doc) {
     dlg.querySelector('#de-sum').textContent = fmt(b.sum || 0);
     dlg.querySelector('#de-sumnote').innerHTML = String(Math.abs(diff) >= 1 ? h`<b style="color:var(--bad)">與憑證金額 ${fmt(b.total)} 差 ${fmt(diff)}</b>` : h`＝ 憑證金額 ${fmt(b.total)} ✓`);
     dlg.querySelector('#de-err').innerHTML = String(b.errors.length ? h`<div class="callout bad"><p>${b.errors.map((e) => h`<span style="display:block">${e}</span>`)}</p></div>` : '');
+    const kept = new Set(b.keep?.kept || []);
     dlg.querySelector('#de-preview').innerHTML = String(
       b.saved
-        ? h`${b.saved.lines.map((l) => h`<tr><td>${l.credit ? raw('<span class="indent"></span>') : ''}${l.account} ${accMap.get(l.account)?.name || ''}</td><td class="num">${l.debit ? fmt(l.debit) : ''}</td><td class="num">${l.credit ? fmt(l.credit) : ''}</td><td>${l.memo || ''}</td></tr>`)}`
+        ? h`${b.saved.lines.map((l, i) => h`<tr${kept.has(i) ? raw(' class="de-kept"') : ''}><td>${l.credit ? raw('<span class="indent"></span>') : ''}${l.account} ${accMap.get(l.account)?.name || ''}</td><td class="num">${l.debit ? fmt(l.debit) : ''}</td><td class="num">${l.credit ? fmt(l.credit) : ''}</td><td>${l.memo || ''}${kept.has(i) ? h` <span class="muted" style="font-size:12px">（保留原傳票）</span>` : ''}</td></tr>`)}`
         : h`<tr><td colspan="4" class="muted">明細改好後會顯示</td></tr>`,
+    );
+    // 原傳票的費用行和憑證金額對不上：手續費等額外的行分不出來，不保留，提醒
+    const k = b.keep;
+    dlg.querySelector('#de-keep').innerHTML = String(
+      k && (k.dropped.length || k.mismatch)
+        ? h`<div class="callout warn"><p>原傳票的費用和稅額合計和憑證金額差 ${fmt(k.mismatch)}（以前手動改過），分不出哪幾行是手續費${k.dropped.length ? `：${k.dropped.map((l) => `${l.account} ${accMap.get(l.account)?.name || ''} ${fmt(Number(l.debit) || 0)}`).join('、')} 這次不會保留` : ''}。要整張保留手動的分錄，請按「直接改分錄（不改憑證）」。</p></div>`
+        : '',
     );
     const box = dlg.querySelector('#de-filed');
     const key = b.filed.map((f) => f.id).join(',');
@@ -192,21 +204,30 @@ export async function editDocumentEntry(entry, doc) {
   await store.put('documents', docSaved);
   await linkDocumentsToEntry(saved, saved.attachments, prevAtt);
   if (linkedInv && linkedInv.account !== docSaved.account) await store.put('einvoices', { ...linkedInv, account: docSaved.account });
-  const assetNote = await updateAssets(myAssets, docSaved);
+  const assetNote = await updateAssets(myAssets, doc, docSaved, assets);
   toast(`已儲存 ${saved.voucher_no}，憑證與 401 進項已同步${changes.length ? `（${changes.slice(0, 3).join('；')}${changes.length > 3 ? `…等 ${changes.length} 項` : ''}）` : ''}${assetNote}`, 'good', 8000);
   return saved;
 }
 
-// 入帳時自動建立的固定資產：依新的未稅金額更新取得成本、可扣抵稅額，再重算折舊
-async function updateAssets(myAssets, d) {
-  if (!myAssets.length) return '';
+// 連到這張憑證的固定資產：依新的未稅金額更新取得成本、可扣抵稅額，再重算折舊。
+// 只改「成本本來就等於這張發票未稅金額」的資產（入帳時自動建立的）；連結的現有資產成本跟發票不同（含其他發票、手動調整）就不動。
+// 改成 15xx 科目卻沒有連結資產：不自動新增（11/20 需求 2，避免重複），只提醒。
+async function updateAssets(myAssets, before, d, allAssets = []) {
   const groups = assetGroups(d);
+  const old = assetGroups(before);
   const upd = [];
   const lost = [];
+  const keptCost = [];
   for (const a of myAssets) {
-    const g = groups.get(ASSET_CATEGORIES[a.category]?.asset);
+    const acc = ASSET_CATEGORIES[a.category]?.asset;
+    const g = groups.get(acc);
     if (!g) {
       lost.push(a.name);
+      continue;
+    }
+    const o = old.get(acc);
+    if (o && Math.abs((Number(a.cost) || 0) - o.cost) >= 1) {
+      if (g.cost !== o.cost) keptCost.push(a.name);
       continue;
     }
     if (g.cost !== a.cost || (g.tax || null) !== (a.tax_amount || null)) upd.push({ ...a, cost: g.cost, tax_amount: g.tax || null, invoice_no: g.invoices.join('+') || a.invoice_no });
@@ -215,5 +236,7 @@ async function updateAssets(myAssets, d) {
     await store.put('fixed_assets', upd);
     await syncDepreciation();
   }
-  return `${upd.length ? `；固定資產「${upd.map((a) => a.name).join('、')}」取得成本已更新為 ${upd.map((a) => fmt(a.cost)).join('、')}` : ''}${lost.length ? `；固定資產「${lost.join('、')}」的科目已不在憑證裡，請到「固定資產與折舊」確認` : ''}`;
+  const linked = new Set(allAssets.filter((a) => a.id === d.asset_id || (a.doc_ids || []).includes(d.id)).map((a) => ASSET_CATEGORIES[a.category]?.asset));
+  const missing = [...groups.keys()].filter((acc) => !linked.has(acc));
+  return `${upd.length ? `；固定資產「${upd.map((a) => a.name).join('、')}」取得成本已更新為 ${upd.map((a) => fmt(a.cost)).join('、')}` : ''}${keptCost.length ? `；固定資產「${keptCost.join('、')}」的成本和發票本來就不同，沒有自動改，請到「固定資產與折舊」確認` : ''}${lost.length ? `；固定資產「${lost.join('、')}」的科目已不在憑證裡，請到「固定資產與折舊」確認` : ''}${missing.length ? `；這張憑證有固定資產科目 ${missing.join('、')}，但沒有連結固定資產：請到「固定資產與折舊」新增或連結（系統不會自動建立，避免重複）` : ''}`;
 }
