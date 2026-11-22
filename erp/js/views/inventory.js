@@ -331,14 +331,17 @@ export async function render(root, ctx) {
       </div>
       <div class="row" style="margin-bottom:12px"><b style="font-size:13.5px">原物料主檔</b><button class="btn sm" data-act="itemsExport">匯出 Excel</button><button class="btn sm" data-act="itemsImport">匯入 Excel</button><button class="btn sm" data-act="safetySuggest">依耗用量建議安全庫存</button><span class="muted" style="font-size:12.5px">安全庫存、叫貨量、進貨包裝折合可以在 Excel 一次改好再匯回；建議安全庫存＝近 ${safetyRule.lookback_days} 天日均耗用 ×（叫貨前置 ${safetyRule.lead_days} 天＋安全 ${safetyRule.safety_days} 天）</span></div>`,
     );
+    // 11/20：表格比畫面寬時，「狀態」「修改／＋異動」固定在右邊、表格上方也有橫向捲軸；「分類」至少 6 個字寬、不換行
     dataTable(body, {
       rows,
       exportName: `庫存水位_${asOf}.csv`,
       initialSort: { key: 'rank', dir: 1 },
+      stickyRight: 2,
+      topScroll: true,
       columns: [
-        { key: 'sku', label: '編號' },
-        { key: 'name', label: '品項', fmt: (v, r) => h`<b>${v}</b>${r.lastPurchase ? small(`最後進貨 ${r.lastPurchase.date}`) : ''}`, csv: (v) => v },
-        { key: 'category', label: '分類', fmt: (v) => INVENTORY_CATEGORIES[v]?.label || v || '' },
+        { key: 'sku', label: '編號', nowrap: true },
+        { key: 'name', label: '品項', minWidth: '8em', fmt: (v, r) => h`<b>${v}</b>${r.lastPurchase ? small(`最後進貨 ${r.lastPurchase.date}`) : ''}`, csv: (v) => v },
+        { key: 'category', label: '分類', minWidth: '6.5em', nowrap: true, fmt: (v) => INVENTORY_CATEGORIES[v]?.label || v || '' },
         { key: 'unit', label: '單位' },
         { key: 'opening', label: '期初', align: 'num', fmt: qtyFmt },
         { key: 'purchased', label: '進貨', align: 'num', fmt: qtyFmt },
@@ -354,6 +357,7 @@ export async function render(root, ctx) {
         {
           key: 'rank',
           label: '狀態',
+          nowrap: true,
           fmt: (v, r) => h`${status(STATUS[r.key][0], STATUS[r.key][1])}${(r.key === 'out' || r.key === 'low') && Number(r.item.reorder_qty) > 0 ? small(`建議叫貨 ${fmt(Number(r.item.reorder_qty))} ${r.unit}`) : ''}`,
           csv: (v, r) => STATUS[r.key][1],
         },
@@ -424,7 +428,7 @@ export async function render(root, ctx) {
         <a class="btn ghost" href="#/purchases">進貨紀錄</a>
       </div>
       <div id="inv-top"></div>
-      <div class="card">
+      <div class="card view-fluid">
         <div class="tabs" role="tablist">${tabs.map(([k, l]) => h`<button role="tab" aria-selected="${f.tab === k ? 'true' : 'false'}" class="${f.tab === k ? 'on' : ''}" data-act="tab" data-tab="${k}">${l}</button>`)}</div>
         <div id="inv-body"></div>
       </div>`,

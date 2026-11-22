@@ -1534,6 +1534,125 @@ try {
     assert(costTxt.includes('由盤點表匯入 2026-09-30') && costTxt.includes('匯入盤點結果') && (await page.$('.callout a[href="#/inventory"]')), '存貨與成本頁說明連到盤點表');
     await shot('cost-stocktake', false);
   }
+
+  // 11/20 需求 10、11（傳票列印、庫存水位表格）
+  {
+    const dbPut = (coll, rows) => page.evaluate(async ([c, r]) => (await import('/erp/js/store.js')).store.put(c, r), [coll, rows]);
+    const dbDel = (coll, ids) => page.evaluate(async ([c, i]) => (await import('/erp/js/store.js')).store.remove(c, i), [coll, ids]);
+    // 需求 11：庫存水位表格比畫面寬時，「狀態」「修改」「＋異動」固定在右邊；「分類」的「包材耗材」不直排；上方橫向捲軸跟表格一起捲
+    await dbPut('inventory_items', [{ id: 'it_zz_e2e', sku: 'ZZ-E2E', name: 'ZZ 外帶提袋（測試）', category: 'packaging', unit: '個', safety_stock: 100, reorder_qty: 500, active: true }]);
+    const stockLayout = () =>
+      page.evaluate(() => {
+        const t = document.querySelector('#inv-body table.grid');
+        const wrap = t.closest('.table-wrap');
+        const ths = [...t.tHead.rows[0].cells];
+        const col = (label) => ths.findIndex((th) => th.textContent.trim().replace(/ [▲▼]$/, '') === label);
+        const row = [...t.tBodies[0].rows].find((tr) => tr.textContent.includes('ZZ 外帶提袋'));
+        const cat = row.cells[col('分類')];
+        const rng = document.createRange();
+        rng.selectNodeContents(cat);
+        const lr = (el) => {
+          const r = el.getBoundingClientRect();
+          return [r.left, r.right];
+        };
+        const bar = document.querySelector('#inv-body .table-topscroll');
+        return { catText: cat.textContent.trim(), catLines: new Set([...rng.getClientRects()].map((r) => Math.round(r.top))).size, wrap: lr(wrap), overflow: wrap.scrollWidth > wrap.clientWidth + 1, scrollLeft: wrap.scrollLeft, status: lr(row.cells[col('狀態')]), edit: lr(row.querySelector('[data-act="editItem"]')), move: lr(row.querySelector('[data-act="addMove"]')), barShown: !!bar && !bar.hidden, barWidth: bar ? bar.firstElementChild.offsetWidth : 0, scrollWidth: wrap.scrollWidth, viewW: document.querySelector('#view').getBoundingClientRect().width };
+      });
+    for (const w of [1360, 1024]) {
+      await page.setViewportSize({ width: w, height: 900 });
+      await go('inventory');
+      await page.waitForTimeout(300);
+      const s = await stockLayout();
+      const inside = (r) => r[0] >= s.wrap[0] - 1 && r[1] <= Math.min(s.wrap[1], w) + 1;
+      assert(s.catText === '包材耗材' && s.catLines === 1, `${w}px：分類「包材耗材」一行顯示 ` + JSON.stringify(s));
+      assert(inside(s.status) && inside(s.edit) && inside(s.move), `${w}px：狀態、修改、＋異動在畫面內 ` + JSON.stringify(s));
+      assert(s.viewW >= w - 236 - 1, `${w}px：進銷存頁不受最大寬度限制 ` + s.viewW);
+      if (w === 1024) assert(s.overflow, '1024px：庫存水位表格比畫面寬（測試前提）');
+      assert(s.barShown === s.overflow && (!s.overflow || s.barWidth === s.scrollWidth), `${w}px：表格比畫面寬才有上方捲軸 ` + JSON.stringify(s));
+      if (s.overflow) {
+        await page.$eval('#inv-body .table-topscroll', (b) => (b.scrollLeft = 280));
+        await page.waitForTimeout(200);
+        const s2 = await stockLayout();
+        assert(s2.scrollLeft >= 279, `${w}px：捲上方捲軸，表格跟著捲 ` + s2.scrollLeft);
+        assert(inside(s2.status) && inside(s2.edit) && inside(s2.move), `${w}px：橫向捲動後狀態、修改、＋異動仍固定在右邊 ` + JSON.stringify(s2));
+        const hit = await page.evaluate(() => {
+          const b = document.querySelector('#inv-body tbody [data-act="addMove"]');
+          b.scrollIntoView({ block: 'center', inline: 'nearest' });
+          const r = b.getBoundingClientRect();
+          return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === b;
+        });
+        assert(hit, `${w}px：固定欄的按鈕在最上層、點得到`);
+        await shot(`inventory-sticky-${w}`, false);
+      }
+    }
+    await page.setViewportSize({ width: 1360, height: 900 });
+    await dbDel('inventory_items', ['it_zz_e2e']);
+
+    // 需求 10：傳票每張固定半張 A4（148.5 mm），一頁上下兩張＋裁切虛線；分錄太多（或半頁實際放不下）的單獨一整頁
+    const { HALF_MAX_LINES } = await import('../erp/js/lib/voucherlayout.js');
+    const longMemo = '這是一段很長的分錄說明，用來測試摘要換行時半頁放不下的情況，應該自動改印整頁而不是被裁掉';
+    const mk = (k, n, memo = '文具用品') => ({
+      id: `zz_v${k}`,
+      date: `2026-05-0${k}`,
+      voucher_no: `11505-000${k}`,
+      description: `ZZ 測試傳票 ${n} 行`,
+      source: 'manual',
+      attachments: [],
+      lines: Array.from({ length: n }, (_, i) => (i === n - 1 ? { account: '1101', debit: 0, credit: 10 * (n - 1), memo: '現金' } : { account: '6112', debit: 10, credit: 0, memo })),
+    });
+    // 3 行（半）→ 30 行（整頁，前一張自己一頁）→ 2 行＋上限行數（同一頁上下）→ 上限＋1 行（整頁）→ 4 行（半）→ 上限內但說明很長（實際放不下→整頁）
+    const vz = [mk(1, 3), mk(2, 30), mk(3, 2), mk(4, HALF_MAX_LINES), mk(5, HALF_MAX_LINES + 1), mk(6, 4), mk(7, HALF_MAX_LINES, longMemo)];
+    await dbPut('journal_entries', vz);
+    await go('vouchers?ym=2026-05');
+    const countText = await page.textContent('#v-count');
+    assert(countText.includes('共 7 張') && countText.includes('A4 6 頁'), '傳票張數與頁數 ' + countText);
+    await page.emulateMedia({ media: 'print' });
+    await page.waitForTimeout(300);
+    const layout = await page.evaluate(() => {
+      const sheets = [...document.querySelectorAll('.vsheet')];
+      const top0 = sheets[0].getBoundingClientRect().top;
+      const mmOf = (el) => (el.getBoundingClientRect().top - top0) / (96 / 25.4);
+      return {
+        toolbarHidden: getComputedStyle(document.querySelector('.toolbar')).display === 'none',
+        sheets: sheets.map((s) => ({ kind: s.classList.contains('full') ? 'full' : 'half', top: mmOf(s), height: s.getBoundingClientRect().height / (96 / 25.4), ids: [...s.querySelectorAll('.voucher')].map((v) => v.dataset.id), slots: [...s.querySelectorAll('.vslot')].map((x) => ({ top: mmOf(x) - mmOf(s), h: x.getBoundingClientRect().height / (96 / 25.4) })), cut: s.querySelector('.vcut') ? mmOf(s.querySelector('.vcut')) - mmOf(s) : null })),
+        overflow: [...document.querySelectorAll('.vslot.half .voucher')].filter((v) => v.scrollHeight > v.clientHeight + 1).map((v) => v.dataset.id),
+      };
+    });
+    console.log('傳票列印版面：', layout.sheets.map((s) => `${s.kind}[${s.ids.join(',')}]@${s.top.toFixed(1)}mm`).join(' '));
+    const near = (a, b, tol = 0.6) => Math.abs(a - b) <= tol;
+    assert(layout.toolbarHidden, '列印時不印工具列');
+    assert(JSON.stringify(layout.sheets.map((s) => [s.kind, s.ids])) === JSON.stringify([['half', ['zz_v1']], ['full', ['zz_v2']], ['half', ['zz_v3', 'zz_v4']], ['full', ['zz_v5']], ['half', ['zz_v6']], ['full', ['zz_v7']]]), '半頁／整頁排法固定 ' + JSON.stringify(layout.sheets.map((s) => [s.kind, s.ids])));
+    assert(layout.sheets.every((s, i) => near(s.top, 297 * i) && (s.kind === 'full' ? s.height >= 296.5 : near(s.height, 297))), '每頁從 297 mm 的倍數開始 ' + JSON.stringify(layout.sheets.map((s) => [s.top, s.height])));
+    for (const s of layout.sheets.filter((x) => x.kind === 'half')) {
+      assert(s.slots.length === 2 && near(s.slots[0].top, 0) && near(s.slots[1].top, 148.5) && s.slots.every((x) => near(x.h, 148.5)) && near(s.cut, 148.5), '半頁固定 148.5 mm、虛線在中間 ' + JSON.stringify(s));
+    }
+    assert(!layout.overflow.length, `上限 ${HALF_MAX_LINES} 行的傳票半頁放得下 ` + layout.overflow.join(','));
+    await shot('vouchers-print');
+    const pdfPages = async (name) => {
+      const pdf = await page.pdf({ format: 'A4', printBackground: true });
+      await writeFile(join(OUT, name), pdf);
+      return (pdf.toString('latin1').match(/\/Type\s*\/Page(?!s)/g) || []).length;
+    };
+    const pages = await pdfPages('vouchers-2026-05.pdf');
+    assert(pages === 6, '傳票 PDF 6 頁（一張傳票不會被切到兩頁）：' + pages);
+    // 真實月份（匯入的舊帳 8 月）：頁數＝版面頁數、半頁都放得下
+    await page.emulateMedia({ media: 'screen' });
+    await go('vouchers?ym=2026-08');
+    await page.emulateMedia({ media: 'print' });
+    await page.waitForTimeout(300);
+    const aug = await page.evaluate(() => ({ sheets: document.querySelectorAll('.vsheet').length, full: document.querySelectorAll('.vsheet.full').length, vouchers: document.querySelectorAll('.voucher').length, overflow: [...document.querySelectorAll('.vslot.half .voucher')].filter((v) => v.scrollHeight > v.clientHeight + 1).length }));
+    const augPages = await pdfPages('vouchers-2026-08.pdf');
+    console.log('8 月傳票：', aug, 'PDF', augPages, '頁');
+    assert(aug.vouchers > 0 && aug.sheets >= aug.full + Math.ceil((aug.vouchers - aug.full) / 2) && aug.sheets <= aug.vouchers, '8 月版面 ' + JSON.stringify(aug));
+    assert(augPages === aug.sheets && !aug.overflow, '8 月傳票 PDF 頁數＝版面頁數 ' + JSON.stringify(aug) + ' ' + augPages);
+    await page.emulateMedia({ media: 'screen' });
+    // 單張列印（?id=）也是半頁版面；離開傳票列印頁後，不留邊的 @page 設定要拿掉（其他報表列印照常留邊）
+    await go('vouchers?id=zz_v3');
+    assert((await page.$$('.vsheet.half .voucher')).length === 1 && (await page.$('style#voucher-print-page')), '單張傳票半頁版面');
+    await go('trial?pm=ytd&ym=2026-09');
+    assert(!(await page.$('style#voucher-print-page')), '離開傳票列印頁後拿掉 @page 不留邊設定');
+    await dbDel('journal_entries', vz.map((e) => e.id));
+  }
   await go('customers');
   await shot('customers', false);
   // 行銷活動：關鍵字「燕麥」

@@ -277,6 +277,18 @@ table.grid tr.muted td { color: var(--mute); }
 table.grid tr.void td { color: var(--mute); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--mute) 60%, transparent); }
 table.grid td.empty { text-align: center; color: var(--mute); padding: 26px; }
 table.grid td .indent { padding-left: 1.4em; display: inline-block; }
+table.grid .nowrap { white-space: nowrap; }
+/* dataTable({ stickyRight })：最右邊幾欄固定在表格右緣；背景要不透明，捲過去的欄位才不會透出來 */
+table.grid th.stick-r, table.grid td.stick-r { position: sticky; z-index: 1; background: var(--card); }
+table.grid th.stick-r { z-index: 2; background: var(--card-2); }
+table.grid .stick-r-first { box-shadow: inset 1px 0 0 var(--line-soft), -10px 0 10px -10px rgba(0, 0, 0, 0.28); }
+table.grid tbody tr:hover td.stick-r { background: color-mix(in srgb, var(--accent) 10%, var(--card)); }
+table.grid tr.total td.stick-r, table.grid tr.section td.stick-r { background: var(--card-2); }
+/* dataTable({ topScroll })：表格上方的橫向捲軸（表格比畫面寬才出現） */
+.table-topscroll { overflow-x: auto; overflow-y: hidden; border: solid transparent; border-width: 0 1px; margin-bottom: 4px; }
+.table-topscroll > div { height: 1px; }
+/* 原物料進銷存：表格寬度跟著螢幕，不受頁面最大寬度限制 */
+.view:has(.view-fluid) { max-width: none; }
 .table-bar { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; }
 
 /* 報表（財報格式） */
@@ -430,20 +442,32 @@ svg .cross.on { opacity: 1; }
 .doc-fields input, .doc-fields select { width: 100%; min-width: 0; max-width: 100%; }
 .doc-fields label.full { grid-column: 1 / -1; }
 
-/* 傳票 */
-.voucher { background: #fff; color: #222; border: 1px solid #999; padding: 18px 22px; margin: 0 auto 18px; max-width: 800px; font-size: 13px; page-break-inside: avoid; break-inside: avoid; }
-.voucher .vh { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #222; padding-bottom: 6px; margin-bottom: 8px; }
-.voucher .vt { font-family: var(--serif); font-size: 19px; letter-spacing: 0.4em; font-weight: 700; }
-.voucher .vco { font-size: 13px; letter-spacing: 0.1em; }
-.voucher .vmeta { display: flex; gap: 22px; font-size: 12.5px; margin-bottom: 8px; }
+/* 傳票（11/20：每張固定佔 A4 的一半 148.5 mm，一頁上下各一張、中間裁切虛線；分錄太多的單獨一整頁）
+   畫面預覽與列印用同一套 mm 尺寸，畫面上看到的就是印出來的位置。字級、留白改了要重量半頁行數上限（lib/voucherlayout.js）。 */
+.vpreview { overflow-x: auto; padding: 2px 2px 12px; }
+.vsheets { display: grid; gap: 18px; justify-content: center; }
+.vsheet { position: relative; width: 210mm; height: 297mm; background: #fff; color: #222; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18), 0 10px 28px -18px rgba(0, 0, 0, 0.45); overflow: hidden; }
+.vsheet.full { height: auto; min-height: 297mm; overflow: visible; }
+.vslot { box-sizing: border-box; padding: 8mm 11mm; }
+.vslot.half { height: 148.5mm; }
+.vslot.full { min-height: 297mm; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.vcut { position: absolute; left: 0; right: 0; top: 148.5mm; height: 0; border-top: 1px dashed #777; }
+.vcut span { position: absolute; right: 8mm; top: -0.75em; padding: 0 6px; background: #fff; color: #777; font-size: 9px; line-height: 1.5; letter-spacing: 0.1em; }
+.voucher { box-sizing: border-box; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: #fff; color: #222; border: 1px solid #555; padding: 4mm 5mm; font-family: var(--sans); font-size: 12px; line-height: 1.4; }
+.vslot.full .voucher { height: auto; overflow: visible; }
+.voucher .vh { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; border-bottom: 2px solid #222; padding-bottom: 5px; margin-bottom: 6px; }
+.voucher .vt { font-family: var(--serif); font-size: 18px; letter-spacing: 0.4em; font-weight: 700; white-space: nowrap; }
+.voucher .vco { font-size: 12px; letter-spacing: 0.08em; }
+.voucher .vmeta { display: flex; flex-wrap: wrap; gap: 2px 20px; font-size: 12px; margin-bottom: 6px; }
 .voucher table { width: 100%; border-collapse: collapse; }
-.voucher th, .voucher td { border: 1px solid #555; padding: 5px 7px; }
-.voucher th { background: #f1f1f1; font-weight: 600; }
-.voucher td.amt { text-align: right; font-variant-numeric: tabular-nums; width: 110px; }
+.voucher th, .voucher td { border: 1px solid #555; padding: 2px 6px; }
+.voucher th { background: #f1f1f1; font-weight: 600; white-space: nowrap; }
+.voucher td.amt { text-align: right; font-variant-numeric: tabular-nums; width: 100px; white-space: nowrap; }
 .voucher tfoot td { font-weight: 700; }
-.voucher .vatt { font-size: 12px; margin-top: 6px; word-break: break-all; }
-.voucher .sign { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 12px; gap: 8px; font-size: 12.5px; }
-.voucher .sign div { border-top: 1px solid #555; padding-top: 4px; text-align: center; min-height: 34px; }
+.voucher .vatt { font-size: 11.5px; margin-top: 5px; word-break: break-all; }
+.voucher .sign { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: auto; padding-top: 8px; gap: 8px; font-size: 12px; }
+.vslot.full .voucher .sign { margin-top: 14px; padding-top: 0; }
+.voucher .sign div { border-top: 1px solid #555; padding-top: 3px; text-align: center; min-height: 34px; }
 
 /* 開啟畫面（密碼、登入） */
 .gate { display: none; }
@@ -489,9 +513,17 @@ tr.muted-row td { color: var(--mute); }
   .nav, .topbar, .no-print, .table-bar, #toasts, .nav-scrim, .toolbar { display: none !important; }
   .view { padding: 0; max-width: none; }
   .card { box-shadow: none; border: 0; padding: 0; background: #fff; }
-  .voucher { border: 1px solid #000; margin: 0 0 12mm; }
+  /* 傳票：一張 A4 一個 .vsheet（上下兩個半頁，或一整頁），每頁之後換頁；@page 不留邊由 vouchers.js 在這一頁加上 */
+  .vpreview { overflow: visible; padding: 0; }
+  .vsheets { display: block; }
+  .vsheet { box-shadow: none; break-after: page; page-break-after: always; break-inside: avoid; page-break-inside: avoid; }
+  .vsheet.full { break-inside: auto; page-break-inside: auto; }
+  .vsheet:last-child { break-after: auto; page-break-after: auto; }
+  .voucher { border-color: #000; }
   .page-break { page-break-after: always; break-after: page; }
   table.grid th { position: static; }
+  table.grid th.stick-r, table.grid td.stick-r { position: static; box-shadow: none; }
+  .table-topscroll { display: none !important; }
   .table-wrap { border: 0; overflow: visible; }
 }
 
