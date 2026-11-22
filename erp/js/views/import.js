@@ -214,6 +214,18 @@ export async function render(root, ctx) {
       const batchId = 'b_' + f.hash.slice(0, 12);
       let rows = p.rows;
       if (t === 'journal') {
+        // 已結帳鎖定的月份不能再新增分錄（老闆 11/20：已結帳月份不要動）：只匯入沒鎖定的月份
+        const lockS = await getSettings();
+        const lockedRows = rows.filter((e) => isLocked(lockS, e.date));
+        if (lockedRows.length) {
+          const months = [...new Set(lockedRows.map((e) => e.date.slice(0, 7)))].sort().join('、');
+          if (lockedRows.length === rows.length) {
+            toast(`這份分錄全部在已結帳鎖定的月份（${months}），沒有匯入。要補登請先到「每月結帳檢查」解除鎖定。`, 'error', 9000);
+            return;
+          }
+          if (!(await confirmBox(`其中 ${fmt(lockedRows.length)} 筆分錄在已結帳鎖定的月份（${months}），不會匯入；只匯入其他 ${fmt(rows.length - lockedRows.length)} 筆。要繼續嗎？`, { ok: '只匯入未鎖定月份' }))) return;
+          rows = rows.filter((e) => !isLocked(lockS, e.date));
+        }
         const all = [...(await store.all('journal_entries'))];
         rows = rows.map((e) => {
           const x = { ...e, id: uid('je_'), status: 'posted', created_at: new Date().toISOString() };
@@ -510,13 +522,21 @@ export async function render(root, ctx) {
     delBatch: async (el) => {
       const b = (await store.all('import_batches')).find((x) => x.id === el.dataset.id);
       if (!b) return;
-      if (!(await confirmBox(`刪除「${b.file_name}」這次匯入的 ${fmt(b.added)} 筆資料？`, { ok: '刪除', danger: true }))) return;
       const coll = TARGET_STORE[b.target];
       const batchKey = b.batch_key || b.id.slice(0, 14);
       const rows = await store.all(coll);
-      let ids;
-      if (b.target === 'journal') ids = rows.filter((r) => r.source === 'import' && String(r.source_ref).startsWith(b.file_hash.slice(0, 8) + ':')).map((r) => r.id);
-      else ids = rows.filter((r) => r.batch_id === batchKey).map((r) => r.id);
+      const mine = b.target === 'journal' ? rows.filter((r) => r.source === 'import' && String(r.source_ref).startsWith(b.file_hash.slice(0, 8) + ':')) : rows.filter((r) => r.batch_id === batchKey);
+      // 已結帳鎖定月份的資料不刪（老闆 11/20：已結帳月份不要動）
+      const lockS = await getSettings();
+      const rowDate = (r) => String(r.date || r.payout_date || r.acquired_on || '');
+      const lockedRows = mine.filter((r) => rowDate(r) && isLocked(lockS, rowDate(r)));
+      if (lockedRows.length) {
+        const months = [...new Set(lockedRows.map((r) => rowDate(r).slice(0, 7)))].sort().join('、');
+        toast(`這批資料有 ${fmt(lockedRows.length)} 筆在已結帳鎖定的月份（${months}），不能刪除，以免改到已結帳的帳。真的要刪，請先到「每月結帳檢查」解除鎖定。`, 'error', 10000);
+        return;
+      }
+      if (!(await confirmBox(`刪除「${b.file_name}」這次匯入的 ${fmt(b.added)} 筆資料？`, { ok: '刪除', danger: true }))) return;
+      const ids = mine.map((r) => r.id);
       await store.remove(coll, ids);
       await store.remove('import_batches', b.id);
       if (['sales', 'payouts'].includes(b.target)) await syncAll();
