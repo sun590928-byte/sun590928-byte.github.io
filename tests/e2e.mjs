@@ -642,6 +642,10 @@ try {
     await page.click('dialog .modal-foot .btn.primary');
     await page.waitForSelector('.doc-card >> text=拆分 2 行');
     await page.locator('.doc-card', { hasText: '20260912_設備商_磨豆機訂金及尾款_120000.png' }).locator('[data-act="post"]').click();
+    // 11/20 需求 2：已經有其他固定資產 → 先選「連結現有資產」或「新增資產」；沒有可能重複的就預設新增
+    await page.waitForSelector('dialog >> text=連結現有資產或新增資產');
+    assert(await page.isChecked('dialog [name=fa][value="new"]'), '沒有可能重複的資產時預設「新增資產」');
+    await page.click('dialog .modal-foot .btn.primary');
     await page.waitForSelector('text=已建立固定資產');
     // 暫緩：全部入帳會略過
     await page.locator('.doc-card', { hasText: '20260910_蝦皮_吧台抹布_150.png' }).locator('[data-act="hold"]').click();
@@ -766,6 +770,198 @@ try {
     await page.waitForSelector('dialog', { state: 'detached' });
     await page.evaluate(async () => { const { store } = await import('/erp/js/store.js'); await store.remove('tax_filings', '2026-09'); });
     assert(sig((await jeDoc()).e) === sig(p3.e), '取消後分錄不變');
+  }
+
+  // 11/20 需求 1、2、6（付款科目保留、固定資產連結、分行日期）：全為合成資料，跑完刪掉，不影響後面的測試
+  {
+    const db = () =>
+      page.evaluate(async () => {
+        const { store } = await import('/erp/js/store.js');
+        return { docs: await store.all('documents'), entries: await store.all('journal_entries'), assets: await store.all('fixed_assets') };
+      });
+    const sig = (e) => e.lines.map((l) => `${l.account}:${l.debit || 0}/${l.credit || 0}`).join(' ');
+    const row = (i) => page.locator('dialog #de-rows tr').nth(i);
+    const vouchers = await page.evaluate(async () => {
+      const { store } = await import('/erp/js/store.js');
+      const { nextVoucherNo } = await import('/erp/js/lib/ledger.js');
+      const all = await store.all('journal_entries');
+      const base = { kind: 'receipt', status: 'posted', mime: 'image/png', buyer_tax_id: '', deductible: true, tax_type: '1', ded_code: '1', archived_name: 'zz.png', created_at: new Date().toISOString() };
+      // 例 1：憑證的付款方式還是零用金 1102，傳票是銀行存款 1103（銀行付款）；例 2：銀行付款多一行匯費 6131 30
+      const ro = { ...base, id: 'doc_zz1120ro', original_name: 'ZZ1120-純水機濾心.png', doc_date: '2026-11-10', vendor_name: '測試淨水行', summary: '純水機濾心', invoice_no: 'ZR11200001', amount_total: 2100, tax_amount: 100, account: '6116', pay_account: '1102', entry_id: 'je_zz1120ro' };
+      const bw = { ...base, id: 'doc_zz1120bw', original_name: 'ZZ1120-糖漿.png', doc_date: '2026-11-12', vendor_name: '測試糖漿行', summary: '糖漿3瓶', invoice_no: 'ZB11200001', amount_total: 1575, tax_amount: 75, account: '1217', pay_account: '2134', entry_id: 'je_zz1120bw' };
+      const L = (account, debit, credit, memo = '') => ({ account, debit, credit, memo });
+      const e1 = { id: 'je_zz1120ro', date: ro.doc_date, description: '測試淨水行｜純水機濾心｜ZR11200001', source: 'document', source_ref: ro.id, status: 'posted', attachments: [ro.id], lines: [L('6116', 2000, 0, '純水機濾心'), L('1261', 100, 0, '進項稅額'), L('1103', 0, 2100, '銀行轉帳')] };
+      e1.voucher_no = nextVoucherNo(all, e1.date);
+      const e2 = { id: 'je_zz1120bw', date: bw.doc_date, description: '測試糖漿行｜糖漿3瓶｜ZB11200001', source: 'document', source_ref: bw.id, status: 'posted', attachments: [bw.id], lines: [L('1217', 1500, 0, '糖漿3瓶'), L('1261', 75, 0, '進項稅額'), L('6131', 30, 0, '匯費'), L('1103', 0, 1605)] };
+      e2.voucher_no = nextVoucherNo([...all, e1], e2.date);
+      await store.put('documents', [ro, bw]);
+      await store.put('journal_entries', [e1, e2]);
+      return { ro: e1.voucher_no, bw: e2.voucher_no };
+    });
+    const openEdit = async (id, voucher) => {
+      await go(`journal?ym=2026-11&q=${voucher}`);
+      await page.evaluate(() => document.querySelectorAll('.toast').forEach((t) => t.remove()));
+      await page.click(`[data-act="edit"][data-id="${id}"]`);
+      await page.waitForSelector('dialog #de-rows');
+    };
+    const save = async () => {
+      await page.click('dialog .modal-foot .btn.primary');
+      await page.waitForSelector('.toast >> text=憑證與 401 進項已同步');
+    };
+    // 需求 1 例 1：付款方式預設傳票原本的 1103；改扣抵代號存檔後仍是 1103（不換成憑證的 1102）
+    await openEdit('je_zz1120ro', vouchers.ro);
+    assert((await page.inputValue('dialog [name=pay]')) === '1103', '付款方式預設傳票原本的 1103：' + (await page.inputValue('dialog [name=pay]')));
+    assert(!(await page.textContent('dialog .modal-body')).includes('這張分錄和憑證算出來的不一樣'), '付款科目不同不算「手動改過」');
+    await row(0).locator('[name=dc]').selectOption('3');
+    const pv1 = await page.textContent('dialog #de-preview');
+    assert(pv1.includes('1103') && !pv1.includes('1102') && pv1.includes('保留原傳票'), '預覽：付款行照原本的 1103：' + pv1);
+    await save();
+    let s = await db();
+    const ro1 = s.entries.find((e) => e.id === 'je_zz1120ro');
+    assert(sig(ro1) === '6116:2100/0 1103:0/2100' && ro1.voucher_no === vouchers.ro, '例 1 存檔後付款科目仍是 1103：' + sig(ro1));
+    assert(s.docs.find((d) => d.id === 'doc_zz1120ro').pay_account === '1103', '憑證的付款方式跟著改成 1103');
+    // 需求 1 例 2＋需求 6：手續費 30 那一行保留；拆成兩行、第 2 行填自己的日期（傳票日期不變）
+    await openEdit('je_zz1120bw', vouchers.bw);
+    const pv2 = (await page.textContent('dialog #de-preview')).replace(/\s+/g, ' ');
+    assert(pv2.includes('6131') && pv2.includes('30') && pv2.includes('1,605'), '預覽保留手續費 30、付款 1,605：' + pv2);
+    await page.click('dialog [data-de="add"]');
+    await row(0).locator('[name=amt]').fill('1050');
+    await row(0).locator('[name=tax]').fill('50');
+    await row(1).locator('[name=inv]').fill('ZB11200002');
+    await row(1).locator('[name=ldate]').fill('2026-08-25');
+    await row(1).locator('[name=acc]').selectOption('1214');
+    await row(1).locator('[name=amt]').fill('525');
+    await row(1).locator('[name=tax]').fill('25');
+    await row(1).locator('[name=memo]').fill('果泥');
+    await shot('journal-docedit-keepfee-linedate', false);
+    await save();
+    s = await db();
+    const bw1 = s.entries.find((e) => e.id === 'je_zz1120bw');
+    const bwDoc = s.docs.find((d) => d.id === 'doc_zz1120bw');
+    assert(sig(bw1) === '1217:1000/0 1214:500/0 1261:75/0 6131:30/0 1103:0/1605', '例 2 手續費保留、借貸平衡：' + sig(bw1));
+    assert(bw1.date === '2026-11-12' && bwDoc.lines?.[1]?.date === '2026-08-25' && !bwDoc.lines[0].date, '分行日期存在憑證、傳票日期不變：' + JSON.stringify(bwDoc.lines));
+    await go('documents?tab=posted');
+    assert((await page.locator('.doc-card', { hasText: 'ZB11200002' }).textContent()).includes('2026-08-25'), '憑證卡片的明細列出這一行的日期');
+    // 需求 6：憑證歸檔的「拆分明細」也可以填每一行的日期
+    await go('documents?tab=inbox');
+    const png = await readFile(FX('20260902_全聯_鮮乳2瓶_356.png'));
+    const SPLIT = '20261115_測試文具行_合併收據_630.png';
+    {
+      const [ch] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pick"]')]);
+      await ch.setFiles([{ name: SPLIT, mimeType: 'image/png', buffer: png }]);
+    }
+    const sc = page.locator('.doc-card', { hasText: SPLIT });
+    await sc.waitFor();
+    await sc.locator('[data-act="split"]').click();
+    await page.waitForSelector('dialog #ln');
+    const ln = (i) => page.locator('dialog #ln tr').nth(i);
+    await ln(0).locator('[name=inv]').fill('ZD11200001');
+    await ln(0).locator('[name=acc]').fill('6112');
+    await ln(0).locator('[name=amt]').fill('420');
+    await ln(0).locator('[name=tax]').fill('20');
+    await ln(1).locator('[name=inv]').fill('ZD11200002');
+    await ln(1).locator('[name=ldate]').fill('2026-10-28');
+    await ln(1).locator('[name=acc]').fill('6112');
+    await ln(1).locator('[name=amt]').fill('210');
+    await ln(1).locator('[name=tax]').fill('10');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector(`.doc-card:has-text("${SPLIT}") >> text=拆分 2 行`);
+    assert((await page.locator('.doc-card', { hasText: SPLIT }).textContent()).includes('2026-10-28'), '拆分明細卡片列出第 2 行的日期');
+    s = await db();
+    const sd = s.docs.find((d) => d.original_name === SPLIT);
+    assert(sd.lines.length === 2 && sd.lines[1].date === '2026-10-28' && !sd.lines[0].date && sd.doc_date === '2026-11-15', '拆分明細存下每一行的日期：' + JSON.stringify(sd.lines));
+
+    // 需求 2：固定資產（15xx）入帳 → 發票號碼和已登錄的資產相同 → 標「可能重複」、預選連結，不再新增一筆
+    await page.evaluate(async () => {
+      const { store } = await import('/erp/js/store.js');
+      await store.put('fixed_assets', { id: 'fa_zz1120', name: '磨豆機（測試 ZZ）', category: 'machine', acquired_on: '2026-11-18', cost: 100000, tax_amount: 5000, supplier: '測試器材行', invoice_no: 'ZS11200001', pay_account: '1103', doc_ids: [], purchase_entry_id: null, life_years: null, residual: null, note: '' });
+    });
+    const nAssets = (await db()).assets.length;
+    const upload = async (name) => {
+      await go('documents?tab=inbox');
+      const [ch] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pick"]')]);
+      await ch.setFiles([{ name, mimeType: 'image/png', buffer: png }]);
+      const card = page.locator('.doc-card', { hasText: name });
+      await card.waitFor();
+      await card.locator('[name=account]').selectOption('1511');
+      return card;
+    };
+    const INV = '20261118_測試器材行_磨豆機_105000_ZS11200001.png';
+    let card = await upload(INV);
+    await card.locator('[name=tax_amount]').fill('5000');
+    await card.locator('[name=deductible]').check();
+    await card.locator('[data-act="post"]').click();
+    await page.waitForSelector('dialog >> text=連結現有資產或新增資產');
+    assert((await page.textContent('dialog #fa-dup')).includes('發票號碼相同（ZS11200001）'), '發票號碼相同 → 可能重複');
+    assert(await page.isChecked('dialog [name=fa][value="fa_zz1120"]'), '可能重複的資產先選好（連結現有資產）');
+    assert((await page.textContent('dialog #fa-mode')).includes('還沒有購置分錄'), '資產還沒有購置分錄 → 這張發票入帳當購置分錄');
+    await shot('documents-asset-link', false);
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('.toast >> text=已連結固定資產');
+    s = await db();
+    const invDoc = s.docs.find((d) => d.original_name === INV);
+    const fa = s.assets.find((a) => a.id === 'fa_zz1120');
+    const invEntry = s.entries.find((e) => e.id === invDoc.entry_id);
+    assert(s.assets.length === nAssets && !s.assets.some((a) => a.id === 'fa_' + invDoc.id.replace(/^doc_/, '')), '連結現有資產：沒有多一筆資產');
+    assert(invDoc.status === 'posted' && invDoc.asset_id === 'fa_zz1120' && fa.purchase_entry_id === invDoc.entry_id && fa.doc_ids.includes(invDoc.id) && fa.cost === 100000, '資產連到這張發票與購置分錄，成本不變');
+    assert(sig(invEntry) === '1511:100000/0 1261:5000/0 2134:0/105000', '購置分錄：' + sig(invEntry));
+    // 同一台設備的另一張發票（配件）：資產已有購置分錄 → 要選「只連結」或「加到成本」
+    const ACC = '20261119_測試器材行_磨豆機配件_2100.png';
+    card = await upload(ACC);
+    await card.locator('[data-act="post"]').click();
+    await page.waitForSelector('dialog >> text=連結現有資產或新增資產');
+    assert(await page.isChecked('dialog [name=fa][value="new"]'), '金額不同、沒有發票號碼 → 不算可能重複，預設新增');
+    await page.click('dialog #fa-pick tr[data-fa="fa_zz1120"] td:nth-child(2)');
+    await page.waitForSelector('dialog [name=famode]');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('.toast >> text=請選這張發票是');
+    assert(await page.isVisible('dialog #fa-pick'), '沒選「只連結／加到成本」不能入帳');
+    await page.check('dialog [name=famode][value="add"]');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('.toast >> text=已加到固定資產');
+    s = await db();
+    const accDoc = s.docs.find((d) => d.original_name === ACC);
+    const fa2 = s.assets.find((a) => a.id === 'fa_zz1120');
+    assert(s.assets.length === nAssets && fa2.cost === 102100 && fa2.doc_ids.includes(accDoc.id) && fa2.purchase_entry_id === invDoc.entry_id, '配件加到同一項資產的成本：' + fa2.cost);
+    assert(sig(s.entries.find((e) => e.id === accDoc.entry_id)) === '1511:2100/0 2134:0/2100', '配件發票另外入帳');
+    // 全部入帳：固定資產不批次入帳（略過並說明），免得又自動新增一筆
+    const BULK = '20261120_測試器材行_磨豆機零件_1050.png';
+    await upload(BULK);
+    await page.click('[data-act="postAll"]');
+    await page.waitForSelector('dialog');
+    assert((await page.textContent('dialog .modal-body')).includes('固定資產'), '全部入帳說明固定資產要逐張入帳：' + (await page.textContent('dialog .modal-body')));
+    await page.click('dialog .modal-foot .btn'); // 取消／關閉
+    await page.waitForSelector('dialog', { state: 'detached' });
+    s = await db();
+    assert(s.docs.find((d) => d.original_name === BULK).status !== 'posted' && s.assets.length === nAssets, '全部入帳沒有動固定資產的憑證');
+    // 固定資產頁：新增資產的發票號碼和現有資產相同 → 提醒可能重複
+    await go('assets?ym=2026-11');
+    await page.click('[data-act="add"]');
+    await page.fill('dialog [name=name]', '磨豆機（重複登錄）');
+    await page.fill('dialog [name=acquired_on]', '2026-11-18');
+    await page.fill('dialog [name=cost]', '100000');
+    await page.fill('dialog [name=invoice_no]', 'ZS11200001');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('dialog >> text=可能重複');
+    await page.click('dialog .modal-foot .btn'); // 取消
+    await page.waitForSelector('dialog', { state: 'detached' });
+    assert((await db()).assets.length === nAssets, '取消後沒有新增重複的資產');
+
+    // 清掉這一段的合成資料（憑證、分錄、資產），折舊重算
+    await page.evaluate(async (names) => {
+      const { store } = await import('/erp/js/store.js');
+      const { syncDepreciation } = await import('/erp/js/sync.js');
+      const docs = (await store.all('documents')).filter((d) => d.id.startsWith('doc_zz1120') || names.includes(d.original_name));
+      const ids = new Set(docs.map((d) => d.id));
+      const entries = (await store.all('journal_entries')).filter((e) => e.id.startsWith('je_zz1120') || (e.attachments || []).some((a) => ids.has(a)));
+      for (const d of docs) await store.deleteFile(d).catch(() => {});
+      await store.remove('documents', [...ids]);
+      if (entries.length) await store.remove('journal_entries', entries.map((e) => e.id));
+      await store.remove('fixed_assets', 'fa_zz1120');
+      await syncDepreciation();
+    }, [SPLIT, INV, ACC, BULK]);
+    s = await db();
+    assert(!s.docs.some((d) => d.id.startsWith('doc_zz1120') || [SPLIT, INV, ACC, BULK].includes(d.original_name)) && !s.assets.some((a) => a.id === 'fa_zz1120'), '11/20 測試資料已清除');
   }
 
   // 本機辨識（瀏覽器內，不用外部 AI）：電子發票 QR 碼 → 自動帶入；沒有 QR 的收據 → 文字辨識 → 標「需確認」

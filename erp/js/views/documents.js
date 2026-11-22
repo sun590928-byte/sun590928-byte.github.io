@@ -23,9 +23,12 @@ import { SOURCE_LABELS } from '../lib/autoreview.js';
 import { queuePassbookPhotos } from './bank.js';
 import { reviewedAfterAuto } from '../lib/vendorkb.js';
 import { lookupCompanyName, canLookupCompany, isBan } from '../lib/companyname.js';
+import { hasAssetAccount, docAssetParts, assetMatches, linkModeOf, docInvoiceNos, assetInvoiceNos } from '../lib/assets.js';
+import { isYmd } from '../lib/docedit.js';
 
 const STATUS = { inbox: ['待覆核', 'medium'], reviewed: ['已覆核', 'accent'], posted: ['已入帳', 'high'], ignored: ['不入帳', 'low'] };
 const ASSET_CATEGORY_BY_ACCOUNT = Object.fromEntries(Object.entries(ASSET_CATEGORIES).map(([k, c]) => [c.asset, k]));
+const ASSET_SKIP = '固定資產（15xx）要逐張按「入帳並歸檔」，選「連結現有資產」或「新增資產」';
 
 // 檔案所在的子資料夾（選整個資料夾上傳時）：「原始憑證圖檔資料/員工代墊支出/xxx.jpg」→「員工代墊支出」
 function folderOf(file) {
@@ -71,10 +74,17 @@ export async function postEinvoice(inv, account, { settings, docs }) {
   const item = { invoice_no: inv.invoice_no, tax: inv.tax, account, buyer_tax_id: inv.buyer_tax_id, deductible: inv.deductible, tax_type: inv.tax_type || '', ded_code: inv.ded_code || '' };
   const ded = deductibility(item, { taxId: settings.tax_id, vatMode: settings.vat_mode });
   const ok = !!inv.deductible && ded.ok;
+  // 11/20 需求 2：固定資產（15xx）的電子發票，已登錄的資產發票號碼相同 → 已有購置分錄就只連結，不重複入帳
+  const asset = FIXED_ASSET_ACCOUNTS.has(account) && inv.invoice_no ? (await store.all('fixed_assets')).find((a) => !a.disposed_on && assetInvoiceNos(a).includes(normalizeInvoiceNo(inv.invoice_no))) : null;
+  if (asset && entries.some((x) => x.id === asset.purchase_entry_id)) {
+    await store.put('einvoices', { ...inv, account, entry_id: asset.purchase_entry_id, ...taxCodes(item, ok) });
+    return true;
+  }
   const je = documentJournal({ id: inv.id, doc_date: inv.date, vendor_name: inv.seller_name, invoice_no: inv.invoice_no, amount_total: inv.total, tax_amount: inv.tax, summary: (inv.items || []).map((i) => i.name).slice(0, 3).join('、'), account, pay_account: settings.doc_pay_account || '2134' }, { deductible: ok });
   const e = { ...je, source: 'document', source_ref: inv.id, id: uid('je_'), voucher_no: nextVoucherNo(entries, inv.date), status: 'posted', created_at: new Date().toISOString() };
   await store.put('journal_entries', e);
   await store.put('einvoices', { ...inv, account, entry_id: e.id, ...taxCodes(item, ok) });
+  if (asset) await store.put('fixed_assets', { ...asset, purchase_entry_id: e.id });
   return true;
 }
 
@@ -351,16 +361,33 @@ export async function render(root, ctx) {
       }
     }
     // 固定資產的發票：已有購置分錄就直接連結，避免同一筆購置入帳兩次
-    const asset = d.asset_id ? (await store.all('fixed_assets')).find((a) => a.id === d.asset_id) : null;
-    const assetEntry = asset?.purchase_entry_id ? (await store.all('journal_entries')).find((e) => e.id === asset.purchase_entry_id) : null;
+    const allAssets = await store.all('fixed_assets');
+    const allEntries = await store.all('journal_entries');
+    let asset = d.asset_id ? allAssets.find((a) => a.id === d.asset_id) : null;
+    const inv = linkByInvoice(d);
+    // 11/20 需求 2：會計項目 15xx、還沒連到資產的發票，先選「連結現有資產」或「新增資產」（全部入帳不會自動新增，見 postAll）
+    let mode = null;
+    if (!asset && !inv?.entry_id && hasAssetAccount(d)) {
+      if (quiet) return { ok: false, reason: ASSET_SKIP };
+      const pick = await chooseAsset(d, allAssets, allEntries);
+      if (!pick) return { ok: false, reason: '取消' };
+      if (pick.asset) {
+        asset = pick.asset;
+        mode = pick.mode;
+        d = { ...d, asset_id: asset.id };
+      }
+    }
+    const assetEntry = asset?.purchase_entry_id && mode !== 'add' ? allEntries.find((e) => e.id === asset.purchase_entry_id) : null;
     if (assetEntry) {
       const { archived_name, storage_path } = await archivePatch(d);
       await store.put('documents', { ...d, status: 'posted', entry_id: assetEntry.id, archived_name, storage_path });
-      await store.put('journal_entries', { ...assetEntry, attachments: [...new Set([...(assetEntry.attachments || []), d.id])], updated_at: new Date().toISOString() });
-      say(`這張發票屬於固定資產「${asset.name}」，已連結到購置分錄 ${assetEntry.voucher_no}，不重複入帳`, 'info', 7000);
+      // 購置分錄在已結帳鎖定的月份：傳票不動（附件清單不加），只把照片連過去
+      const lockedEntry = isLocked(settings, assetEntry.date);
+      if (!lockedEntry) await store.put('journal_entries', { ...assetEntry, attachments: [...new Set([...(assetEntry.attachments || []), d.id])], updated_at: new Date().toISOString() });
+      if (!(asset.doc_ids || []).includes(d.id)) await store.put('fixed_assets', { ...asset, doc_ids: [...(asset.doc_ids || []), d.id] });
+      say(`這張發票屬於固定資產「${asset.name}」，已連結到購置分錄 ${assetEntry.voucher_no}，不重複入帳${lockedEntry ? `（${assetEntry.date.slice(0, 7)} 已結帳鎖定，傳票不動）` : ''}`, 'info', 7000);
       return { ok: true, note: `連結固定資產「${asset.name}」` };
     }
-    const inv = linkByInvoice(d);
     if (inv?.entry_id) {
       await store.put('documents', { ...d, status: 'posted', entry_id: inv.entry_id, einvoice_id: inv.id });
       await store.put('einvoices', { ...inv, document_id: d.id });
@@ -387,10 +414,105 @@ export async function render(root, ctx) {
     const { archived_name, storage_path, folder } = await archivePatch(d);
     await store.put('documents', { ...d, deductible, status: 'posted', entry_id: e.id, archived_name, storage_path, einvoice_id: inv?.id || null });
     if (inv) await store.put('einvoices', { ...inv, entry_id: e.id, document_id: d.id, account: d.account });
-    if (asset && !asset.purchase_entry_id) await store.put('fixed_assets', { ...asset, purchase_entry_id: e.id });
+    let assetNote = '';
+    if (asset) {
+      const docIds = [...new Set([...(asset.doc_ids || []), d.id])];
+      if (mode === 'add') {
+        // 同一台設備的另一張發票（尾款、配件）：未稅金額加到取得成本，之後的折舊重算（已結帳鎖定月份不變）
+        const part = docAssetParts({ ...d, deductible });
+        const cost = round2((Number(asset.cost) || 0) + part.cost);
+        const tax = round2((Number(asset.tax_amount) || 0) + part.tax);
+        const invNo = [...new Set([...String(asset.invoice_no || '').split('+'), ...docInvoiceNos(d)].filter(Boolean))].join('+');
+        await store.put('fixed_assets', { ...asset, cost, tax_amount: tax || null, invoice_no: invNo, doc_ids: docIds });
+        await syncDepreciation();
+        assetNote = `；已加到固定資產「${asset.name}」，取得成本 ${fmt(asset.cost)} → ${fmt(cost)}，折舊已重算（已結帳月份不變）`;
+      } else {
+        const hasEntry = allEntries.some((x) => x.id === asset.purchase_entry_id);
+        await store.put('fixed_assets', { ...asset, purchase_entry_id: hasEntry ? asset.purchase_entry_id : e.id, doc_ids: docIds });
+        assetNote = `；已連結固定資產「${asset.name}」，不另外建立資產`;
+      }
+    }
     const made = asset ? [] : await createAssets({ ...d, deductible }, e);
-    say(`已入帳 ${e.voucher_no}，歸檔名稱：${folder}/${archived_name}${made.length ? `；已建立固定資產「${made.map((a) => a.name).join('、')}」並開始提列折舊` : ''}`, 'good', 7000);
+    say(`已入帳 ${e.voucher_no}，歸檔名稱：${folder}/${archived_name}${made.length ? `；已建立固定資產「${made.map((a) => a.name).join('、')}」並開始提列折舊` : ''}${assetNote}`, 'good', 7000);
     return { ok: true, voucher_no: e.voucher_no };
+  }
+
+  // 11/20 需求 2：固定資產（15xx）發票入帳前選「連結現有資產」或「新增資產」。
+  // 發票號碼相同（或廠商、金額相同且日期相近）的資產標「可能重複」並先選好。回傳 { asset, mode } / { asset: null }（新增）/ null（取消）
+  async function chooseAsset(d, assets, entries) {
+    const list = assets.filter((a) => !a.disposed_on);
+    if (!list.length) return { asset: null };
+    // 未稅成本照入帳時的扣抵判斷算（跟自動建立資產相同）
+    const ev = evalDoc(d);
+    const dd = d.lines?.length ? { ...d, lines: d.lines.map((p, i) => ({ ...p, deductible: ev.parts[i].ok })) } : { ...d, tax_amount: ev.tax ?? d.tax_amount, deductible: ev.parts[0].ok };
+    const part = docAssetParts(dd);
+    const hits = new Map(assetMatches(dd, list).map((m) => [m.asset.id, m]));
+    const cat = ASSET_CATEGORY_BY_ACCOUNT[part.accounts[0]] || 'machine';
+    const sorted = [...list].sort((a, b) => (hits.get(b.id)?.strength || 0) - (hits.get(a.id)?.strength || 0) || (b.category === cat) - (a.category === cat) || ((a.acquired_on || '') < (b.acquired_on || '') ? 1 : -1));
+    const pre = hits.size ? sorted[0].id : 'new';
+    const voucherOf = (a) => entries.find((e) => e.id === a.purchase_entry_id)?.voucher_no || '';
+    const opening = (a) => a.acquired_on && a.acquired_on < settings.revenue_start;
+    const accName = part.accounts.map((c) => `${c} ${accounts.find((x) => x.code === c)?.name || ''}`).join('、');
+    const nos = docInvoiceNos(d).join('+');
+    const newName = d.summary || d.vendor_name || '固定資產';
+    const row = (a) => {
+      const m = hits.get(a.id);
+      return h`<tr data-fa="${a.id}" style="cursor:pointer"><td><input type="radio" name="fa" value="${a.id}" ${a.id === pre ? raw('checked') : ''} aria-label="連結 ${a.name}"></td>
+        <td><b>${a.name}</b>${m ? h` ${badge('可能重複', 'high')}<div class="muted" style="font-size:12px">${m.reasons.join('、')}</div>` : ''}</td>
+        <td>${ASSET_CATEGORIES[a.category]?.label.replace(/（.*）/, '') || a.category || ''}</td><td>${a.acquired_on || ''}</td><td class="num">${fmt(Number(a.cost) || 0)}</td><td>${a.invoice_no || ''}</td><td>${a.supplier || ''}</td>
+        <td>${voucherOf(a) || (opening(a) ? '期初開帳' : h`<span class="muted">還沒有</span>`)}</td></tr>`;
+    };
+    const modeHtml = (id) => {
+      if (id === 'new') return h`<p class="muted">入帳後建立一筆新的固定資產「${newName}」（取得成本 ${fmt(part.cost)}），每月自動提列折舊。</p>`;
+      const a = list.find((x) => x.id === id);
+      const mode = linkModeOf(a, d, entries);
+      if (mode === 'link') return h`<div class="callout"><p>「${a.name}」的購置分錄 ${voucherOf(a)} 已經記了這張發票：只連結照片，<b>不再入帳</b>（不會重複記帳）。</p></div>`;
+      if (mode === 'ask')
+        return h`<div class="callout warn"><p>「${a.name}」已經有購置分錄 ${voucherOf(a)}。這張發票是：</p>
+          <label class="check" style="display:flex"><input type="radio" name="famode" value="link"> 同一筆購置（已經記在 ${voucherOf(a)}）：只連結照片，不再入帳</label>
+          <label class="check" style="display:flex"><input type="radio" name="famode" value="add"> 同一台設備的另一張發票（例如尾款、配件）：入帳，並把未稅 ${fmt(part.cost)} 加到這項資產的取得成本（之後的折舊會重算，已結帳月份不變）</label></div>`;
+      const diff = Math.abs((Number(a.cost) || 0) - part.cost) >= 1;
+      return h`<div class="callout"><p>「${a.name}」還沒有購置分錄：這張發票入帳後就是它的購置分錄，資產的取得成本和折舊不變。${diff ? `資產登記的成本 ${fmt(Number(a.cost) || 0)} 和這張發票的未稅金額 ${fmt(part.cost)} 不同，入帳後請到「固定資產與折舊」確認。` : ''}${opening(a) ? '這項資產列在期初開帳（成本已經在期初餘額裡），這張發票再入帳會重複，請先確認。' : ''}</p></div>`;
+    };
+    return modal({
+      title: '固定資產發票：連結現有資產或新增資產',
+      wide: true,
+      body: h`<p>這張憑證的會計項目是 <b>${accName}</b>（未稅 ${fmt(part.cost)} 元${nos ? `，發票 ${nos}` : ''}）。這台設備如果已經登錄在「固定資產與折舊」，請選它（<b>連結現有資產</b>）；選「新增資產」會再建立一筆，同一台設備會變兩筆、折舊重複提列。</p>
+        ${hits.size ? h`<div class="callout warn" id="fa-dup" style="margin:8px 0"><p><b>可能重複</b>：${[...hits.values()].map((m) => `「${m.asset.name}」${m.reasons.join('、')}`).join('；')}。已先選好，請確認。</p></div>` : ''}
+        ${part.accounts.length > 1 ? h`<p class="muted" style="font-size:12.5px">這張憑證有 ${part.accounts.length} 個固定資產科目；連結現有資產時不會另外建立資產。</p>` : ''}
+        <div class="table-wrap"><table class="grid" id="fa-pick"><thead><tr><th></th><th>資產名稱</th><th>類別</th><th>取得日期</th><th class="num">取得成本</th><th>發票號碼</th><th>廠商</th><th>購置分錄</th></tr></thead>
+        <tbody>${sorted.map(row)}<tr data-fa="new" style="cursor:pointer"><td><input type="radio" name="fa" value="new" ${pre === 'new' ? raw('checked') : ''} aria-label="新增資產"></td><td colspan="7"><b>新增資產</b>：入帳後建立「${newName}」，取得成本 ${fmt(part.cost)}</td></tr></tbody></table></div>
+        <div id="fa-mode" style="margin-top:8px"></div>`,
+      onMount: (dlg) => {
+        const show = () => (dlg.querySelector('#fa-mode').innerHTML = String(modeHtml(dlg.querySelector('[name=fa]:checked')?.value || 'new')));
+        show();
+        dlg.addEventListener('click', (ev) => {
+          const tr = ev.target.closest('#fa-pick tr[data-fa]');
+          if (!tr || ev.target.matches('input')) return;
+          tr.querySelector('input[name=fa]').checked = true;
+          show();
+        });
+        dlg.addEventListener('change', (ev) => ev.target.name === 'fa' && show());
+      },
+      actions: [
+        { label: '取消', value: null },
+        {
+          label: '入帳並歸檔',
+          primary: true,
+          value: (dlg) => {
+            const id = dlg.querySelector('[name=fa]:checked')?.value || 'new';
+            if (id === 'new') return { asset: null };
+            const a = list.find((x) => x.id === id);
+            let mode = linkModeOf(a, d, entries);
+            if (mode === 'ask') {
+              mode = dlg.querySelector('[name=famode]:checked')?.value;
+              if (!mode) return toast('請選這張發票是「同一筆購置」還是「同一台設備的另一張發票」', 'error', 6000), false;
+            }
+            return { asset: a, mode };
+          },
+        },
+      ],
+    });
   }
 
   // 科目是固定資產（15xx）的憑證：入帳時自動建立固定資產（依科目分組），之後每月自動提列折舊
@@ -451,14 +573,18 @@ export async function render(root, ctx) {
       else if (d.status === 'inbox' && d.review_issues?.length && !reviewedAfterAuto(d)) skipped.push({ d, reason: `需確認：${d.review_issues.join('；')}` });
       else if (miss.length) skipped.push({ d, reason: '缺' + miss.join('、') });
       else if (isLocked(settings, d.doc_date)) skipped.push({ d, reason: `${d.doc_date.slice(0, 7)} 已結帳鎖定` });
+      // 11/20 需求 2：固定資產（15xx）不批次入帳，免得同一台設備又自動新增一筆
+      else if (!d.asset_id && hasAssetAccount(d) && !linkByInvoice(d)?.entry_id) skipped.push({ d, reason: ASSET_SKIP, asset: true });
       else ready.push(d);
     }
     const label = (x) => x.vendor_name || x.original_name || x.id;
     if (!ready.length) {
-      await modal({ title: '沒有可以直接入帳的憑證', body: h`<p>這些憑證還缺必要欄位，請在卡片上補齊（或用 AI 辨識）後再試：</p><ul class="plain-list">${skipped.slice(0, 20).map((s) => h`<li>${label(s.d)}：${s.reason}</li>`)}</ul>` });
+      await modal({ title: '沒有可以直接入帳的憑證', body: h`<p>這些憑證還不能一次入帳：缺欄位的請在卡片上補齊（或用 AI 辨識）後再試，固定資產請逐張按「入帳並歸檔」：</p><ul class="plain-list">${skipped.slice(0, 20).map((s) => h`<li>${label(s.d)}：${s.reason}</li>`)}</ul>` });
       return;
     }
-    if (!(await confirmBox(`將 ${ready.length} 張憑證依目前欄位一次入帳並歸檔（不使用 AI）？${skipped.length ? `另有 ${skipped.length} 張資料不齊，會略過。` : ''}`, { ok: `全部入帳（${ready.length}）` }))) return;
+    const nAsset = skipped.filter((s) => s.asset).length;
+    const nOther = skipped.length - nAsset;
+    if (!(await confirmBox(`將 ${ready.length} 張憑證依目前欄位一次入帳並歸檔（不使用 AI）？${nOther ? `另有 ${nOther} 張資料不齊，會略過。` : ''}${nAsset ? `另有 ${nAsset} 張是固定資產（15xx），這次不會入帳：請在卡片上按「入帳並歸檔」，選「連結現有資產」或「新增資產」。` : ''}`, { ok: `全部入帳（${ready.length}）` }))) return;
     let ok = 0;
     const fails = [];
     setBusy(true, '入帳中…');
@@ -512,8 +638,10 @@ export async function render(root, ctx) {
     const start = d.lines?.length
       ? d.lines
       : [{ invoice_no: d.invoice_no || '', account: d.account || '', amount: d.amount_total ?? '', tax: d.tax_amount || '', tax_type: d.tax_type || '', ded_code: d.ded_code || '', memo: d.summary || '' }];
+    // 日期（11/20 需求 6）：合併憑證裡每張發票可以填自己的日期，營業稅 401 依這個日期歸期別；空白＝憑證日期。分錄日期不變
     const row = (p = {}) => h`<tr>
       <td><input class="cell" name="inv" value="${p.invoice_no || ''}" placeholder="AB12345678" style="width:110px" autocomplete="off"></td>
+      <td><input class="cell" type="date" name="ldate" value="${p.date || ''}" style="width:132px" aria-label="這一行的日期（空白＝憑證日期）" title="這張發票自己的日期；空白＝憑證日期"></td>
       <td><input class="cell" name="acc" list="ln-accs" value="${accText(p.account)}" placeholder="代號或名稱" style="width:180px" autocomplete="off" aria-label="會計項目"></td>
       <td><input class="cell num" name="amt" inputmode="decimal" value="${p.amount ?? ''}" style="width:90px" autocomplete="off"></td>
       <td><input class="cell num" name="tax" inputmode="decimal" value="${p.tax || ''}" style="width:70px" autocomplete="off"></td>
@@ -527,7 +655,7 @@ export async function render(root, ctx) {
         .map((tr, i) => {
           const v = (n) => tr.querySelector(`[name=${n}]`).value.trim();
           const accTyped = v('acc');
-          return { n: i + 1, invoice_no: normalizeInvoiceNo(v('inv')), account: resolveAccount(accTyped), accTyped, amount: Number(v('amt').replace(/,/g, '')) || 0, tax: Number(v('tax').replace(/,/g, '')) || 0, tax_type: v('tt').slice(0, 1), ded_code: v('dc').slice(0, 1), memo: v('memo') };
+          return { n: i + 1, invoice_no: normalizeInvoiceNo(v('inv')), date: v('ldate'), account: resolveAccount(accTyped), accTyped, amount: Number(v('amt').replace(/,/g, '')) || 0, tax: Number(v('tax').replace(/,/g, '')) || 0, tax_type: v('tt').slice(0, 1), ded_code: v('dc').slice(0, 1), memo: v('memo') };
         })
         .filter((p) => p.accTyped || p.amount || p.invoice_no || p.memo);
     const total = Number(d.amount_total) || 0;
@@ -554,8 +682,8 @@ export async function render(root, ctx) {
       title: `拆分明細：${d.vendor_name || d.original_name || ''}`,
       wide: true,
       body: h`<div id="ln-bar" class="callout" style="position:sticky;top:0;z-index:3;margin-bottom:8px"></div>
-        <p class="muted" style="margin-bottom:8px">每一行是一張發票或一個科目；含稅金額合計要等於憑證金額。每格都可直接打字：會計項目打代號開頭（例 6111）或名稱裡的字（例 租金），課稅別、扣抵代號打數字（空白＝自動依發票與科目判斷），按 Enter 跳下一格。稅額填發票上的營業稅（收據留空）。</p>
-        <div class="table-wrap"><table class="grid"><thead><tr><th>發票號碼</th><th>會計項目</th><th class="num">含稅金額</th><th class="num">稅額</th><th>課稅別</th><th>扣抵代號</th><th>說明</th><th></th></tr></thead><tbody id="ln">${start.map(row)}${row()}</tbody></table></div>
+        <p class="muted" style="margin-bottom:8px">每一行是一張發票或一個科目；含稅金額合計要等於憑證金額。每格都可直接打字：會計項目打代號開頭（例 6111）或名稱裡的字（例 租金），課稅別、扣抵代號打數字（空白＝自動依發票與科目判斷），按 Enter 跳下一格。稅額填發票上的營業稅（收據留空）。日期：這張發票的日期和憑證不同時才填（營業稅依這個日期歸期別），空白＝憑證日期。</p>
+        <div class="table-wrap"><table class="grid"><thead><tr><th>發票號碼</th><th>日期</th><th>會計項目</th><th class="num">含稅金額</th><th class="num">稅額</th><th>課稅別</th><th>扣抵代號</th><th>說明</th><th></th></tr></thead><tbody id="ln">${start.map(row)}${row()}</tbody></table></div>
         <datalist id="ln-accs">${accs.map((a) => h`<option value="${a.code} ${a.name}"></option>`)}</datalist>
         <datalist id="ln-tt">${Object.entries(TAX_TYPES).map(([k, v]) => h`<option value="${k}">${k} ${v}</option>`)}</datalist>
         <datalist id="ln-dc">${Object.entries(DED_CODES).map(([k, v]) => h`<option value="${k}">${k} ${v}</option>`)}</datalist>
@@ -606,6 +734,8 @@ export async function render(root, ctx) {
             if (badTT) return toast(`第 ${badTT.n} 行的課稅別只能填 ${Object.keys(TAX_TYPES).join('、')}`, 'error'), false;
             const badDC = list.find((p) => p.ded_code && !DED_CODES[p.ded_code]);
             if (badDC) return toast(`第 ${badDC.n} 行的扣抵代號只能填 ${Object.keys(DED_CODES).join('、')}`, 'error'), false;
+            const badDate = list.find((p) => p.date && !isYmd(p.date));
+            if (badDate) return toast(`第 ${badDate.n} 行的日期 ${badDate.date} 格式不對（例如 2026-08-25）`, 'error'), false;
             const sum = round2(list.reduce((t, p) => t + p.amount, 0));
             const upd = dlg.querySelector('#ln-upd').checked;
             const diff = round2(sum - total);
@@ -615,7 +745,7 @@ export async function render(root, ctx) {
             const nos = [...new Set(list.map((p) => p.invoice_no).filter(Boolean))];
             // 有填稅額＝發票上的營業稅，預設可扣抵（仍依統編、科目等規則判斷；不可扣抵者可選扣抵代號 3／4）
             const taxSum = round2(list.reduce((t, p) => t + p.tax, 0));
-            return { lines: list.map(({ n, accTyped, ...p }) => p), amount_total: upd ? sum : d.amount_total, tax_amount: taxSum, invoice_no: nos[0] || d.invoice_no || null, deductible: taxSum > 0 ? true : d.deductible };
+            return { lines: list.map(({ n, accTyped, date, ...p }) => (date ? { ...p, date } : p)), amount_total: upd ? sum : d.amount_total, tax_amount: taxSum, invoice_no: nos[0] || d.invoice_no || null, deductible: taxSum > 0 ? true : d.deductible };
           },
         },
       ],
@@ -654,7 +784,7 @@ export async function render(root, ctx) {
           <label class="full check" style="display:flex"><input type="checkbox" name="deductible" ${(d.deductible ?? Number(d.tax_amount) > 0) ? raw('checked') : ''} ${dis}> 三聯式／載明本店統編（進項稅額可扣抵）</label>
           ${d.lines?.length ? '' : h`<label>課稅別<select name="tax_type" ${dis}>${options([['', `自動（${ev.parts[0].tax_type} ${TAX_TYPES[ev.parts[0].tax_type]}）`], ...Object.entries(TAX_TYPES).map(([k, v]) => [k, `${k} ${v}`])], d.tax_type || '')}</select></label>
           <label>扣抵代號<select name="ded_code" ${dis}>${options([['', `自動（${ev.parts[0].ded_code}）`], ...Object.entries(DED_CODES).map(([k, v]) => [k, `${k} ${v}`])], d.ded_code || '')}</select></label>`}
-          ${d.lines?.length ? h`<div class="full callout" style="padding:8px 10px"><p style="font-size:12.5px">${d.lines.map((p, i) => h`<span style="display:block">${p.invoice_no || '（無發票號）'}｜${p.account} ${accounts.find((a) => a.code === p.account)?.name || ''}｜${fmt(p.amount)}${p.tax ? `（稅 ${fmt(p.tax)}）` : ''}｜代號 ${ev.parts[i].tax_type}/${ev.parts[i].ded_code}${p.memo ? '｜' + p.memo : ''}</span>`)}${lineDiff ? h`<b style="display:block;color:var(--bad);margin-top:4px">明細合計與憑證金額差 ${fmt(lineDiff)}：入帳前請到「編輯拆分」改到一致</b>` : ''}</p></div>` : ''}
+          ${d.lines?.length ? h`<div class="full callout" style="padding:8px 10px"><p style="font-size:12.5px">${d.lines.map((p, i) => h`<span style="display:block">${p.invoice_no || '（無發票號）'}${p.date && p.date !== d.doc_date ? h`｜<span class="ln-date" title="這張發票自己的日期（營業稅依這個日期歸期別）">${p.date}</span>` : ''}｜${p.account} ${accounts.find((a) => a.code === p.account)?.name || ''}｜${fmt(p.amount)}${p.tax ? `（稅 ${fmt(p.tax)}）` : ''}｜代號 ${ev.parts[i].tax_type}/${ev.parts[i].ded_code}${p.memo ? '｜' + p.memo : ''}</span>`)}${lineDiff ? h`<b style="display:block;color:var(--bad);margin-top:4px">明細合計與憑證金額差 ${fmt(lineDiff)}：入帳前請到「編輯拆分」改到一致</b>` : ''}</p></div>` : ''}
           ${d.buyer_tax_id && settings.tax_id && d.buyer_tax_id !== settings.tax_id ? h`<div class="full status status-warn"><span class="status-ic" aria-hidden="true">!</span>發票上的買方統編 ${d.buyer_tax_id} 不是本店</div>` : ''}
         </div>
         ${d.kind === 'payout_statement' && d.ai?.payouts?.length ? h`<div class="callout"><p>AI 讀到 ${d.ai.payouts.length} 筆撥款：${d.ai.payouts.map((p) => `${p.payout_date} ${fmt(p.net)}`).join('、')}</p><button class="btn sm" data-act="importPayouts" data-id="${d.id}">匯入為撥款紀錄</button></div>` : ''}
