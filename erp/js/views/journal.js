@@ -153,6 +153,8 @@ export async function render(root, ctx) {
       const year = Number(f.ym.slice(0, 4));
       const ce = closingEntry(entries, accounts, year);
       if (!ce.lines.length) return toast('本年度沒有損益科目餘額', 'info');
+      // 已結帳鎖定的月份不能再產生或改寫分錄（老闆 11/20：已結帳月份不要動）
+      if (isLocked(settings, ce.date)) return toast(`${ce.date.slice(0, 7)} 已結帳鎖定，不能產生年底結帳分錄；要做請先到「每月結帳檢查」解除鎖定`, 'error', 8000);
       if (!(await confirmBox(`產生 ${year - 1911} 年度結帳分錄（${ce.lines.length} 行），把收入、成本、費用科目結轉至「本期損益」？`))) return;
       const old = entries.find((e) => e.source === 'closing' && e.source_ref === String(year));
       const e = { ...ce, id: old?.id || uid('je_'), voucher_no: old?.voucher_no || nextVoucherNo(entries, ce.date), status: 'posted', created_at: new Date().toISOString() };
@@ -163,6 +165,8 @@ export async function render(root, ctx) {
     opening: async () => {
       const date = addDays(settings.revenue_start, -1);
       const existing = entries.find((e) => e.source === 'opening');
+      // 期初開帳所在月份已結帳鎖定就不能再改（老闆 11/20：已結帳月份不要動）
+      if (isLocked(settings, date) || (existing && isLocked(settings, existing.date))) return toast(`期初開帳（${date}）所在月份已結帳鎖定，不能修改；要改請先到「每月結帳檢查」解除鎖定`, 'error', 8000);
       // 全部會計項目（1 資產 … 8 所得稅）都可輸入期初餘額，借、貸各一欄；年度中途開始用系統時，3 權益、4 營業收入等本年累計數也能帶入
       const sortedAccs = [...accounts].sort((a, b) => (a.code < b.code ? -1 : 1));
       const val = (code, side) => {
