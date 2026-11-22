@@ -182,10 +182,39 @@ export function downloadCSV(name, rows) {
 // ─────────── 表格（排序、分頁、匯出）
 
 /**
- * columns: [{ key, label, align:'num'|'left', fmt:(v,row)=>string|Raw, sort:(row)=>value, width }]
+ * columns: [{ key, label, align:'num'|'left', fmt:(v,row)=>string|Raw, sort:(row)=>value, width, minWidth:'6em', nowrap:true }]
+ * stickyRight：最右邊幾欄固定在表格右緣（橫向捲動時一直看得到，例如狀態、修改按鈕）
+ * topScroll：表格比畫面寬時，表格上方也放一條橫向捲軸（與表格同步），不用捲到最底下才拉得動
  */
-export function dataTable(el, { columns, rows, pageSize = 100, empty = '沒有資料', exportName = null, rowClass = null, footer = null, initialSort = null }) {
-  const state = { sortKey: initialSort?.key ?? null, dir: initialSort?.dir ?? 1, page: 0 };
+export function dataTable(el, { columns, rows, pageSize = 100, empty = '沒有資料', exportName = null, rowClass = null, footer = null, initialSort = null, stickyRight = 0, topScroll = false }) {
+  const state = { sortKey: initialSort?.key ?? null, dir: initialSort?.dir ?? 1, page: 0, ro: null };
+  const nStick = Math.max(0, Math.min(Number(stickyRight) || 0, columns.length));
+  const stickFrom = columns.length - nStick;
+  // 固定在右邊的欄：right 用 CSS 變數（--sr0＝最右一欄＝0、--sr1＝最右一欄的寬度…），畫好後依實際欄寬計算
+  const cellAttrs = (c, i, base) => {
+    const cls = [base, c.nowrap ? 'nowrap' : '', i >= stickFrom ? 'stick-r' : '', nStick && i === stickFrom ? 'stick-r-first' : ''].filter(Boolean).join(' ');
+    const style = [c.width ? `width:${c.width}` : '', c.minWidth ? `min-width:${c.minWidth}` : '', i >= stickFrom ? `right:var(--sr${columns.length - 1 - i}, 0px)` : ''].filter(Boolean).join(';');
+    return raw(`class="${esc(cls)}"${style ? ` style="${esc(style)}"` : ''}`);
+  };
+  const fit = () => {
+    const wrap = el.querySelector('.table-wrap');
+    const table = wrap?.querySelector('table');
+    if (!table || !table.isConnected) return;
+    if (nStick) {
+      const ths = [...(table.tHead?.rows[0]?.cells || [])];
+      let right = 0;
+      for (let i = columns.length - 1; i >= stickFrom && ths[i]; i--) {
+        table.style.setProperty(`--sr${columns.length - 1 - i}`, `${right}px`);
+        right += ths[i].getBoundingClientRect().width;
+      }
+    }
+    const bar = el.querySelector('.table-topscroll');
+    if (bar) {
+      bar.firstElementChild.style.width = `${wrap.scrollWidth}px`;
+      bar.hidden = wrap.scrollWidth <= wrap.clientWidth + 1;
+      bar.scrollLeft = wrap.scrollLeft;
+    }
+  };
   const render = () => {
     let list = rows;
     if (state.sortKey !== null) {
@@ -203,13 +232,13 @@ export function dataTable(el, { columns, rows, pageSize = 100, empty = '沒有�
     const pages = Math.max(1, Math.ceil(list.length / pageSize));
     state.page = Math.min(state.page, pages - 1);
     const slice = list.slice(state.page * pageSize, (state.page + 1) * pageSize);
-    el.innerHTML = String(h`<div class="table-wrap"><table class="grid">
+    el.innerHTML = String(h`${topScroll ? raw('<div class="table-topscroll" hidden aria-hidden="true"><div></div></div>') : ''}<div class="table-wrap"><table class="grid${nStick ? ' has-stick-r' : ''}">
       <thead><tr>${columns.map(
-        (c) => h`<th class="${c.align === 'num' ? 'num' : ''}" style="${c.width ? `width:${c.width}` : ''}" ${c.nosort ? '' : raw(`data-sort="${esc(c.key)}" tabindex="0" aria-sort="${state.sortKey === c.key ? (state.dir > 0 ? 'ascending' : 'descending') : 'none'}"`)}>${c.label}${state.sortKey === c.key ? (state.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`,
+        (c, i) => h`<th ${cellAttrs(c, i, c.align === 'num' ? 'num' : '')} ${c.nosort ? '' : raw(`data-sort="${esc(c.key)}" tabindex="0" aria-sort="${state.sortKey === c.key ? (state.dir > 0 ? 'ascending' : 'descending') : 'none'}"`)}>${c.label}${state.sortKey === c.key ? (state.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`,
       )}</tr></thead>
       <tbody>${
         slice.length
-          ? slice.map((r) => h`<tr class="${rowClass ? rowClass(r) : ''}">${columns.map((c) => h`<td class="${c.align === 'num' ? 'num' : ''} ${c.cls || ''}">${c.fmt ? c.fmt(r[c.key], r) : r[c.key] ?? ''}</td>`)}</tr>`)
+          ? slice.map((r) => h`<tr class="${rowClass ? rowClass(r) : ''}">${columns.map((c, i) => h`<td ${cellAttrs(c, i, `${c.align === 'num' ? 'num' : ''} ${c.cls || ''}`.trim())}>${c.fmt ? c.fmt(r[c.key], r) : r[c.key] ?? ''}</td>`)}</tr>`)
           : h`<tr><td colspan="${columns.length}" class="empty">${empty}</td></tr>`
       }</tbody>
       ${footer ? h`<tfoot>${footer}</tfoot>` : ''}
@@ -243,6 +272,23 @@ export function dataTable(el, { columns, rows, pageSize = 100, empty = '沒有�
       const plain = (v) => (v instanceof Raw ? v.s.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'") : v);
       downloadCSV(exportName, [columns.map((c) => c.label), ...list.map((r) => columns.map((c) => (c.csv ? c.csv(r[c.key], r) : plain(c.fmt ? c.fmt(r[c.key], r) : r[c.key]) ?? '')))]);
     });
+    if (nStick || topScroll) {
+      const wrap = el.querySelector('.table-wrap');
+      const bar = el.querySelector('.table-topscroll');
+      if (bar) {
+        // 兩條捲軸互相跟著動；值相同時不會再觸發 scroll，不會來回打轉
+        bar.addEventListener('scroll', () => wrap.scrollLeft !== bar.scrollLeft && (wrap.scrollLeft = bar.scrollLeft), { passive: true });
+        wrap.addEventListener('scroll', () => bar.scrollLeft !== wrap.scrollLeft && (bar.scrollLeft = wrap.scrollLeft), { passive: true });
+      }
+      fit();
+      // 視窗或欄寬改變（縮放畫面、側欄開合）時重算；放到下一個畫格，避免 ResizeObserver 迴圈警告
+      state.ro?.disconnect();
+      if (typeof ResizeObserver === 'function') {
+        state.ro = new ResizeObserver(() => requestAnimationFrame(fit));
+        state.ro.observe(wrap);
+        state.ro.observe(wrap.querySelector('table'));
+      }
+    }
   };
   render();
   return { update(newRows) { rows = newRows; render(); } };
