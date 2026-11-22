@@ -58,7 +58,8 @@ export function normalizePayouts(rawRows, { batchId = '', provider = 'ecpay' } =
   const out = [];
   const skipped = [];
   // 每列一筆刷卡（綠界「信用卡撥款明細」：有授權單號／卡號）：依金流、請款日彙總成一筆撥款，和存摺入帳的金額才對得上
-  const perTx = rawRows.some((r) => String(r.tx_id || '').trim());
+  // 有「交易日期」欄時，每筆撥款另記各交易日的金額（tx_days），刷卡逐日核對可以改用撥款明細的交易日期比對
+  const perTx = rawRows.some((r) => String(r.tx_id || '').trim() || parseDate(r.tx_date));
   const groups = new Map();
   for (const r of rawRows) {
     if (Object.values(r).some((v) => /小計|合計|總計/.test(String(v ?? '')))) {
@@ -79,11 +80,20 @@ export function normalizePayouts(rawRows, { batchId = '', provider = 'ecpay' } =
     const ref = String(r.ref || '').trim();
     if (perTx) {
       const key = `${prov}|${date}`;
-      const g = groups.get(key) || { batch_id: batchId, provider: prov, payout_date: date, gross: 0, fee: 0, net: 0, period_from: null, period_to: null, tx_count: 0, ref: '', note: '', _row: r._row };
+      const g = groups.get(key) || { batch_id: batchId, provider: prov, payout_date: date, gross: 0, fee: 0, net: 0, period_from: null, period_to: null, tx_count: 0, ref: '', note: '', _row: r._row, _days: new Map() };
       g.gross = round2(g.gross + gross);
       g.fee = round2(g.fee + fee);
       g.net = round2(g.net + net);
       g.tx_count++;
+      const txDate = parseDate(r.tx_date);
+      if (txDate) {
+        const d = g._days.get(txDate) || { date: txDate, gross: 0, fee: 0, net: 0, count: 0 };
+        d.gross = round2(d.gross + gross);
+        d.fee = round2(d.fee + fee);
+        d.net = round2(d.net + net);
+        d.count++;
+        g._days.set(txDate, d);
+      }
       groups.set(key, g);
       continue;
     }
@@ -103,9 +113,14 @@ export function normalizePayouts(rawRows, { batchId = '', provider = 'ecpay' } =
       note: String(r.note || '').trim(),
     });
   }
-  for (const g of groups.values()) {
+  for (const { _days, ...g } of groups.values()) {
     g.id = 'po_' + fnv1a([g.provider, g.payout_date, 'tx', g.gross, g.net, g.fee].join('|'));
     g.note = `${g.tx_count} 筆刷卡彙總`;
+    if (_days.size) {
+      g.tx_days = [..._days.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
+      g.period_from = g.tx_days[0].date;
+      g.period_to = g.tx_days[g.tx_days.length - 1].date;
+    }
     out.push(g);
   }
   // 同一檔案裡完全相同的列（撥款日、金額都一樣）只留一筆：同一主鍵寫兩次會被資料庫拒絕
@@ -146,6 +161,79 @@ export function dailyCardRecon(lines, txs, { from, to } = {}) {
   return [...days.values()]
     .map((d) => ({ ...d, pos: round2(d.pos), ecpay: round2(d.ecpay), fee: round2(d.fee), posOrders: d.posOrders.size, diff: round2(d.ecpay - d.pos) }))
     .sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+
+// 撥款明細（綠界信用卡撥款明細，每列一筆刷卡）依「交易日期」加總。同一天的刷卡可能分在不同撥款日，所以要看全部撥款，不是只看期間內撥款的
+export function payoutTxDays(payouts, { provider = 'ecpay' } = {}) {
+  const days = new Map();
+  let coveredTo = '';
+  for (const p of payouts) {
+    if (p.provider !== provider || !Array.isArray(p.tx_days)) continue;
+    for (const d of p.tx_days) {
+      const x = days.get(d.date) || { date: d.date, gross: 0, fee: 0, net: 0, count: 0 };
+      x.gross = round2(x.gross + (Number(d.gross) || 0));
+      x.fee = round2(x.fee + (Number(d.fee) || 0));
+      x.net = round2(x.net + (Number(d.net) || 0));
+      x.count += Number(d.count) || 0;
+      days.set(d.date, x);
+      if (d.date > coveredTo) coveredTo = d.date;
+    }
+  }
+  return { days, coveredTo };
+}
+
+/**
+ * 每日：POS 刷卡營收 vs 撥款明細的交易日期加總。
+ * 撥款明細只含已撥款的刷卡：最後一個交易日之後的日子（例如月底刷卡、下個月才撥款）標 pending「等下一期撥款明細」，不算差異。
+ */
+export function dailyCardReconByPayout(lines, payouts, { from, to } = {}) {
+  const { days: txDays, coveredTo } = payoutTxDays(payouts);
+  const days = new Map();
+  const get = (d) => {
+    if (!days.has(d)) days.set(d, { date: d, pos: 0, posOrders: new Set(), ecpay: 0, ecpayCount: 0, fee: 0, failed: 0 });
+    return days.get(d);
+  };
+  for (const l of lines) {
+    if (l.payment !== 'card' || l.void_reason) continue;
+    if ((from && l.date < from) || (to && l.date > to)) continue;
+    const d = get(l.date);
+    d.pos += l.amount;
+    if (l.order_no) d.posOrders.add(l.order_no);
+  }
+  for (const x of txDays.values()) {
+    if ((from && x.date < from) || (to && x.date > to)) continue;
+    const d = get(x.date);
+    d.ecpay += x.gross;
+    d.ecpayCount += x.count;
+    d.fee += x.fee;
+  }
+  return [...days.values()]
+    .map((d) => {
+      const diff = round2(d.ecpay - d.pos);
+      return { ...d, pos: round2(d.pos), ecpay: round2(d.ecpay), fee: round2(d.fee), posOrders: d.posOrders.size, diff, pending: !coveredTo || d.date > coveredTo };
+    })
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+
+export const CARD_SOURCES = { tx: '綠界交易明細', payout: '撥款明細（交易日期）' };
+
+/**
+ * 刷卡逐日核對：兩種比對來源都算，並自動挑一個。
+ * 只有一種有資料就用那種；兩種都有，用有差異天數少的（一樣多用交易明細）。source 指定時照指定。
+ * @returns { source, auto, has: {tx, payout}, rows, bySource: {tx, payout}, diffDays: {tx, payout}, pendingDays }
+ */
+export function cardRecon(lines, txs, payouts, { from, to, source = '' } = {}) {
+  const T = txs.filter((t) => (!from || t.date >= from) && (!to || t.date <= to));
+  const bySource = { tx: dailyCardRecon(lines, T, { from, to }), payout: dailyCardReconByPayout(lines, payouts, { from, to }) };
+  const has = { tx: T.length > 0, payout: bySource.payout.some((d) => d.ecpayCount > 0) };
+  const isDiff = (d) => !d.pending && Math.abs(d.diff) >= 1;
+  const diffDays = { tx: bySource.tx.filter(isDiff).length, payout: bySource.payout.filter(isDiff).length };
+  const pendingDays = bySource.payout.filter((d) => d.pending && Math.abs(d.diff) >= 1).length;
+  let auto = 'tx';
+  if (has.payout && !has.tx) auto = 'payout';
+  else if (has.payout && has.tx && diffDays.payout + pendingDays < diffDays.tx) auto = 'payout';
+  const pick = CARD_SOURCES[source] ? source : auto;
+  return { source: pick, auto, has, rows: bySource[pick], bySource, diffDays, pendingDays };
 }
 
 // 逐筆比對：訂單號相同優先，其次同日同金額

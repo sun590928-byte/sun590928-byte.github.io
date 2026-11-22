@@ -2,11 +2,11 @@
 
 import { h, raw, mount, bindActions, dataTable, toast, pickFiles, confirmBox, options, fmt, setBusy, badge, downloadCSV } from '../ui.js';
 import { store } from '../store.js';
-import { getSettings, getAccounts, getProductIndex } from '../state.js';
+import { getSettings, getAccounts, getProductIndex, isLocked } from '../state.js';
 import { decodeBytes, parseCSV } from '../lib/csv.js';
 import { readXlsx } from '../lib/xlsx.js';
 import { TARGETS, detectHeaderRow, autoMap, headerSignature, guessTarget, extract } from '../lib/importer.js';
-import { normalizeSales } from '../lib/pos.js';
+import { normalizeSales, planVoidUpdates } from '../lib/pos.js';
 import { normalizeEcpayTx, normalizePayouts, guessProvider } from '../lib/payments.js';
 import { normalizeBank } from '../lib/bank.js';
 import { buildJournalEntries } from '../lib/journalimport.js';
@@ -73,6 +73,11 @@ export async function render(root, ctx) {
     if (prof) {
       f.mapping = { ...prof.mapping };
       f.profileUsed = true;
+      // 撥款明細的「交易日期」欄是 11/20 才加的：舊範本沒有這欄時自動補上（那一欄沒被其他欄位用到才補）
+      if (f.target === 'payouts' && f.mapping.tx_date === undefined) {
+        const a = autoMap(headers, 'payouts');
+        if (a.tx_date !== undefined && !Object.values(f.mapping).includes(a.tx_date)) f.mapping.tx_date = a.tx_date;
+      }
     } else {
       f.mapping = autoMap(headers, f.target);
       f.profileUsed = false;
@@ -94,7 +99,13 @@ export async function render(root, ctx) {
     const batchId = 'b_' + f.hash.slice(0, 12);
     if (t === 'sales') {
       const { lines, skipped } = normalizeSales(raw, { rules: settings.void_rules, batchId, cutoffHour: Number(settings.cutoff_hour) || 0 });
-      return withDupes(t, lines, skipped, lines.map((l) => l.date));
+      const res = await withDupes(t, lines, skipped, lines.map((l) => l.date));
+      // 已匯入過的訂單，POS 狀態變成作廢 → 更新那幾筆（不當重複略過）；已由既有明細代表的列不再新增
+      const plan = planVoidUpdates(lines, await store.all('sales_lines'), { batchId });
+      res.rows = res.rows.filter((l) => !plan.consumed.has(l.id));
+      res.updates = plan.updates;
+      res.dup = Math.max(0, lines.length - res.rows.length - plan.updates.length);
+      return res;
     }
     if (t === 'ecpay_tx') {
       const { rows, skipped } = normalizeEcpayTx(raw, { batchId });
@@ -102,7 +113,12 @@ export async function render(root, ctx) {
     }
     if (t === 'payouts') {
       const { rows, skipped } = normalizePayouts(raw, { batchId, provider: f.provider || 'ecpay' });
-      return withDupes(t, rows, skipped, rows.map((r) => r.payout_date));
+      const res = await withDupes(t, rows, skipped, rows.map((r) => r.payout_date));
+      // 之前匯入、還沒有交易日期的同一筆撥款：補上各交易日的金額（撥款金額不變，入帳分錄不受影響）
+      const old = new Map((await store.all('payouts')).map((p) => [p.id, p]));
+      res.updates = rows.filter((r) => r.tx_days && old.has(r.id) && !old.get(r.id).tx_days).map((r) => ({ ...old.get(r.id), tx_days: r.tx_days, period_from: old.get(r.id).period_from || r.period_from, period_to: old.get(r.id).period_to || r.period_to }));
+      res.dup = Math.max(0, res.dup - res.updates.length);
+      return res;
     }
     if (t === 'bank') {
       const { rows, skipped } = normalizeBank(raw, { batchId, bankAccountId: f.bankAccountId });
@@ -212,6 +228,8 @@ export async function render(root, ctx) {
         if (p.newSups.length) await store.put('suppliers', p.newSups);
       }
       await store.put(TARGET_STORE[t], rows);
+      const updates = p.updates || [];
+      if (updates.length) await store.put(TARGET_STORE[t], updates);
       if (t === 'sales') bomNotice = await salesRecipeGaps(rows).catch((e) => (console.error(e), null)); // 提醒失敗不影響匯入
       const dates = p.dates.sort();
       await store.put('import_batches', {
@@ -223,6 +241,7 @@ export async function render(root, ctx) {
         encoding: f.encoding,
         row_count: p.all.length,
         added: rows.length,
+        ...(updates.length ? { updated: updates.length } : {}),
         skipped: p.dup + p.skipped.length,
         date_from: dates[0] || null,
         date_to: dates[dates.length - 1] || null,
@@ -235,6 +254,11 @@ export async function render(root, ctx) {
       }
       let msg = t === 'suppliers' ? `已新增 ${fmt(p.added)} 家、更新 ${fmt(p.updated)} 家供應商${p.dup ? `，${fmt(p.dup)} 家資料相同未變動` : ''}` : `已匯入 ${fmt(rows.length)} 筆${p.dup ? `，略過重複 ${fmt(p.dup)} 筆` : ''}`;
       if (t === 'purchases') msg += `；進貨單 ${fmt(new Set(rows.map((r) => r.purchase_id)).size)} 張${p.newItems.length ? `、自動建檔原物料 ${fmt(p.newItems.length)} 項` : ''}${p.newSups.length ? `、新供應商 ${fmt(p.newSups.length)} 家` : ''}，已載入原物料進銷存`;
+      if (t === 'sales' && updates.length) {
+        const lockedM = [...new Set(updates.map((l) => l.date.slice(0, 7)))].filter((m) => isLocked(settings, m + '-01'));
+        msg += `；更新作廢 ${fmt(updates.length)} 筆（POS 已改成作廢）${lockedM.length ? `，其中 ${lockedM.join('、')} 已結帳鎖定：只更新銷售明細與營運分析，POS 營收傳票不會重新產生` : ''}`;
+      }
+      if (t === 'payouts' && updates.length) msg += `；${fmt(updates.length)} 筆既有撥款補上交易日期`;
       if (['sales', 'payouts', 'assets'].includes(t)) {
         const r = await syncAll();
         msg += '。' + describeSync(r);
@@ -364,7 +388,7 @@ export async function render(root, ctx) {
       }
       <div id="prep" style="margin-top:14px"></div>
       <div class="row" style="margin-top:14px">
-        <button class="btn primary" data-act="commit" ${prepared && !prepared.error && prepared.rows.length ? '' : raw('disabled')}>匯入 ${prepared && !prepared.error ? fmt(prepared.rows.length) : 0} 筆</button>
+        <button class="btn primary" data-act="commit" ${prepared && !prepared.error && (prepared.rows.length || prepared.updates?.length) ? '' : raw('disabled')}>匯入 ${prepared && !prepared.error ? fmt(prepared.rows.length) : 0} 筆${prepared && !prepared.error && prepared.updates?.length ? `、${cur.target === 'sales' ? '更新作廢' : '補上交易日期'} ${fmt(prepared.updates.length)} 筆` : ''}</button>
         <button class="btn" data-act="skip">略過此檔</button>
       </div>
     </div>`;
@@ -390,7 +414,18 @@ export async function render(root, ctx) {
       const voids = p.all.filter((l) => l.void_reason);
       const before = p.all.filter((l) => l.date < settings.revenue_start).length;
       parts.push(h`<div class="callout" style="margin-bottom:10px"><p>作廢（金額計 0）：老闆測試 ${voids.filter((l) => l.void_reason === 'boss_test').length} 筆、老闆招待 ${voids.filter((l) => l.void_reason === 'boss_treat').length} 筆、報廢 ${voids.filter((l) => l.void_reason === 'scrap').length} 筆、POS 作廢 ${voids.filter((l) => l.void_reason === 'pos_void').length} 筆。${before ? ` ${settings.revenue_start} 以前的 ${fmt(before)} 筆會保留供品項比對，但不計入營收。` : ''}</p></div>`);
+      if (p.updates?.length) {
+        const ups = p.updates;
+        const lockedM = [...new Set(ups.map((l) => l.date.slice(0, 7)))].filter((m) => isLocked(settings, m + '-01'));
+        const orders = [...new Set(ups.map((l) => `${l.date} #${String(l.order_no).replace(/^#/, '')}`))];
+        parts.push(
+          h`<div class="callout warn" id="void-updates" style="margin-bottom:10px"><p><b>更新作廢 ${fmt(ups.length)} 筆</b>：這些訂單之前匯入時是有效的，這次 POS 狀態變成作廢，匯入時會把它們改成作廢（不算營收）：${orders.slice(0, 10).join('、')}${orders.length > 10 ? '…' : ''}，原金額合計 ${fmt(round2(ups.reduce((t, l) => t + (Number(l.amount) || 0), 0)))}。${
+            lockedM.length ? ` ${lockedM.join('、')} 已結帳鎖定：只更新銷售明細與營運分析，POS 營收傳票不會重新產生。` : ' 那幾天的 POS 營收傳票會重新產生。'
+          }</p></div>`,
+        );
+      }
     }
+    if (cur.target === 'payouts' && p.updates?.length) parts.push(h`<div class="callout" style="margin-bottom:10px"><p>${fmt(p.updates.length)} 筆撥款之前已匯入但沒有交易日期，這次會補上（撥款金額不變，入帳分錄不受影響）；補上後「金流對帳 → 每日刷卡核對」可以改用撥款明細的交易日期比對。</p></div>`);
     if (cur.target === 'purchases') {
       const docs = p.docs || [];
       parts.push(h`<div class="callout" style="margin-bottom:10px"><p>合成 <b>${fmt(docs.length)}</b> 張進貨單（同發票號碼的多行為一張）。匯入後每行進貨自動載入「原物料進銷存」：${p.newItems.length ? h`沒見過的品名會自動建檔 <b>${fmt(p.newItems.length)}</b> 項（${p.newItems.slice(0, 8).map((i) => `${i.name}→${INVENTORY_CATEGORIES[i.category]?.label || i.category}`).join('、')}${p.newItems.length > 8 ? '…' : ''}），分類依品名自動判斷，之後可在「進貨紀錄 → 商品類別（原物料主檔）」修改並設定安全庫存、進貨包裝折合量；` : '品名都已建檔；'}${p.newSups.length ? h`新供應商 <b>${p.newSups.map((x) => x.name).join('、')}</b> 會一併建立（可到「供應商」補統編與匯款資料）。` : ''}</p></div>`);
@@ -552,6 +587,8 @@ function previewColumns(t) {
         { key: 'gross', label: '交易總額', align: 'num', fmt: m },
         { key: 'fee', label: '手續費', align: 'num', fmt: m },
         { key: 'net', label: '撥款金額', align: 'num', fmt: m },
+        { key: 'period_from', label: '刷卡交易日', fmt: (v, r) => (v ? `${v} ～ ${r.period_to || ''}` : '') },
+        { key: 'tx_count', label: '筆數', align: 'num', fmt: m },
         { key: 'ref', label: '編號' },
       ];
     case 'bank':

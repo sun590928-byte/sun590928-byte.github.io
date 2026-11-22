@@ -1,11 +1,20 @@
 // 銷售明細與作廢：篩選查詢、作廢（老闆測試／招待／報廢）彙總、依日期／品項彙總。
+// 事後作廢：每一筆或整張單可手動「標記作廢」（選原因）／「取消作廢」；已結帳鎖定的月份只改銷售明細，不重新產生 POS 營收傳票。
 
-import { h, mount, bindActions, dataTable, stat, fmt, options, toast, emptyState, confirmBox } from '../ui.js';
+import { h, raw, mount, bindActions, dataTable, stat, fmt, options, toast, emptyState, confirmBox, modal } from '../ui.js';
 import { store } from '../store.js';
-import { getSettings, getProductIndex } from '../state.js';
-import { VOID_REASONS, PAYMENT_TYPES, CATEGORIES, reapplyVoids } from '../lib/pos.js';
+import { getSettings, getProductIndex, isLocked } from '../state.js';
+import { VOID_REASONS, PAYMENT_TYPES, CATEGORIES, reapplyVoids, markVoid, clearVoid, MANUAL_VOID_CHOICES } from '../lib/pos.js';
 import { round2 } from '../lib/money.js';
 import { syncSales } from '../sync.js';
+
+// 單號比對：#0878、0878、878 都算同一張（去掉符號與開頭的 0）；有指定日期時，POS 單號結尾是這幾碼也算
+const normNo = (s) => String(s || '').replace(/[^0-9A-Za-z]/g, '').replace(/^0+/, '').toUpperCase();
+function orderHit(line, tokens, withDate) {
+  const no = String(line.order_no || '').trim();
+  if (!no) return false;
+  return tokens.some((t) => normNo(no) === normNo(t) || (withDate && t.replace(/^#/, '').length >= 3 && no.replace(/^#/, '').endsWith(t.replace(/^#/, ''))));
+}
 
 export async function render(root, ctx) {
   const settings = await getSettings();
@@ -24,6 +33,7 @@ export async function render(root, ctx) {
     void: ctx.params.void || '',
     view: ctx.params.view || 'lines',
   };
+  let notice = null; // 標記作廢／取消作廢之後的說明（哪些月份鎖定、哪幾天的傳票重新產生）
 
   function filtered() {
     const q = f.q.trim().toLowerCase();
@@ -53,8 +63,10 @@ export async function render(root, ctx) {
         <label class="field"><span>作廢</span><select data-act="f" data-k="void">${options([['', '全部'], ['0', '只看有效'], ['1', '只看作廢'], ...Object.entries(VOID_REASONS).map(([k, v]) => [k, v.label])], f.void)}</select></label>
         <label class="field"><span>搜尋（品名、選項、備註、單號、會員）</span><input type="search" value="${f.q}" data-act="f" data-k="q" data-on="change"></label>
         <span class="spacer"></span>
+        <button class="btn" data-act="voidOrders" title="POS 匯入時是有效的訂單，事後才作廢（例如測試單、已作廢發票）：輸入日期與單號標記作廢">依單號標記作廢</button>
         <button class="btn" data-act="reapply">重新套用作廢規則</button>
       </div>
+      ${notice ? h`<div class="callout ${notice.tone}" id="void-notice" style="margin-bottom:12px"><p>${notice.text}</p></div>` : ''}
       ${beforeStart ? h`<div class="callout warn" style="margin-bottom:12px"><p>查詢期間包含營收起算日 ${settings.revenue_start} 以前的資料，這些資料不計入帳務營收。</p></div>` : ''}
       <div class="stats">
         ${stat('有效營收', '$' + fmt(round2(live.reduce((t, l) => t + l.revenue, 0))), `${fmt(live.length)} 筆明細`)}
@@ -90,8 +102,15 @@ export async function render(root, ctx) {
           { key: 'amount', label: '金額', align: 'num', fmt: (v) => fmt(v) },
           { key: 'revenue', label: '計入營收', align: 'num', fmt: (v) => fmt(v) },
           { key: 'payment', label: '付款', fmt: (v, r) => r.payment_raw || PAYMENT_TYPES[v] },
-          { key: 'void_reason', label: '作廢原因', fmt: (v) => (v ? VOID_REASONS[v].label : '') },
+          { key: 'void_reason', label: '作廢原因', fmt: (v, r) => voidCell(v, r) },
           { key: 'note', label: '備註' },
+          {
+            key: '_act',
+            label: '',
+            nosort: true,
+            csv: () => '',
+            fmt: (v, r) => (r.void_reason ? h`<button class="btn sm ghost" data-act="unvoidLine" data-id="${r.id}" title="取消作廢，算回營收">取消作廢</button>` : h`<button class="btn sm" data-act="voidLine" data-id="${r.id}" title="事後作廢：選原因，可整張單一起">作廢</button>`),
+          },
         ],
       });
     } else if (f.view === 'voids') {
@@ -182,7 +201,130 @@ export async function render(root, ctx) {
     }
   }
 
+  // 作廢原因欄：手動標記的附上說明、誰、哪天；重新匯入改成作廢的也註明
+  function voidCell(v, r) {
+    const m = r.void_manual;
+    const who = (x) => [x.note, x.by, String(x.at || '').slice(0, 10)].filter(Boolean).join('｜');
+    if (!v) return m ? h`<span class="muted" style="font-size:12px">手動取消作廢｜${who(m)}</span>` : '';
+    const sub = m ? `手動標記｜${who(m)}` : r.void_reimport ? `重新匯入：POS 狀態「${r.void_reimport.status || ''}」｜${String(r.void_reimport.at || '').slice(0, 10)}` : '';
+    return h`${VOID_REASONS[v]?.label || v}${sub ? h`<div class="muted" style="font-size:12px">${sub}</div>` : ''}`;
+  }
+
+  // 標記作廢（mode='void'）／取消作廢（mode='clear'）的視窗：輸入日期、單號，列出找到的品項勾選
+  function voidDialog({ mode = 'void', date = '', orders = '', ids = null } = {}) {
+    const isVoid = mode === 'void';
+    const find = (d, text) => {
+      if (ids) return lines.filter((l) => ids.includes(l.id));
+      const tokens = String(text || '').split(/[\s,，、;；]+/).map((t) => t.trim()).filter(Boolean);
+      if (!tokens.length) return [];
+      return lines.filter((l) => (!d || l.date === d) && orderHit(l, tokens, !!d)).sort((a, b) => (a.date + a.time + a.order_no < b.date + b.time + b.order_no ? -1 : 1));
+    };
+    const listHtml = (found) => {
+      if (!found.length) return h`<p class="muted">${ids ? '' : '輸入日期與單號後，這裡會列出找到的品項。'}</p>`;
+      const months = [...new Set(found.map((l) => l.date.slice(0, 7)))].sort();
+      const lockedM = months.filter((m) => isLocked(settings, m + '-01'));
+      const openDates = [...new Set(found.filter((l) => !isLocked(settings, l.date) && l.date >= settings.revenue_start).map((l) => l.date))].sort();
+      return h`<div class="table-wrap" style="max-height:40vh"><table class="grid"><thead><tr><th></th><th>日期</th><th>時間</th><th>單號</th><th>品名</th><th class="num">數量</th><th class="num">金額</th><th>目前</th></tr></thead><tbody>
+        ${found.map((l) => {
+          const on = isVoid ? !l.void_reason : !!l.void_reason;
+          return h`<tr data-id="${l.id}" class="${l.void_reason ? 'void' : ''}"><td><input type="checkbox" name="pick" ${on ? raw('checked') : ''} aria-label="選這一筆"></td><td>${l.date}</td><td>${l.time || ''}</td><td>${l.order_no || ''}</td><td>${l.item_raw}${l.option_raw ? `（${l.option_raw}）` : ''}</td><td class="num">${fmt(l.qty)}</td><td class="num">${fmt(l.amount)}</td><td>${l.void_reason ? VOID_REASONS[l.void_reason]?.label || l.void_reason : '有效'}</td></tr>`;
+        })}</tbody></table></div>
+        ${lockedM.length ? h`<div class="callout warn" style="margin-top:8px"><p>此月份（${lockedM.join('、')}）已結帳鎖定：只更新銷售明細與營運分析，POS 營收傳票不會重新產生（帳上已另外調整的分錄維持不動）。</p></div>` : ''}
+        ${openDates.length ? h`<p class="muted" style="margin-top:8px;font-size:13px">${openDates.join('、')} 的 POS 營收傳票會依新的銷售明細重新產生（傳票號碼不變）。</p>` : ''}`;
+    };
+    const body = h`${
+      ids
+        ? ''
+        : h`<div class="form-grid">
+          <label class="field"><span>日期</span><input type="date" name="vd-date" value="${date}"></label>
+          <label class="field"><span>單號（多張用逗號或空白分開，例如 0878、0879）</span><input type="text" name="vd-no" value="${orders}"></label>
+        </div>`
+    }
+      ${isVoid ? h`<label class="field" style="margin-top:8px"><span>作廢原因</span><select name="vd-reason">${options(MANUAL_VOID_CHOICES, 'pos_void')}</select></label>` : ''}
+      <label class="field" style="margin-top:8px"><span>說明（會記在這幾筆上）</span><input type="text" name="vd-note" placeholder="${isVoid ? '例如：公休測試單，綠界已作廢發票' : '例如：誤標，這張單有收款'}"></label>
+      <div id="vd-list" style="margin-top:10px">${listHtml(find(date, orders))}</div>`;
+    return modal({
+      title: isVoid ? '標記作廢（POS 匯入後才作廢的訂單）' : '取消作廢',
+      wide: true,
+      body,
+      onMount: (dlg) => {
+        const refresh = () => {
+          const d = dlg.querySelector('[name=vd-date]')?.value || '';
+          const no = dlg.querySelector('[name=vd-no]')?.value || '';
+          dlg.querySelector('#vd-list').innerHTML = String(listHtml(find(d, no)));
+        };
+        for (const n of ['vd-date', 'vd-no']) for (const ev of ['input', 'change']) dlg.querySelector(`[name=${n}]`)?.addEventListener(ev, refresh);
+      },
+      actions: [
+        { label: '取消', value: null },
+        {
+          label: isVoid ? '標記作廢' : '取消作廢',
+          primary: true,
+          value: (dlg) => {
+            const picked = [...dlg.querySelectorAll('#vd-list tr[data-id]')].filter((tr) => tr.querySelector('[name=pick]').checked).map((tr) => tr.dataset.id);
+            if (!picked.length) return toast('沒有勾選任何一筆', 'error'), false;
+            return { ids: picked, reason: dlg.querySelector('[name=vd-reason]')?.value || null, note: dlg.querySelector('[name=vd-note]').value.trim() };
+          },
+        },
+      ],
+    });
+  }
+
+  // 改完作廢狀態：未鎖定月份只重新產生那幾天的 POS 營收傳票；鎖定月份完全不碰傳票
+  async function afterVoidChange(changed, verb) {
+    const s = await getSettings();
+    const lockedM = [...new Set(changed.map((l) => l.date.slice(0, 7)))].sort().filter((m) => isLocked(s, m + '-01'));
+    const openDates = [...new Set(changed.filter((l) => !isLocked(s, l.date) && l.date >= s.revenue_start).map((l) => l.date))].sort();
+    const parts = [`已${verb} ${fmt(changed.length)} 筆（原金額 ${fmt(round2(changed.reduce((t, l) => t + (Number(l.amount) || 0), 0)))}）。`];
+    if (lockedM.length) parts.push(`此月份（${lockedM.join('、')}）已結帳鎖定：只更新銷售明細與營運分析，POS 營收傳票不會重新產生。`);
+    if (openDates.length) {
+      const r = await syncSales({ dates: openDates });
+      parts.push(`已重新產生 ${openDates.join('、')} 的 POS 營收傳票（更新 ${r.updated} 張${r.removed ? `、移除 ${r.removed} 張` : ''}）。`);
+    }
+    if (changed.some((l) => l.date < s.revenue_start)) parts.push(`營收起算日 ${s.revenue_start} 以前的明細不計入帳務，沒有傳票。`);
+    notice = { tone: lockedM.length ? 'warn' : 'good', text: parts.join('') };
+    toast(notice.text, 'good', 8000);
+  }
+
+  const by = () => store.location?.email || '這台電腦';
+  async function runVoid(opts) {
+    const r = await voidDialog({ mode: 'void', ...opts });
+    if (!r) return;
+    const pick = lines.filter((l) => r.ids.includes(l.id));
+    const upd = markVoid(pick, { reason: r.reason || 'pos_void', note: r.note, by: by() });
+    await store.put('sales_lines', upd);
+    lines = await store.all('sales_lines');
+    await afterVoidChange(upd, '標記作廢');
+    draw();
+  }
+  async function runClear(opts) {
+    const r = await voidDialog({ mode: 'clear', ...opts });
+    if (!r) return;
+    const pick = lines.filter((l) => r.ids.includes(l.id) && l.void_reason);
+    if (!pick.length) return toast('勾選的品項都不是作廢狀態', 'info');
+    const upd = clearVoid(pick, { rules: settings.void_rules, note: r.note, by: by() });
+    await store.put('sales_lines', upd);
+    lines = await store.all('sales_lines');
+    await afterVoidChange(upd, '取消作廢');
+    draw();
+  }
+  // 從某一列開：有單號就帶出整張單（同日期同單號），沒有單號只處理這一列
+  const fromRow = (id) => {
+    const l = lines.find((x) => x.id === id);
+    if (!l) return null;
+    return l.order_no ? { date: l.date, orders: l.order_no } : { ids: [l.id] };
+  };
+
   const unbind = bindActions(root, {
+    voidOrders: () => runVoid({}),
+    voidLine: (el) => {
+      const o = fromRow(el.dataset.id);
+      if (o) return runVoid(o);
+    },
+    unvoidLine: (el) => {
+      const o = fromRow(el.dataset.id);
+      if (o) return runClear(o);
+    },
     f: (el) => {
       f[el.dataset.k] = el.value;
       ctx.setParams({ [el.dataset.k]: el.value });
