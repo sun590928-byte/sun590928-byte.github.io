@@ -1058,6 +1058,131 @@ try {
     await page.click('dialog .modal-foot .btn');
     await setRecognize(false, '');
   }
+  // 11/20 需求 4～6（401）：申報前檢查列出發票與傳票（點了開傳票）、媒體檔格式 22 含稅 ÷ 1.05、延後申報的發票 1261 留到申報那一期再沖、
+  // 合併憑證每一行自己的日期、已鎖定月份的結轉分錄不重新產生（合成資料，放在營收起算日前沒用到的 3–4、5–6 月，最後刪掉）
+  {
+    const SHOP = '12345675';
+    const before = await page.evaluate(async (shop) => {
+      const { store } = await import('/erp/js/store.js');
+      const { getSettings, saveSettings } = await import('/erp/js/state.js');
+      const s = await getSettings();
+      const keep = { tax_id: s.tax_id || '', locked_months: [...(s.locked_months || [])] };
+      await saveSettings({ tax_id: shop });
+      const now = new Date().toISOString();
+      const base = { kind: 'receipt', status: 'posted', mime: 'image/png', pay_account: '2134', vendor_tax_id: '10047514', buyer_tax_id: shop, invoice_type: '電子發票', deductible: true, account: '6133', created_at: now };
+      const doc = (id, date, vendor, inv, total, tax, extra = {}) => ({ ...base, id: 'doc_t20' + id, entry_id: 'je_t20' + id, original_name: `t20-${id}.png`, doc_date: date, vendor_name: vendor, invoice_no: inv, amount_total: total, tax_amount: tax, summary: vendor, ...extra });
+      const je = (id, date, no, desc, total, tax, acc = '6133', source = 'document') => ({ id: 'je_t20' + id, date, voucher_no: no, description: desc, source, source_ref: source === 'document' ? 'doc_t20' + id : null, status: 'posted', lines: [{ account: acc, debit: total - tax, credit: 0, memo: '' }, { account: '1261', debit: tax, credit: 0, memo: '' }, { account: '2134', debit: 0, credit: total, memo: '' }], created_at: now });
+      await store.put('documents', [
+        doc('a', '2026-04-10', '測試烘豆', 'QT11200001', 2100, 100, { account: '1211' }),
+        doc('y1', '2026-04-23', '測試家居', 'QT11200002', 630, 30),
+        doc('y2', '2026-04-23', '測試家居', 'QT11200003', 294, 14),
+        doc('h', '2026-04-12', '測試五金', 'EF11200001', 126, 6, { invoice_type: '二聯式收銀機發票', ded_code: '1', tax_type: '1', vendor_tax_id: '10324679' }),
+        doc('w', '2026-05-15', '測試餐廳', 'QT11200004', 525, 25, { account: '6120' }),
+        doc('m', '2026-06-16', '測試百貨', '', 903, 43, { lines: [{ invoice_no: 'DC11200001', date: '2026-04-05', account: '6133', amount: 378, tax: 18, deductible: true }, { invoice_no: 'DC11200002', account: '6133', amount: 525, tax: 25, deductible: true }] }),
+      ]);
+      await store.put('journal_entries', [
+        je('a', '2026-04-10', '11504-9001', '測試烘豆 咖啡豆', 2100, 100, '1211'),
+        je('y1', '2026-04-23', '11504-9002', '測試家居 收納', 630, 30),
+        je('y2', '2026-04-23', '11504-9003', '測試家居 掛勾', 294, 14),
+        je('h', '2026-04-12', '11504-9004', '測試五金 螺絲', 126, 6),
+        je('w', '2026-05-15', '11505-9001', '測試餐廳 招待', 525, 25, '6120'),
+        je('m', '2026-06-16', '11506-9001', '測試百貨 合併憑證', 903, 43),
+        { id: 'je_t20man', date: '2026-05-20', voucher_no: '11505-9002', description: '手動補記 1120', source: 'manual', source_ref: null, status: 'posted', lines: [{ account: '6133', debit: 100, credit: 0, memo: '' }, { account: '1261', debit: 7, credit: 0, memo: '' }, { account: '1101', debit: 0, credit: 107, memo: '' }], created_at: now },
+      ]);
+      // 3–4 月已申報：媒體檔有格式 22（含稅 126、稅額 0）與大創 DC11200001；宜得利那兩張（稅 30＋14）延到 5–6 月
+      const rec = (fmt, inv, seller, amount, tax, ded) => ({ fmt, ym: '2026-04', seller, invoice_no: inv, amount, tax_type: '1', tax, ded_code: ded });
+      await store.put('tax_filings', {
+        id: '2026-03', period_from: '2026-03', period_to: '2026-04', status: 'filed', filed_on: '2026-05-12',
+        platform_sales_ex: 0, platform_output_tax: 0, sales_ex: 0, output_tax: 0, input_tax: 124, input_asset_tax: 0, prev_cf: 0, payable: 0, refund: 0, cf: 124,
+        claimed: ['doc_t20a', 'doc_t20h'],
+        filed_inputs: [rec('25', 'QT11200001', '10047514', 2000, 100, '1'), rec('22', 'EF11200001', '10324679', 126, 0, '1'), rec('25', 'DC11200001', '10047514', 360, 18, '1')],
+        media: { file_name: '12345675.TXT', imported_at: now, summary: { inputs: { expense: { tax: 118 }, asset: { tax: 0 } } } },
+        updated_at: now,
+      });
+      return keep;
+    }, SHOP);
+    const checksText = async () => (await page.textContent('#vat-checks')).replace(/\s+/g, ' ');
+    // 3–4 月：1261 檢查不再差 44，宜得利列「延後申報（下期扣抵）」、大創列「本期申報、分錄記在之後」
+    await go('vat?p=2026-03');
+    let ck = await checksText();
+    console.log('11/20 3–4 月檢查：', ck.slice(0, 600));
+    assert(ck.includes('帳上進項稅額（1261）與清單一致') && !ck.includes('帳上本期進項稅額'), '3–4 月 1261 檢查通過（延後申報的不算差額）');
+    assert(/延後申報（下期扣抵）44 元/.test(ck) && ck.includes('QT11200002') && ck.includes('QT11200003') && ck.includes('115 年 5–6 月申報'), '列出延後申報的發票與申報期別');
+    assert(ck.includes('本期申報、分錄記在之後 18 元') && ck.includes('DC11200001') && ck.includes('傳票 11506-9001'), '合併憑證那一行（日期 4/5）歸 3–4 月，分錄在 6/16');
+    // 格式 22：媒體核對一致、換算說明
+    const recon = (await page.textContent('#vat-media22')).replace(/\s+/g, ' ');
+    assert(recon.includes('EF11200001 含稅 126＝未稅 120＋稅 6') && recon.includes('進貨及費用 124') && recon.includes('匯入時的預設值是 118'), '格式 22 依含稅 ÷ 1.05 換算：' + recon);
+    assert(/金額或扣抵代號不一致：0 張/.test((await page.textContent('#view')).replace(/\s+/g, ' ')), '格式 22 的發票媒體核對一致');
+    // 結轉：只沖本期申報的 124，延後的 44 留在 1261，沒有尾差
+    assert((await page.textContent('#vat-settle-note')).includes('延後申報的 44 元留在 1261'), '結轉前說明延後申報的留在 1261');
+    await page.click('[data-act="settle"]');
+    await page.waitForSelector('#vat-settle-note >> text=結轉分錄：');
+    const st34 = await page.evaluate(async () => {
+      const { store } = await import('/erp/js/store.js');
+      const e = (await store.all('journal_entries')).find((x) => x.source === 'vat' && x.source_ref === '2026-03');
+      return { id: e.id, voucher: e.voucher_no, lines: e.lines.map((l) => [l.account, l.debit, l.credit, l.memo]), carry: e.vat_carry };
+    });
+    console.log('3–4 月結轉：', JSON.stringify(st34));
+    assert(st34.lines.some(([a, d, c]) => a === '1261' && c === 124) && !st34.lines.some((l) => l[3] === '營業稅尾差'), '結轉沖 1261 124、沒有尾差');
+    assert(st34.carry.out.map((o) => o.invoice_no).join() === 'QT11200002,QT11200003' && st34.carry.pre.map((o) => o.invoice_no).join() === 'DC11200001', '結轉分錄記下留在 1261 與先沖的發票');
+    await shot('vat-1120-deferred', false);
+
+    // 5–6 月：宜得利從 1261 沖、大創不再沖；列出 1261 差額與不符扣抵條件的發票、傳票
+    await go('vat?p=2026-05');
+    ck = await checksText();
+    console.log('11/20 5–6 月檢查：', ck.slice(0, 900));
+    assert(ck.includes('1 張進項不符扣抵條件') && ck.includes('QT11200004') && ck.includes('傳票 11505-9001'), '不符扣抵條件：列出發票號碼與傳票號碼');
+    assert(ck.includes('帳上本期進項稅額 75') && ck.includes('差 32') && ck.includes('傳票 11505-9002') && ck.includes('沒有附進項發票'), '1261 差額：列出是哪幾張傳票');
+    assert(ck.includes('前期已申報、分錄記在本期 18 元') && ck.includes('前期延後、本期申報 44 元'), '延後與前期已申報的另外列出');
+    assert(ck.includes('前期稅額皆已結轉（1261 留有延後申報發票的稅額 26 元'), '前期留在 1261 的 26 元（44 − 先沖的 18）不算未結轉');
+    const items56 = (await page.textContent('#items')).replace(/\s+/g, ' ');
+    assert(items56.includes('QT11200002') && items56.includes('延後扣抵') && !items56.includes('DC11200001') && items56.includes('DC11200002'), '5–6 月進項清單：宜得利延後扣抵、大創不在本期');
+    // 點傳票號碼 → 日記簿打開那張傳票
+    await page.click('#vat-checks a[data-entry="je_t20man"]');
+    await page.waitForSelector('dialog >> text=分錄 11505-9002', { timeout: 15000 });
+    assert((await page.inputValue('dialog [name=desc]')) === '手動補記 1120', '打開的是手動補記那張傳票');
+    assert(!page.url().includes('open='), '打開後網址拿掉 open 參數');
+    await shot('vat-1120-open-voucher', false);
+    await page.click('dialog [data-close]');
+
+    // 鎖定 3–4 月：結轉分錄不重新產生；看頁面不會改到已申報紀錄與結轉分錄
+    const snap = () => page.evaluate(async () => {
+      const { store } = await import('/erp/js/store.js');
+      const f = (await store.all('tax_filings')).find((x) => x.id === '2026-03');
+      const e = (await store.all('journal_entries')).find((x) => x.source === 'vat' && x.source_ref === '2026-03');
+      return JSON.stringify([f, e]);
+    });
+    await page.evaluate(async () => {
+      const { getSettings, saveSettings } = await import('/erp/js/state.js');
+      await saveSettings({ locked_months: [...new Set([...((await getSettings()).locked_months || []), '2026-03', '2026-04'])] });
+    });
+    const s0 = await snap();
+    await go('vat?p=2026-03');
+    assert(await page.isDisabled('[data-act="settle"]'), '鎖定月份的結轉分錄：按鈕停用');
+    assert((await page.textContent('[data-act="settle"]')).includes('結轉分錄已鎖定') && (await page.textContent('#vat-settle-note')).includes('不會重新產生'), '說明不會重新產生');
+    await go('vat?p=2026-05');
+    await go('vat?p=2026-03');
+    assert((await snap()) === s0, '看已申報、已鎖定的期別不會改到申報紀錄與結轉分錄');
+    // 已鎖定月份的傳票連結：日記簿捲到那張並標出來
+    await page.click(`#vat-checks a[data-entry="je_t20y1"]`);
+    await page.waitForSelector('tr[data-entry-row="je_t20y1"]', { timeout: 15000 });
+    await page.waitForTimeout(400);
+    assert(await page.$eval('tr[data-entry-row="je_t20y1"]', (tr) => !!tr.style.background), '鎖定月份的傳票：在日記簿標出來');
+
+    // 清掉測試資料
+    await page.evaluate(async ({ keep }) => {
+      const { store } = await import('/erp/js/store.js');
+      const { saveSettings } = await import('/erp/js/state.js');
+      const docs = (await store.all('documents')).filter((d) => d.id.startsWith('doc_t20'));
+      await store.remove('documents', docs.map((d) => d.id));
+      const es = (await store.all('journal_entries')).filter((e) => e.id.startsWith('je_t20') || (e.source === 'vat' && e.source_ref === '2026-03'));
+      await store.remove('journal_entries', es.map((e) => e.id));
+      const fs = (await store.all('tax_filings')).filter((f) => f.id === '2026-03' || f.id === '2026-05');
+      if (fs.length) await store.remove('tax_filings', fs.map((f) => f.id));
+      await saveSettings(keep);
+    }, { keep: before });
+    await page.evaluate(() => document.querySelector('dialog [data-close]')?.click());
+  }
   // 月結：下載本月帳冊（Excel）
   await go('closing?ym=2026-09');
   {

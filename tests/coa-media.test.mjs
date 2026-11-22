@@ -175,7 +175,8 @@ test('申報媒體檔: 解析、彙總、與系統憑證核對', () => {
   const sm = summarizeMedia(rows);
   assert.deepEqual(sm.periods, ['2026-07']);
   assert.equal(sm.inputs.expense.tax, 389 + 14 + 5);
-  assert.equal(sm.inputs.nonDeductible.amount, 88000 + 205333 + 574);
+  // 格式 22 的銷售額是含稅（574）：未稅 574 − 稅 27＝547（11/20 起依含稅 ÷ 1.05 換算）
+  assert.equal(sm.inputs.nonDeductible.amount, 88000 + 205333 + 547);
   assert.equal(sm.outputs.voided, 1);
   assert.equal(sm.outputs.b2b.tax, 18);
   assert.equal(sm.outputs.salesEx, 362 + 1000);

@@ -67,7 +67,7 @@ export async function render(root, ctx) {
             <tbody>${rows.map((e) => {
               const n = e.lines.length;
               return e.lines.map(
-                (l, i) => h`<tr class="${i === 0 ? '' : 'sub'}">
+                (l, i) => h`<tr class="${i === 0 ? '' : 'sub'}" data-entry-row="${e.id}">
                 ${i === 0 ? h`<td rowspan="${n}">${e.date}</td><td rowspan="${n}"><b>${e.voucher_no}</b><div class="muted" style="font-size:12px">${voucherKind(e)}</div>${badge(SOURCE_LABEL[e.source] || e.source, AUTO_SOURCES.has(e.source) ? 'accent' : '')}${(e.attachments || []).length ? h`<div class="muted" style="font-size:12px" title="附件憑證">📎 ${e.attachments.length} 張</div>` : missingDoc(e) ? h`<div class="status status-warn" style="font-size:12px"><span class="status-ic" aria-hidden="true">!</span>缺憑證</div>` : ''}</td>` : ''}
                 <td>${l.credit ? raw('<span class="indent"></span>') : ''}${l.account} ${accMap.get(l.account)?.name || '（未知科目）'}</td>
                 <td>${i === 0 ? h`<b>${e.description}</b>${l.memo ? h`<div class="muted">${l.memo}</div>` : ''}` : l.memo}</td>
@@ -237,7 +237,24 @@ export async function render(root, ctx) {
     },
   });
   draw();
+  // 其他頁的傳票連結（營業稅「申報前檢查」等）：#/journal?ym=YYYY-MM&open=<分錄 id> → 捲到那張傳票並打開修改／檢視
+  if (ctx.params.open) openLinked(ctx.params.open);
   return unbind;
+
+  async function openLinked(id) {
+    ctx.setParams({ open: '' });
+    const e = entries.find((x) => x.id === id);
+    if (!e) return toast('找不到這張傳票（可能已刪除）', 'error');
+    if (f.ym !== 'all' && !e.date.startsWith(f.ym)) {
+      f.ym = e.date.slice(0, 7);
+      ctx.setParams({ ym: f.ym });
+      draw();
+    }
+    const rows = [...root.querySelectorAll('tr[data-entry-row]')].filter((tr) => tr.dataset.entryRow === e.id);
+    rows.forEach((tr) => (tr.style.background = 'rgba(250, 178, 25, 0.18)'));
+    rows[0]?.scrollIntoView({ block: 'center' });
+    if (await editEntry(e)) reload();
+  }
 }
 
 export { accountSelect };

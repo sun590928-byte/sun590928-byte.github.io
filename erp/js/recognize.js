@@ -8,6 +8,7 @@ import { assembleInvoices } from './lib/einvoiceqr.js';
 import { extractReceiptFields } from './lib/receipttext.js';
 import { buildVendorKB, lookupVendor } from './lib/vendorkb.js';
 import { autoReview } from './lib/autoreview.js';
+import { mediaInputValue } from './lib/vat.js';
 import { parseDocName } from './lib/docname.js';
 import { today } from './lib/dates.js';
 import { lookupCompanyName, canLookupCompany, isBan } from './lib/companyname.js';
@@ -33,7 +34,8 @@ export async function recognizeDocuments(list, { files = new Map(), onProgress, 
     const kb = buildVendorKB(docs, einvoices);
     // 本店自己開的（銷項）發票混在電子發票裡時不拿來比對
     const purchase = einvoices.filter((i) => !settings.tax_id || i.seller_tax_id !== settings.tax_id);
-    const filed = filings.flatMap((f) => f.filed_inputs || []);
+    // 格式 22（二聯式收銀機發票）的銷售額是含稅、稅額 0：先換算出稅額，帶入的稅額才不會是 0（11/20）
+    const filed = filings.flatMap((f) => f.filed_inputs || []).map(mediaInputValue);
     const all = [...docs];
     for (let i = 0; i < list.length; i++) {
       if (job.stop) break;

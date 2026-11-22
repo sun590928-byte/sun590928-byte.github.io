@@ -115,10 +115,12 @@ export function taxCodes(item, ok) {
 }
 
 // 憑證的明細（拆分）：沒有 lines 時整張視為一行
+// 合併憑證的每一行可以填自己的日期（lines[i].date，空白＝憑證日期；2026-11-20 老闆）：進項歸期、媒體檔所屬年月都用這一行的日期
 export function docParts(d) {
   if (Array.isArray(d.lines) && d.lines.length) {
     return d.lines.map((p, i) => ({
       key: `${d.id}:${i}`,
+      date: /^\d{4}-\d{2}-\d{2}$/.test(p.date || '') ? p.date : '',
       invoice_no: p.invoice_no || '',
       account: p.account || d.account || '',
       total: round2(Number(p.amount) || 0),
@@ -129,7 +131,7 @@ export function docParts(d) {
       memo: p.memo || '',
     }));
   }
-  return [{ key: d.id, invoice_no: d.invoice_no || '', account: d.account || '', total: round2(Number(d.amount_total) || 0), tax: round2(Number(d.tax_amount) || 0), deductible: d.deductible, tax_type: d.tax_type || '', ded_code: d.ded_code || '', memo: '' }];
+  return [{ key: d.id, date: '', invoice_no: d.invoice_no || '', account: d.account || '', total: round2(Number(d.amount_total) || 0), tax: round2(Number(d.tax_amount) || 0), deductible: d.deductible, tax_type: d.tax_type || '', ded_code: d.ded_code || '', memo: '' }];
 }
 
 /**
@@ -146,7 +148,7 @@ export function inputItems(docs, einvoices) {
       const key = p.invoice_no || 'doc:' + p.key;
       if (seen.has(key) && seen.get(key) !== d.id) continue;
       seen.set(key, d.id);
-      out.push({ id: p.key, doc_id: d.id, source: 'doc', date: d.doc_date, invoice_no: p.invoice_no, vendor: d.vendor_name || '', vendor_tax_id: d.vendor_tax_id || '', buyer_tax_id: d.buyer_tax_id || '', invoice_type: d.invoice_type || '', account: p.account, total: p.total, tax: p.tax, deductible: p.deductible, tax_type: p.tax_type, ded_code: p.ded_code, memo: p.memo, entry_id: d.entry_id });
+      out.push({ id: p.key, doc_id: d.id, source: 'doc', date: p.date || d.doc_date, invoice_no: p.invoice_no, vendor: d.vendor_name || '', vendor_tax_id: d.vendor_tax_id || '', buyer_tax_id: d.buyer_tax_id || '', invoice_type: d.invoice_type || '', account: p.account, total: p.total, tax: p.tax, deductible: p.deductible, tax_type: p.tax_type, ded_code: p.ded_code, memo: p.memo, entry_id: d.entry_id });
     }
   }
   for (const e of einvoices) {
@@ -206,6 +208,89 @@ export function overclaimed(items, all, entries, opts = {}) {
   }
   const book1261 = (id) => round2((byEntry.get(id)?.lines || []).reduce((t, l) => t + (l.account === '1261' ? (Number(l.debit) || 0) - (Number(l.credit) || 0) : 0), 0));
   return items.filter((x) => !x.check.ok && x.entry_id && book1261(x.entry_id) - (okTax.get(x.entry_id) || 0) >= 1);
+}
+
+// 一張分錄的進項稅額（1261）淨額（借 − 貸）
+export const entry1261 = (e) => round2((e?.lines || []).reduce((t, l) => t + (l.account === '1261' ? (Number(l.debit) || 0) - (Number(l.credit) || 0) : 0), 0));
+
+/**
+ * 進項稅額（1261）逐張對帳與結轉（2026-11-20 老闆）。
+ * - 發票屬於哪一期申報＝assignPeriods 的 period（合併憑證每一行可填自己的日期）；分錄屬於哪一期＝分錄日期（合併憑證只有一張分錄）。
+ * - 申報前檢查：本期分錄（不含結轉）列的 1261，逐張和分錄所附發票的可扣抵稅額比；延後申報、前期已申報的發票另外列出，不算差額。
+ * - 結轉：只沖本期申報的發票。延後到之後申報的，1261 留到申報的那一期再沖（記在結轉分錄的 vat_carry.out）；
+ *   本期申報、分錄記在之後的先沖（vat_carry.pre），分錄入帳那一期就不再沖。
+ *   沒有 vat_carry 的舊結轉分錄（11/20 以前產生）：當期分錄的 1261 已全部沖完，之後的期別不再沖第二次。
+ * @param key 本期（YYYY-MM）
+ * @param items 全部進項（assignPeriods 之後，含 period）
+ * @returns {{ book, expected, diff, opening, diffEntries, deferredOut, claimedEarlier, deferredIn, postedLater, carriedOn, credit, carry: { out, pre }, carryIn }}
+ *   book 本期分錄 1261；expected 分錄所附發票的可扣抵稅額（＋期初開帳）；diffEntries 兩者不同的分錄；credit 結轉要沖的 1261；carryIn 期初應留在 1261 的稅額
+ */
+export function inputTaxLedger(key, { items = [], entries = [], opts = {} } = {}) {
+  const info = periodInfo(key);
+  const live = entries.filter((e) => e.status !== 'void');
+  const byId = new Map(live.map((e) => [e.id, e]));
+  const closings = live.filter((e) => e.source === 'vat' && e.source_ref && e.source_ref !== key).sort((a, b) => (a.source_ref < b.source_ref ? -1 : 1));
+  const closed = new Set(closings.map((e) => e.source_ref));
+  // [from, to) 之間最後一張新做法（有 vat_carry）的結轉分錄
+  const lastCarry = (from, to) => closings.filter((e) => e.vat_carry && e.source_ref >= from && e.source_ref < to).pop() || null;
+  const prev = lastCarry('', key);
+  const listed = (c, kind, id) => !!c && (c.vat_carry[kind] || []).some((o) => o.id === id);
+  const rows = [];
+  for (const it of items) {
+    const entry = it.entry_id ? byId.get(it.entry_id) : null;
+    if (!entry || !it.period) continue;
+    rows.push({ ...it, entry, post: periodKeyOf(entry.date), okTax: deductibility(it, opts).ok ? round2(Number(it.tax) || 0) : 0 });
+  }
+  const S = (list) => round2(list.reduce((t, r) => t + (r.okTax ?? r.tax ?? 0), 0));
+  // 本期分錄的 1261 vs 所附發票的可扣抵稅額
+  const byEntry = new Map();
+  for (const r of rows) if (r.post === key) byEntry.set(r.entry.id, [...(byEntry.get(r.entry.id) || []), r]);
+  let book = 0;
+  let expected = 0;
+  let opening = 0;
+  const diffEntries = [];
+  for (const e of live) {
+    if (e.source === 'vat' || e.date < info.start || e.date > info.end) continue;
+    const b = entry1261(e);
+    // 期初開帳列的 1261：營收起算日前的進項稅額，系統裡沒有發票明細，視為本期申報、不算差額
+    if (e.source === 'opening') {
+      opening += b;
+      book += b;
+      expected += b;
+      continue;
+    }
+    const list = byEntry.get(e.id) || [];
+    const x = S(list);
+    book += b;
+    expected += x;
+    if (Math.abs(b - x) >= 1) diffEntries.push({ entry: e, book: b, expected: x, diff: round2(b - x), items: list });
+  }
+  book = round2(book);
+  expected = round2(expected);
+  opening = round2(opening);
+  // 分錄在前期的發票，1261 還在帳上嗎：之後有新做法的結轉 → 看它留下的清單；只有舊結轉（當期全部沖完）→ 不在；前期還沒結轉 → 在
+  const onBooks = (r) => {
+    const c = lastCarry(r.post, key);
+    return c ? listed(c, 'out', r.id) : !closed.has(r.post);
+  };
+  const pos = rows.filter((r) => r.okTax);
+  const deferredOut = pos.filter((r) => r.post === key && r.period > key);
+  const claimedEarlier = pos.filter((r) => r.post === key && r.period < key).map((r) => ({ ...r, pre: !!prev && prev.source_ref >= r.period && listed(prev, 'pre', r.id) }));
+  const deferredIn = pos.filter((r) => r.period === key && r.post < key).map((r) => ({ ...r, onBooks: onBooks(r) }));
+  const postedLater = pos.filter((r) => r.period === key && r.post > key);
+  const carriedOn = pos.filter((r) => r.post < key && r.period > key && onBooks(r));
+  const brief = (r) => ({ id: r.id, tax: r.okTax, period: r.period, invoice_no: r.invoice_no || '' });
+  const prevPre = prev?.vat_carry.pre || [];
+  const postOf = new Map(rows.map((r) => [r.id, r.post]));
+  // 之前先沖、分錄還沒入帳的（本期以後才入帳）
+  const preOpen = prevPre.filter((o) => !(postOf.get(o.id) < key));
+  const credit = round2(book - S(deferredOut) - S(claimedEarlier.filter((r) => r.pre)) + S(deferredIn.filter((r) => r.onBooks)) + S(postedLater));
+  const carry = {
+    out: [...carriedOn, ...deferredOut].map(brief),
+    pre: [...prevPre.filter((o) => postOf.get(o.id) > key), ...postedLater.map(brief)],
+  };
+  const carryIn = round2(S(deferredIn.filter((r) => r.onBooks)) + S(carriedOn) - S(preOpen));
+  return { book, expected, diff: round2(book - expected), opening, diffEntries, deferredOut, claimedEarlier, deferredIn, postedLater, carriedOn, credit, carry, carryIn };
 }
 
 // 帳上某科目在期間內的淨額（借 − 貸）；exclude 為要排除的分錄來源
@@ -270,13 +355,15 @@ export function computeTax({ output, inputExpense, inputAsset, prevCf = 0 }) {
 
 /**
  * 營業稅結轉分錄（期末日）：沖銷銷項稅額、進項稅額與上期留抵，列應付營業稅／留抵稅額／應收退稅款，尾差列營業外。
- * @param bookOutput 帳上 2131 期末貸方餘額；bookInput 帳上 1261 期末借方餘額
+ * @param bookOutput 帳上 2131 期末貸方餘額；bookInput 要沖轉的 1261（inputTaxLedger 的 credit：只沖本期申報的發票）
+ * @param carry inputTaxLedger 的 carry：延後申報留在 1261 的發票、先沖的發票（存在分錄的 vat_carry，下一期結轉時用）
  */
-export function settlementEntry(period, { bookOutput, bookInput, tax }) {
+export function settlementEntry(period, { bookOutput, bookInput, tax, carry = null }) {
   const lines = [];
   const L = (account, debit, credit, memo) => (debit || credit) && lines.push({ account, debit: round2(debit), credit: round2(credit), memo });
   L('2131', bookOutput > 0 ? bookOutput : 0, bookOutput < 0 ? -bookOutput : 0, '沖轉本期銷項稅額');
-  L('1261', bookInput < 0 ? -bookInput : 0, bookInput > 0 ? bookInput : 0, '沖轉本期進項稅額');
+  const left = carry ? round2(carry.out.reduce((t, o) => t + o.tax, 0)) : 0;
+  L('1261', bookInput < 0 ? -bookInput : 0, bookInput > 0 ? bookInput : 0, left ? `沖轉本期進項稅額（延後申報的 ${left} 元留到申報的那一期再沖）` : '沖轉本期進項稅額');
   const usedCf = tax.prevCf;
   L('1262', 0, usedCf, '上期累積留抵稅額');
   L('1262', tax.cf, 0, '本期累積留抵稅額');
@@ -287,7 +374,7 @@ export function settlementEntry(period, { bookOutput, bookInput, tax }) {
   const diff = round2(dr - cr);
   if (Math.abs(diff) >= 0.005) lines.push(diff > 0 ? { account: '7102', debit: 0, credit: diff, memo: '營業稅尾差' } : { account: '7503', debit: -diff, credit: 0, memo: '營業稅尾差' });
   const info = periodInfo(period);
-  return { date: info.end, description: `營業稅結轉（${info.label}）`, source: 'vat', source_ref: period, lines };
+  return { date: info.end, description: `營業稅結轉（${info.label}）`, source: 'vat', source_ref: period, lines, ...(carry ? { vat_carry: { out: carry.out, pre: carry.pre } } : {}) };
 }
 
 // ─────────── 申報媒體檔（財政部「營業人進銷項資料」TXT，每列 81 字元）
@@ -357,9 +444,27 @@ export function parseMediaFile(text) {
 // 彙加列代表的發票張數（起號～訖號）
 const rangeCount = (r) => (r.end_no ? Number(r.end_no.slice(2)) - Number(r.invoice_no.slice(2)) + 1 : 1);
 
+// 含稅金額裡的 5% 營業稅（四捨五入）：與 impliedTax（收銀機發票未印稅額）相同算法
+export const taxInIncl = (incl) => Math.round((Number(incl) || 0) - (Number(incl) || 0) / 1.05);
+
+/**
+ * 進項媒體檔一筆的未稅金額與稅額。格式 22（二聯式收銀機發票、載有稅額之其他憑證）的銷售額欄是「含稅」、稅額欄填 0：
+ * 依含稅 ÷ 1.05 算出未稅金額與稅額（2026-11-20 老闆：興源 EF14768620 媒體核對一直不一致、預設進項稅額少 6 元）。
+ * 只換算、不改原始資料（已申報期別存的 filed_inputs 保持原樣，畫面上即時換算）。
+ * @returns 新物件：amount 未稅、tax 稅額；換算過的加 amount_incl（含稅）、derived: true
+ */
+export function mediaInputValue(r) {
+  if (r.fmt === '22' && !(Number(r.tax) > 0) && (r.tax_type || '1') === '1') {
+    const incl = Number(r.amount) || 0;
+    const tax = taxInIncl(incl);
+    return { ...r, amount: round2(incl - tax), tax, amount_incl: incl, derived: true };
+  }
+  return r;
+}
+
 /** 彙總媒體檔：進項（可扣抵進貨費用／固定資產、不可扣抵）、銷項（作廢、空白、B2B／B2C 估算） */
 export function summarizeMedia(rows) {
-  const inputs = rows.filter((r) => r.fmt[0] === '2');
+  const inputs = rows.filter((r) => r.fmt[0] === '2').map(mediaInputValue);
   const outputs = rows.filter((r) => r.fmt[0] === '3');
   const sum = (list, k) => round2(list.reduce((t, r) => t + (r[k] || 0), 0));
   const byCode = (code) => inputs.filter((r) => r.ded_code === code);
@@ -419,9 +524,9 @@ export function reconcileMedia(filed, parts, { periodKey } = {}) {
       if (q.ded_code !== p.ded_code) q.mixed = true;
     }
   }
-  // 申報檔裡同一張發票分成多筆（例如一部分可扣抵、一部分不可扣抵）也合計
+  // 申報檔裡同一張發票分成多筆（例如一部分可扣抵、一部分不可扣抵）也合計；格式 22 先依含稅 ÷ 1.05 換算
   const filedBy = new Map();
-  for (const f of filed) {
+  for (const f of filed.map(mediaInputValue)) {
     const g = filedBy.get(f.invoice_no);
     if (!g) filedBy.set(f.invoice_no, { ...f, dedTax: deducted(f) });
     else {
@@ -545,27 +650,40 @@ export function mediaInputRecords(items, { taxId = '' } = {}) {
       continue;
     }
     const taxType = it.tax_type || '1';
+    const fmt = inputMediaFormat(it);
+    // 格式 22（二聯式收銀機發票）：銷售額填含稅金額、稅額填 0（財政部格式；申報系統依含稅 ÷ 1.05 算稅額）
+    const incl22 = fmt === '22' && taxType === '1';
+    const total = Math.round(Number(it.total ?? round2((Number(it.ex) || 0) + (Number(it.tax) || 0))) || 0);
     const rec = {
-      fmt: inputMediaFormat(it),
+      fmt,
       ym: it.date.slice(0, 7),
       buyer: taxId,
       seller,
       invoice_no: it.invoice_no,
-      amount: Math.round(Number(it.ex) || 0),
+      amount: incl22 ? total : Math.round(Number(it.ex) || 0),
       tax_type: taxType,
-      tax: taxType === '1' ? Math.round(Number(it.tax) || 0) : 0,
+      tax: taxType === '1' && !incl22 ? Math.round(Number(it.tax) || 0) : 0,
       ded_code: it.ded_code || '',
       label,
+      ...(incl22 ? { book_tax: Math.round(Number(it.tax) || 0) } : {}),
     };
     // 同一張發票拆成多行（分屬不同科目）、申報代號相同：合成一筆
     const same = records.find((r) => r.invoice_no === rec.invoice_no && r.fmt === rec.fmt && r.tax_type === rec.tax_type && r.ded_code === rec.ded_code);
     if (same) {
       same.amount += rec.amount;
       same.tax += rec.tax;
+      if (incl22) same.book_tax += rec.book_tax;
     } else records.push(rec);
   }
-  // 同一張發票分成不同扣抵代號（一部分可扣抵、一部分不可）：照寫兩筆，但申報系統可能視為重複號碼
   const cautions = [];
+  // 格式 22：申報系統的稅額＝含稅 ÷ 1.05 換算；和憑證上的稅額不同時提醒
+  for (const r of records) {
+    if (r.book_tax === undefined) continue;
+    const t = taxInIncl(r.amount);
+    if (Math.abs(t - r.book_tax) >= 1) cautions.push({ label: r.label, reason: `格式 22（二聯式收銀機發票）申報時稅額依含稅 ${r.amount} ÷ 1.05 算出 ${t} 元，和憑證的稅額 ${r.book_tax} 元不同` });
+    delete r.book_tax;
+  }
+  // 同一張發票分成不同扣抵代號（一部分可扣抵、一部分不可）：照寫兩筆，但申報系統可能視為重複號碼
   const nos = records.map((r) => r.invoice_no);
   for (const no of new Set(nos.filter((n, i) => nos.indexOf(n) !== i))) {
     const list = records.filter((r) => r.invoice_no === no);
