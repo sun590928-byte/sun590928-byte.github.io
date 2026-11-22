@@ -7,7 +7,7 @@ export const CHECK_ITEMS = [
   { key: 'voids_reviewed', group: '營收', title: '老闆招待／老闆測試／報廢 明細已確認（金額作廢）', auto: null },
   { key: 'pos_journal', group: '營收', title: 'POS 營收分錄已產生（每營業日一張）', auto: (c) => c.salesDays > 0 && c.salesDays === c.posEntryDays },
   { key: 'unknown_payment', group: '營收', title: '付款方式皆可辨識（無「未指定」）', auto: (c) => c.unknownPaymentLines === 0 },
-  { key: 'card_recon', group: '金流', title: 'POS 刷卡金額與綠界刷卡明細逐日核對無差異', auto: (c) => (c.cardDays > 0 ? c.cardDiffDays === 0 : null) },
+  { key: 'card_recon', group: '金流', title: 'POS 刷卡金額與綠界刷卡明細（或撥款明細的交易日期）逐日核對無差異', auto: (c) => (c.cardDays > 0 ? c.cardDiffDays === 0 : null) },
   { key: 'payouts_booked', group: '金流', title: '綠界／LINE Pay 撥款已入帳並對應存摺', auto: (c) => (c.payouts > 0 ? c.payoutsUnbooked === 0 : null) },
   { key: 'cash_count', group: '金流', title: '收銀現金與零用金盤點相符', auto: null },
   { key: 'einvoice', group: '憑證', title: '電子發票平台進項發票已下載匯入', auto: null },

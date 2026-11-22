@@ -82,12 +82,74 @@ export function autoMatch(bankLines, books, { windowDays = 5 } = {}) {
   return result;
 }
 
+const near = (a, b) => Math.abs(a - b) < 0.5;
+const hasBal = (b) => b.balance !== null && b.balance !== undefined && b.balance !== '';
+// 這一筆之前的結存：結存 − 存入 ＋ 支出
+const balBefore = (b) => round2(Number(b.balance) - (b.deposit || 0) + (b.withdrawal || 0));
+
+// 同一天的幾筆照存摺上的先後排：上一筆的結存 ＝ 下一筆的「之前結存」，接成一條鏈。
+// prevBal：前一天最後一筆的結存（不知道就給 null）。接不起來的（沒有結存、或剛好打平繞一圈）照原本順序。
+function chainDay(day, prevBal) {
+  if (day.length < 2 || !day.every(hasBal)) return day;
+  const rest = [...day];
+  const out = [];
+  // 起點：之前結存等於前一天的結存；不知道前一天時，找「之前結存」不是同一天其他筆結存的那筆
+  const pickStart = (target) => {
+    if (target !== null) {
+      const i = rest.findIndex((b) => near(balBefore(b), target));
+      if (i >= 0) return i;
+    }
+    const i = rest.findIndex((b) => !rest.some((o) => o !== b && near(Number(o.balance), balBefore(b))));
+    return i >= 0 ? i : 0;
+  };
+  let cur = rest.splice(pickStart(prevBal), 1)[0];
+  out.push(cur);
+  while (rest.length) {
+    const i = rest.findIndex((b) => near(balBefore(b), Number(cur.balance)));
+    cur = rest.splice(i >= 0 ? i : pickStart(null), 1)[0];
+    out.push(cur);
+  }
+  return out;
+}
+
+/**
+ * 存摺順序：依日期，同一天的照結存帳鏈排（最後一筆＝當天結存）。
+ * 系統沒有存每列在存摺上的位置（雲端資料庫取回來的順序也不一定是匯入順序），所以不能照結存大小或讀取順序排。
+ * 不同存摺帳戶各自接鏈。
+ */
+export function passbookOrder(bankLines) {
+  const byDate = new Map();
+  for (const b of bankLines) {
+    const k = `${b.date}`;
+    if (!byDate.has(k)) byDate.set(k, []);
+    byDate.get(k).push(b);
+  }
+  const prev = new Map(); // 帳戶 → 前一天最後的結存
+  const out = [];
+  for (const date of [...byDate.keys()].sort()) {
+    const accts = new Map();
+    for (const b of byDate.get(date)) {
+      const a = b.bank_account_id || 'main';
+      if (!accts.has(a)) accts.set(a, []);
+      accts.get(a).push(b);
+    }
+    for (const [a, day] of accts) {
+      const ordered = chainDay(day, prev.has(a) ? prev.get(a) : null);
+      const last = [...ordered].reverse().find(hasBal);
+      if (last) prev.set(a, Number(last.balance));
+      out.push(...ordered);
+    }
+  }
+  return out;
+}
+
 /**
  * 銀行存款餘額調節表
  * @param openingBank 對帳起始日前一日的存摺餘額（若明細含餘額欄則自動推算）
+ * 存摺餘額＝截止日以前最後一筆的結存；同一天有好幾筆時是存摺上當天最後一筆（passbookOrder）
  */
 export function reconciliation({ bankLines, books, matches, asOf, openingBank = 0 }) {
-  const lines = bankLines.filter((b) => b.date <= asOf).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const lines = passbookOrder(bankLines.filter((b) => b.date <= asOf));
   const withBal = lines.filter((b) => b.balance !== null && b.balance !== undefined);
   const bankBalance = withBal.length ? withBal[withBal.length - 1].balance : round2(openingBank + lines.reduce((t, b) => t + b.deposit - b.withdrawal, 0));
   const matchedBook = new Set([...matches.entries()].filter(([bid]) => lines.some((b) => b.id === bid)).map(([, k]) => k));

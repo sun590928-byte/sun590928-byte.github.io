@@ -3,7 +3,7 @@
 import { h, mount, bindActions, dataTable, stat, fmt, pct, options, toast, modal, status, emptyState, confirmBox } from '../ui.js';
 import { store } from '../store.js';
 import { getSettings, getAccounts } from '../state.js';
-import { dailyCardRecon, matchCardOrders, payoutRecon, matchPayoutsToBank, inTransit } from '../lib/payments.js';
+import { cardRecon, CARD_SOURCES, matchCardOrders, payoutRecon, matchPayoutsToBank, inTransit } from '../lib/payments.js';
 import { accountBalance } from '../lib/ledger.js';
 import { PROVIDERS } from '../lib/autojournal.js';
 import { round2 } from '../lib/money.js';
@@ -16,17 +16,20 @@ export async function render(root, ctx) {
   const accounts = await getAccounts();
   let [lines, txs, payouts, bankLines, entries] = await Promise.all([store.all('sales_lines'), store.all('payment_tx'), store.all('payouts'), store.all('bank_lines'), store.all('journal_entries')]);
   const maxDate = [...lines.map((l) => l.date), ...txs.map((t) => t.date)].reduce((m, d) => (d > m ? d : m), settings.revenue_start);
-  const f = { from: ctx.params.from || settings.revenue_start, to: ctx.params.to || maxDate, tab: ctx.params.tab || 'daily' };
+  // src：刷卡逐日核對的比對來源（tx 綠界交易明細｜payout 撥款明細的交易日期｜空白＝自動）
+  const f = { from: ctx.params.from || settings.revenue_start, to: ctx.params.to || maxDate, tab: ctx.params.tab || 'daily', src: ctx.params.src || '' };
 
   function draw() {
     const L = lines.filter((l) => l.date >= f.from && l.date <= f.to);
     const T = txs.filter((t) => t.date >= f.from && t.date <= f.to);
     const P = payouts.filter((p) => p.payout_date >= f.from && p.payout_date <= f.to);
-    const daily = dailyCardRecon(L, T);
+    const cr = cardRecon(L, T, payouts, { from: f.from, to: f.to, source: f.src });
+    const daily = cr.rows;
     const posCard = round2(daily.reduce((t, d) => t + d.pos, 0));
     const ecTotal = round2(daily.reduce((t, d) => t + d.ecpay, 0));
     const fees = round2(daily.reduce((t, d) => t + d.fee, 0));
-    const diffDays = daily.filter((d) => Math.abs(d.diff) >= 1);
+    const diffDays = daily.filter((d) => !d.pending && Math.abs(d.diff) >= 1);
+    const pendingDays = daily.filter((d) => d.pending && Math.abs(d.diff) >= 1);
     const transit = inTransit(lines.filter((l) => l.date >= settings.revenue_start), payouts.filter((p) => p.payout_date >= settings.revenue_start), { asOf: f.to });
     const ledger1111 = accountBalance(entries, accounts, '1111', { to: f.to });
     const posLinePay = round2(L.filter((l) => l.payment === 'linepay' && !l.void_reason).reduce((t, l) => t + l.amount, 0));
@@ -42,7 +45,7 @@ export async function render(root, ctx) {
       ${!txs.length ? h`<div class="callout warn" style="margin-bottom:14px"><p>尚未匯入「綠界刷卡明細」。請到匯入中心拖入 <b>綠界刷卡明細-*.csv</b> 與 <b>綠界刷卡撥款明細-*.csv</b>；行動支付撥款明細（JPG）可在「憑證歸檔」以 AI 辨識，或按右上「登錄撥款」手動輸入。</p></div>` : ''}
       <div class="stats">
         ${stat('POS 刷卡營收', '$' + fmt(posCard), `${daily.filter((d) => d.pos).length} 天`)}
-        ${stat('綠界成功交易', '$' + fmt(ecTotal), `差異 ${fmt(round2(ecTotal - posCard))}`, Math.abs(ecTotal - posCard) >= 1 ? 'bad' : 'good')}
+        ${stat(cr.source === 'payout' ? '撥款明細刷卡（依交易日期）' : '綠界成功交易', '$' + fmt(ecTotal), `差異 ${fmt(round2(ecTotal - posCard))}`, Math.abs(ecTotal - posCard) >= 1 ? 'bad' : 'good')}
         ${stat('金流手續費', '$' + fmt(fees), ecTotal ? `費率 ${pct(fees / ecTotal, 2)}` : '')}
         ${stat('刷卡在途款（未撥款）', '$' + fmt(transit.pending), `帳上 1111 餘額 ${fmt(ledger1111)}`)}
         ${stat('POS LINE Pay 營收', '$' + fmt(posLinePay), `撥款 ${fmt(round2(P.filter((p) => p.provider === 'linepay').reduce((t, p) => t + p.gross, 0)))}`)}
@@ -60,20 +63,43 @@ export async function render(root, ctx) {
     );
     const body = root.querySelector('#body');
     if (f.tab === 'daily') {
-      dataTable(body, {
+      const byPayout = cr.source === 'payout';
+      const srcBtn = (k) => {
+        const n = cr.diffDays[k] + (k === 'payout' ? cr.pendingDays : 0);
+        const note = !cr.has[k] ? '沒有資料' : k === 'payout' && cr.pendingDays ? `${cr.diffDays[k]} 天有差異、${cr.pendingDays} 天等撥款` : n ? `${n} 天有差異` : '都對得上';
+        return h`<button type="button" class="btn sm ${cr.source === k ? 'primary' : ''}" data-act="src" data-s="${k}" aria-pressed="${cr.source === k ? 'true' : 'false'}">${CARD_SOURCES[k]}（${note}）</button>`;
+      };
+      mount(
+        body,
+        h`<div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px" id="card-src">
+          <span>比對來源</span>${srcBtn('tx')}${srcBtn('payout')}
+          <span class="muted" style="font-size:13px">${f.src ? h`你選的。<a href="#" data-act="src" data-s="">改回自動</a>` : `自動選擇：${cr.has.tx && cr.has.payout ? '兩種都有資料，用差異天數少的' : cr.has.tx || cr.has.payout ? '用有資料的那一種' : '這段期間還沒有綠界資料'}`}</span>
+        </div>
+        <p class="muted" style="font-size:13px;margin-bottom:10px">${
+          byPayout
+            ? '用綠界「信用卡撥款明細」每一筆刷卡的「交易日期」加總，跟 POS 當天的刷卡金額比。撥款明細只有已撥款的刷卡：最後一個交易日之後的日子標「等下一期撥款明細」，匯入下一期就會補上，不算差異。'
+            : '用綠界「刷卡交易明細」的交易時間加總，跟 POS 當天的刷卡金額比。如果每個月都有很多天對不上，可以匯入綠界「信用卡刷卡撥款明細 CSV」（要有「交易日期」欄），改用撥款明細比對。'
+        }</p>
+        <div id="daily-tbl"></div>`,
+      );
+      const totDiff = round2(ecTotal - posCard);
+      dataTable(body.querySelector('#daily-tbl'), {
         rows: daily,
-        exportName: `每日刷卡核對_${f.from}_${f.to}.csv`,
+        exportName: `每日刷卡核對_${byPayout ? '撥款明細' : '交易明細'}_${f.from}_${f.to}.csv`,
         initialSort: { key: 'date', dir: 1 },
         empty: '此期間沒有刷卡資料',
+        footer: daily.length
+          ? h`<tr class="total"><td><b>合計</b>（${daily.length} 天，${diffDays.length ? `${diffDays.length} 天有差異` : '沒有差異'}${pendingDays.length ? `、${pendingDays.length} 天等撥款明細` : ''}）</td><td class="num"><b>${fmt(posCard)}</b></td><td class="num">${fmt(daily.reduce((t, d) => t + d.posOrders, 0))}</td><td class="num"><b>${fmt(ecTotal)}</b></td><td class="num">${fmt(daily.reduce((t, d) => t + d.ecpayCount, 0))}</td><td class="num"></td><td class="num">${fmt(fees)}</td><td class="num"><b>${fmt(totDiff)}</b></td></tr>`
+          : null,
         columns: [
           { key: 'date', label: '日期' },
           { key: 'pos', label: 'POS 刷卡', align: 'num', fmt: (v) => fmt(v) },
           { key: 'posOrders', label: 'POS 單數', align: 'num' },
-          { key: 'ecpay', label: '綠界交易', align: 'num', fmt: (v) => fmt(v) },
-          { key: 'ecpayCount', label: '綠界筆數', align: 'num' },
+          { key: 'ecpay', label: byPayout ? '撥款明細（交易日）' : '綠界交易', align: 'num', fmt: (v) => fmt(v) },
+          { key: 'ecpayCount', label: byPayout ? '撥款筆數' : '綠界筆數', align: 'num' },
           { key: 'failed', label: '失敗/退款', align: 'num', fmt: (v) => (v ? fmt(v) : '') },
           { key: 'fee', label: '手續費', align: 'num', fmt: (v) => fmt(v) },
-          { key: 'diff', label: '差異', align: 'num', fmt: (v) => (Math.abs(v) < 1 ? status('good', '0') : status('bad', fmt(v))) },
+          { key: 'diff', label: '差異', align: 'num', fmt: (v, r) => (Math.abs(v) < 1 ? status('good', '0') : r.pending ? status('na', `等下一期撥款明細（${fmt(v)}）`) : status('bad', fmt(v))), csv: (v, r) => (r.pending && Math.abs(v) >= 1 ? `${v}（等下一期撥款明細）` : v) },
         ],
       });
     } else if (f.tab === 'orders') {
@@ -140,6 +166,11 @@ export async function render(root, ctx) {
     tab: (el) => {
       f.tab = el.dataset.t;
       ctx.setParams({ tab: f.tab });
+      draw();
+    },
+    src: (el) => {
+      f.src = el.dataset.s || '';
+      ctx.setParams({ src: f.src });
       draw();
     },
     addPayout: async () => {

@@ -5,7 +5,7 @@ import { store } from '../store.js';
 import { getSettings, getAccounts, getProductIndex, saveSettings, isLocked } from '../state.js';
 import { CHECK_ITEMS } from '../lib/checklist.js';
 import { trialBalance, balanceSheet } from '../lib/ledger.js';
-import { dailyCardRecon } from '../lib/payments.js';
+import { cardRecon, CARD_SOURCES } from '../lib/payments.js';
 import { bookLines, autoMatch, reconciliation } from '../lib/bank.js';
 import { monthEnd } from '../lib/dates.js';
 import { latestMonth, needsDocument, downloadWorkbook } from './_shared.js';
@@ -30,7 +30,9 @@ export async function render(root, ctx) {
     const live = mLines.filter((l) => !l.void_reason);
     const salesDays = new Set(live.map((l) => l.date));
     const posDays = new Set(entries.filter((e) => e.source === 'pos' && e.date >= from && e.date <= to).map((e) => e.date));
-    const daily = dailyCardRecon(mLines, txs.filter((t) => t.date >= from && t.date <= to));
+    // 刷卡逐日核對：交易明細或撥款明細（交易日期），自動挑一種（和金流對帳頁相同）；等下一期撥款明細的日子也算還沒核對完
+    const card = cardRecon(mLines, txs, payouts, { from, to });
+    const daily = card.rows;
     const mPayouts = payouts.filter((p) => p.payout_date >= from && p.payout_date <= to);
     const booked = new Set(entries.filter((e) => e.source === 'payout').map((e) => e.source_ref));
     const mDocs = docs.filter((d) => (d.doc_date || d.created_at || '').slice(0, 7) === ym);
@@ -54,6 +56,8 @@ export async function render(root, ctx) {
       unknownPaymentLines: live.filter((l) => l.payment === 'unknown').length,
       cardDays: daily.filter((d) => d.pos || d.ecpay).length,
       cardDiffDays: daily.filter((d) => Math.abs(d.diff) >= 1).length,
+      cardSource: CARD_SOURCES[card.source],
+      cardPendingDays: daily.filter((d) => d.pending && Math.abs(d.diff) >= 1).length,
       payouts: mPayouts.length,
       payoutsUnbooked: mPayouts.filter((p) => !booked.has(p.id)).length,
       docs: mDocs.length,
@@ -92,7 +96,7 @@ export async function render(root, ctx) {
         <span class="spacer"></span>
         <span>${status(doneN === rows.length ? 'good' : 'warn', `完成 ${doneN} / ${rows.length}`)}</span>
         <button class="btn" data-act="book">下載本月帳冊（Excel）</button>
-        ${locked ? h`<span class="badge high">已鎖定</span>` : h`<button class="btn primary" data-act="lock">結帳並鎖定 ${f.ym}</button>`}
+        ${locked ? h`<span class="badge high">已鎖定</span> <button class="btn" data-act="unlock">解除鎖定</button>` : h`<button class="btn primary" data-act="lock">結帳並鎖定 ${f.ym}</button>`}
       </div>
       <div class="callout" style="margin-bottom:14px"><p>「系統判斷」欄由資料自動檢查（✓ 通過、✕ 未通過、– 本月無此資料）；其餘項目完成後請勾選。建議每月 5 日前完成上月結帳，再到「申報行事曆」確認當月申報事項。</p></div>
       <div class="checklist">${rows.map((r) => {
@@ -119,7 +123,7 @@ export async function render(root, ctx) {
       case 'unknown_payment':
         return `${c.unknownPaymentLines} 筆付款方式未指定`;
       case 'card_recon':
-        return `${c.cardDiffDays} 天刷卡金額有差異`;
+        return `${c.cardDiffDays} 天刷卡金額有差異（依${c.cardSource}${c.cardPendingDays ? `，其中 ${c.cardPendingDays} 天等下一期撥款明細` : ''}；到「金流對帳」看每天的差異）`;
       case 'payouts_booked':
         return `${c.payoutsUnbooked} 筆撥款未入帳`;
       case 'photos':
@@ -192,6 +196,19 @@ export async function render(root, ctx) {
       await saveSettings({ locked_months: [...new Set([...(settings.locked_months || []), f.ym])] });
       settings.locked_months = [...new Set([...(settings.locked_months || []), f.ym])];
       toast(`${f.ym} 已鎖定`, 'good');
+      draw();
+    },
+    // 解除鎖定（和日記簿的一樣）：先說清楚解除後會怎樣，老闆確認才解除；解除本身不會重新產生任何分錄
+    unlock: async () => {
+      const ym = f.ym;
+      const ok = await confirmBox(
+        `解除 ${ym} 的結帳鎖定？解除後這個月的傳票可以新增、修改、刪除；之後只要匯入資料或按「同步自動分錄」，這個月的 POS 營收、撥款入帳、折舊等自動分錄就會依目前的資料重新產生（傳票內容、金額可能改變）。解除這個動作本身不會改任何傳票，改完請再按「結帳並鎖定」。`,
+        { ok: '解除鎖定', danger: true },
+      );
+      if (!ok) return;
+      settings.locked_months = (settings.locked_months || []).filter((m) => m !== ym);
+      await saveSettings({ locked_months: settings.locked_months });
+      toast(`${ym} 已解除鎖定`, 'good');
       draw();
     },
   });

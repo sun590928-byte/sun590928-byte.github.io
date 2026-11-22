@@ -4,7 +4,7 @@
 import { h, raw, mount, bindActions, dataTable, fmt, stat, status, toast, modal, options, emptyState, pickFiles, setBusy } from '../ui.js';
 import { store } from '../store.js';
 import { getSettings, getAccounts, isLocked } from '../state.js';
-import { bookLines, autoMatch, reconciliation } from '../lib/bank.js';
+import { bookLines, autoMatch, reconciliation, passbookOrder } from '../lib/bank.js';
 import { parsePassbookText, tableToPage, verifyChain, toBankLine, alreadyImported, suggestBankAccount, bankHistory } from '../lib/passbook.js';
 import { readPassbook, releaseOcr } from '../vision.js';
 import { readPassbookTable } from '../passbookvision.js';
@@ -54,7 +54,8 @@ export async function render(root, ctx) {
   }
 
   async function draw() {
-    const lines = bankLines.filter((b) => (b.bank_account_id || 'main') === f.acct).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : (a.balance ?? 0) - (b.balance ?? 0)));
+    // 同一天有好幾筆時照存摺上的先後（結存帳鏈）排，不照結存大小：月底餘額要抓當天最後一筆
+    const lines = passbookOrder(bankLines.filter((b) => (b.bank_account_id || 'main') === f.acct));
     if (!lines.length) {
       mount(
         root,

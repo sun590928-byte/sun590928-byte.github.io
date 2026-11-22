@@ -18,7 +18,8 @@ async function apply(source, generated, scopeRefs = null) {
   return { source, updated: res.upserts.length, removed: res.removes.length, locked: res.skippedLocked };
 }
 
-export async function syncSales() {
+// dates：只重新產生這幾天的 POS 營收傳票（例如銷售明細手動標記作廢的那幾天），其他天不動；鎖定月份一樣跳過
+export async function syncSales({ dates = null } = {}) {
   const s = await getSettings();
   const idx = await getProductIndex();
   const lines = await revenueLines();
@@ -28,6 +29,10 @@ export async function syncSales() {
     prepaidVat: s.prepaid_vat || 'sale',
     paymentAccounts: { ...DEBIT_ACCOUNT_BY_PAYMENT, unknown: s.unknown_payment_account || '1105' },
   });
+  if (dates) {
+    const only = new Set(dates);
+    return apply('pos', gen.filter((g) => only.has(g.source_ref)), only);
+  }
   return apply('pos', gen);
 }
 

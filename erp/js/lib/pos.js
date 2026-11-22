@@ -225,9 +225,11 @@ export function assignLineKeys(lines) {
 }
 
 // 作廢規則重新套用（使用者在設定頁改關鍵字後）
+// 在銷售明細手動「標記作廢／取消作廢」過的品項（void_manual）照手動的，不被規則蓋掉
 export function reapplyVoids(lines, rules) {
   let changed = 0;
   for (const l of lines) {
+    if (l.void_manual) continue;
     const v = detectVoid(l, rules);
     const reason = v ? v.reason : null;
     if (reason !== l.void_reason) changed++;
@@ -236,6 +238,89 @@ export function reapplyVoids(lines, rules) {
     l.revenue = reason ? 0 : l.amount;
   }
   return changed;
+}
+
+// ── 事後作廢（POS 匯入時是「已完成」，之後才在 POS／綠界作廢）
+// 手動標記可選的原因與說明：訂單作廢不算營收、也不扣原料；老闆測試／招待／報廢不算營收，原料成本照原規則轉到對應科目
+export const MANUAL_VOID_CHOICES = [
+  ['pos_void', '訂單作廢（POS 作廢、測試單、取消）：不算營收，不扣原料'],
+  ['boss_test', '老闆測試：不算營收，原料成本轉研究發展費'],
+  ['boss_treat', '老闆招待：不算營收，原料成本轉交際費'],
+  ['scrap', '報廢：不算營收，原料成本轉報廢損失'],
+];
+
+const logOf = (l, item) => [...(Array.isArray(l.void_log) ? l.void_log : []), item];
+
+/**
+ * 手動標記作廢：記下原因、說明、誰、什麼時候（void_manual），並留紀錄（void_log）。
+ * 之後「重新套用作廢規則」不會改掉手動標記的。回傳改好的新物件，不改原本的。
+ */
+export function markVoid(lines, { reason, note = '', by = '', at = new Date().toISOString() }) {
+  if (!VOID_REASONS[reason]) throw new Error('作廢原因不正確');
+  return lines.map((l) => ({
+    ...l,
+    void_reason: reason,
+    void_keyword: '手動標記',
+    revenue: 0,
+    void_manual: { reason, note, by, at },
+    void_log: logOf(l, { at, by, action: 'void', reason, note, from: l.void_reason || null }),
+  }));
+}
+
+/**
+ * 取消作廢：照作廢規則本來就不算作廢的，回到依規則判斷（拿掉手動標記）；
+ * 規則會判成作廢的（例如 POS 狀態是「已作廢」），記成手動「不作廢」，免得重新套用規則又被改回去。
+ */
+export function clearVoid(lines, { rules = DEFAULT_VOID_RULES, note = '', by = '', at = new Date().toISOString() } = {}) {
+  return lines.map((l) => {
+    const { void_manual, ...rest } = l;
+    const auto = detectVoid(rest, rules);
+    const out = { ...rest, void_reason: null, void_keyword: null, revenue: l.amount, void_log: logOf(l, { at, by, action: 'clear', reason: null, note, from: l.void_reason || null }) };
+    if (auto) out.void_manual = { reason: null, note, by, at };
+    return out;
+  });
+}
+
+// 重新匯入時比對同一筆：同日期、同單號、同品名、同選項、同數量（金額、付款、狀態可能已經改了）
+const voidMatchKey = (l) => [l.date, String(l.order_no || '').trim(), l.item_raw, l.option_raw || '', l.qty].join('|');
+
+/**
+ * 重新匯入 POS 銷售明細：已經匯入過的訂單，POS 狀態變成作廢（或其他作廢規則命中）時，更新那一筆，不當成重複略過。
+ * 手動標記／取消作廢過的不動（照老闆手動的）。
+ * @returns {{ updates: object[], consumed: Set<string> }} updates＝要更新的既有明細；consumed＝新檔裡已由既有明細代表、不要再新增的列 id
+ */
+export function planVoidUpdates(incoming, existing, { batchId = '', at = new Date().toISOString() } = {}) {
+  const byId = new Map(existing.map((l) => [l.id, l]));
+  const byKey = new Map();
+  for (const l of existing) {
+    if (!String(l.order_no || '').trim()) continue;
+    const k = voidMatchKey(l);
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push(l);
+  }
+  const used = new Set();
+  const updates = [];
+  const consumed = new Set();
+  for (const n of incoming) {
+    if (!n.void_reason) continue;
+    let old = byId.get(n.id);
+    if (old && used.has(old.id)) old = null;
+    if (!old && String(n.order_no || '').trim()) old = (byKey.get(voidMatchKey(n)) || []).find((l) => !used.has(l.id)) || null;
+    if (!old) continue;
+    used.add(old.id);
+    if (old.id !== n.id) consumed.add(n.id);
+    if (old.void_reason || old.void_manual) continue;
+    updates.push({
+      ...old,
+      status_raw: n.status_raw || old.status_raw,
+      void_reason: n.void_reason,
+      void_keyword: n.void_keyword,
+      revenue: 0,
+      void_reimport: { at, batch_id: batchId, status: n.status_raw || '' },
+      void_log: logOf(old, { at, by: '重新匯入', action: 'void', reason: n.void_reason, note: n.status_raw ? `重新匯入時 POS 狀態為「${n.status_raw}」` : `重新匯入時命中作廢規則「${n.void_keyword || ''}」`, from: null }),
+    });
+  }
+  return { updates, consumed };
 }
 
 export function inRevenuePeriod(line, settings) {

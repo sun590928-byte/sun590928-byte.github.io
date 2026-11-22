@@ -357,6 +357,203 @@ try {
   // 金流、成本、月結、行事曆、損益、設定
   await go('payments');
   await shot('payments');
+  // 11/20 需求 3、7、8、9（對帳、結帳、作廢）
+  {
+    const clearToasts = () => page.evaluate(() => document.querySelectorAll('.toast').forEach((t) => t.remove()));
+    const posEntry = (d) =>
+      page.evaluate(async (d) => {
+        const { store } = await import('/erp/js/store.js');
+        return JSON.stringify((await store.all('journal_entries')).filter((e) => e.source === 'pos' && e.date === d));
+      }, d);
+    const debitSum = (json) => JSON.parse(json).reduce((t, e) => t + e.lines.reduce((s, l) => s + (l.debit || 0), 0), 0);
+    const salesOf = (d, orders) =>
+      page.evaluate(
+        async ([d, orders]) => {
+          const { store } = await import('/erp/js/store.js');
+          return (await store.all('sales_lines')).filter((l) => l.date === d && orders.includes(l.order_no));
+        },
+        [d, orders],
+      );
+
+    // 3. 銀行對帳：7/29 同一天 4 筆存摺，月底餘額要抓存摺上當天最後一筆 150,000（不是結存最大的 205,000）；資料庫裡的順序故意打亂
+    await page.evaluate(async () => {
+      const { store } = await import('/erp/js/store.js');
+      const rows = [
+        ['zzb_4', '2026-07-29', 5000, 0, 150000, '跨行轉帳手續費'],
+        ['zzb_2', '2026-07-29', 0, 45000, 205000, '現金存入'],
+        ['zzb_0', '2026-07-28', 0, 100000, 100000, '存入'],
+        ['zzb_3', '2026-07-29', 50000, 0, 155000, '網銀轉出'],
+        ['zzb_1', '2026-07-29', 0, 60000, 160000, '電匯存入'],
+      ];
+      await store.put('bank_lines', rows.map(([id, date, withdrawal, deposit, balance, description]) => ({ id, batch_id: 'zz_e2e_bank', bank_account_id: 'zz-e2e', date, description, withdrawal, deposit, balance, note: '', counterparty: '', match_key: null })));
+    });
+    await go('bank?acct=zz-e2e&asof=2026-07-31');
+    const bankStats = await page.$$eval('.stat', (els) => els.map((e) => e.textContent.replace(/\s+/g, '')));
+    assert(bankStats.some((t) => t.startsWith('存摺餘額$150,000')), '7 月底存摺餘額抓 7/29 最後一筆 150,000：' + bankStats.join('｜'));
+    const pbBal = await page.$$eval('#bl tbody tr', (trs) => trs.map((tr) => tr.children[4].textContent.trim()).join('｜'));
+    assert(pbBal === '100,000｜160,000｜205,000｜155,000｜150,000', '存摺明細照存摺上的先後排（結存帳鏈）：' + pbBal);
+    await shot('bank-sameday-balance', false);
+    await page.evaluate(async () => {
+      const { store } = await import('/erp/js/store.js');
+      await store.remove('bank_lines', (await store.all('bank_lines')).filter((b) => b.batch_id === 'zz_e2e_bank').map((b) => b.id));
+    });
+
+    // 7. 刷卡逐日核對：匯入綠界「信用卡刷卡撥款明細」（每列一筆刷卡、有交易日期；合成資料，撥款日在營收起算日以前，不產生分錄）
+    await go('import');
+    {
+      const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pick"]')]);
+      await chooser.setFiles([{ name: '綠界信用卡刷卡撥款明細-合成.csv', mimeType: 'text/csv', buffer: await readFile(FX('synthetic-ecpay-payout-detail.csv')) }]);
+      await page.waitForSelector('[data-act="commit"]', { timeout: 15000 });
+      assert((await page.$eval('[data-act="target"]', (el) => el.value)) === 'payouts', '撥款明細依檔名判斷');
+      const txCol = await page.$eval('[data-act="map"][data-field="tx_date"]', (el) => el.selectedOptions[0]?.textContent || '');
+      assert(txCol.includes('交易日期'), '撥款明細的「交易日期」欄自動對應：' + txCol);
+      console.log('撥款明細：', await commit());
+    }
+    await go('payments?tab=daily&from=2026-08-10&to=2026-08-14');
+    const srcText = await page.textContent('#card-src');
+    console.log('刷卡核對來源：', srcText.replace(/\s+/g, ' '));
+    assert(srcText.includes('綠界交易明細（都對得上）') && srcText.includes('撥款明細（交易日期）（1 天有差異、1 天等撥款）'), '兩種來源都列出差異天數：' + srcText);
+    assert((await page.getAttribute('[data-act="src"][data-s="tx"]', 'aria-pressed')) === 'true', '兩種都有資料、交易明細差異少 → 自動用交易明細');
+    await page.click('[data-act="src"][data-s="payout"]');
+    await page.waitForSelector('[data-act="src"][data-s="payout"][aria-pressed="true"]');
+    const dayRows = await page.$$eval('#daily-tbl tbody tr', (trs) => trs.map((tr) => [...tr.children].map((td) => td.textContent.trim())));
+    const day = (d) => dayRows.find((r) => r[0] === d) || [];
+    assert(day('2026-08-11')[1] === '1,310' && day('2026-08-11')[3] === '920' && day('2026-08-11')[7].endsWith('-390'), '8/11 撥款明細少一筆 390：' + JSON.stringify(day('2026-08-11')));
+    assert(day('2026-08-14')[7].includes('等下一期撥款明細'), '8/14 的刷卡還沒撥款：標等下一期撥款明細 ' + JSON.stringify(day('2026-08-14')));
+    assert(['2026-08-10', '2026-08-12', '2026-08-13'].every((d) => /^✓\s*0$/.test(day(d)[7] || '')), '其他天對得上：' + JSON.stringify(dayRows));
+    const foot = await page.textContent('#daily-tbl tfoot');
+    assert(foot.includes('1 天有差異') && foot.includes('1 天等撥款明細'), '合計列：' + foot);
+    assert((await page.textContent('.tabs button.on')).includes('1 天有差異'), '分頁標題的差異天數跟著來源');
+    await shot('payments-daily-payout', false);
+
+    // 8、9. 找兩天：8 月（營收起算日之後、有 POS 營收傳票）和 9 月各一天
+    const pick = await page.evaluate(async () => {
+      const { store } = await import('/erp/js/store.js');
+      const { getSettings } = await import('/erp/js/state.js');
+      const s = await getSettings();
+      // 整張單都是有效品項（單裡沒有老闆招待、報廢等原本就作廢的品項），測完取消作廢才會完全回到原狀
+      const all = await store.all('sales_lines');
+      const dirty = new Set(all.filter((l) => l.void_reason || !(l.amount > 0)).map((l) => l.date + '|' + l.order_no));
+      const lines = all.filter((l) => l.date >= s.revenue_start && l.order_no && !dirty.has(l.date + '|' + l.order_no));
+      const entries = await store.all('journal_entries');
+      const orders = (d) => {
+        const m = new Map();
+        for (const l of lines.filter((x) => x.date === d)) m.set(l.order_no, (m.get(l.order_no) || 0) + 1);
+        return [...m.entries()];
+      };
+      const days = (ym) => [...new Set(lines.filter((l) => l.date.startsWith(ym)).map((l) => l.date))].sort().filter((d) => entries.some((e) => e.source === 'pos' && e.date === d) && orders(d).length >= 3);
+      const aug = days('2026-08').find((d) => orders(d).filter(([, n]) => n === 1).length >= 2);
+      const sep = days('2026-09')[0];
+      return { aug, augOrders: orders(aug).filter(([, n]) => n === 1).slice(0, 2).map(([o]) => o), sep, sepOrder: orders(sep)[0][0] };
+    });
+    console.log('作廢測試：', pick);
+    assert(pick.aug && pick.augOrders.length === 2 && pick.sep && pick.sepOrder, '找得到測試用訂單');
+
+    // 8. 結帳頁鎖定 8 月 → 有「解除鎖定」按鈕
+    await go('closing?ym=2026-08');
+    await page.click('[data-act="lock"]');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('[data-act="unlock"]');
+    const augBefore = await posEntry(pick.aug);
+    assert(JSON.parse(augBefore).length === 1, '8 月那天有 POS 營收傳票');
+
+    // 9a. 鎖定月份：依單號標記作廢兩筆 → 只改銷售明細，POS 營收傳票一字不差
+    await go(`sales?from=${pick.aug}&to=${pick.aug}`);
+    await page.click('[data-act="voidOrders"]');
+    await page.waitForSelector('dialog [name=vd-no]');
+    await page.fill('dialog [name=vd-date]', pick.aug);
+    await page.fill('dialog [name=vd-no]', pick.augOrders.join('、'));
+    await page.waitForFunction(() => document.querySelectorAll('dialog #vd-list tr[data-id]').length === 2, null, { timeout: 5000 });
+    assert((await page.textContent('dialog #vd-list')).includes('此月份（2026-08）已結帳鎖定'), '鎖定月份：視窗先說明不會重新產生傳票');
+    assert((await page.inputValue('dialog [name=vd-reason]')) === 'pos_void', '預設原因：訂單作廢（不算營收、不扣原料）');
+    await page.fill('dialog [name=vd-note]', 'E2E 合成測試單');
+    await shot('sales-void-dialog', false);
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('#void-notice');
+    const augNotice = await page.textContent('#void-notice');
+    assert(augNotice.includes('已標記作廢 2 筆') && augNotice.includes('此月份（2026-08）已結帳鎖定：只更新銷售明細與營運分析，POS 營收傳票不會重新產生'), augNotice);
+    assert((await posEntry(pick.aug)) === augBefore, '鎖定月份的 POS 營收傳票前後一字不差');
+    const augLines = await salesOf(pick.aug, pick.augOrders);
+    assert(augLines.length === 2 && augLines.every((l) => l.void_reason === 'pos_void' && l.revenue === 0 && l.void_manual?.note === 'E2E 合成測試單' && l.void_manual?.at), '銷售明細記下作廢原因、說明、時間');
+    assert((await page.textContent('#tbl')).includes('手動標記｜E2E 合成測試單'), '明細表顯示手動作廢的說明');
+    await shot('sales-voided-locked', false);
+
+    // 9b. 未鎖定月份：從明細列「作廢」整張單 → 那天的 POS 營收傳票重新產生（同一張傳票、同號碼）
+    const sepBefore = await posEntry(pick.sep);
+    const sepId = (await salesOf(pick.sep, [pick.sepOrder]))[0].id;
+    await go(`sales?from=${pick.sep}&to=${pick.sep}&q=${encodeURIComponent(pick.sepOrder)}`);
+    await clearToasts();
+    await page.click(`#tbl [data-act="voidLine"][data-id="${sepId}"]`);
+    await page.waitForSelector('dialog #vd-list tr[data-id]');
+    assert(!(await page.textContent('dialog #vd-list')).includes('已結帳鎖定'), '9 月沒有鎖定');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForSelector('#void-notice');
+    assert((await page.textContent('#void-notice')).includes(`已重新產生 ${pick.sep} 的 POS 營收傳票`), '未鎖定：說明已重新產生那天的傳票');
+    const sepVoided = await posEntry(pick.sep);
+    const [eb, ea] = [JSON.parse(sepBefore)[0], JSON.parse(sepVoided)[0]];
+    assert(ea.id === eb.id && ea.voucher_no === eb.voucher_no && debitSum(sepVoided) < debitSum(sepBefore), '9 月那天的傳票重新產生、金額變少、號碼不變');
+    await clearToasts();
+    await page.click(`#tbl [data-act="unvoidLine"][data-id="${sepId}"]`);
+    await page.waitForSelector('dialog #vd-list tr[data-id]');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForFunction(() => document.querySelector('#void-notice')?.textContent.includes('已取消作廢'));
+    assert(JSON.stringify(JSON.parse(await posEntry(pick.sep))[0].lines) === JSON.stringify(eb.lines), '取消作廢後傳票回到原本的內容');
+
+    // 9c. 重新匯入：同一張單 POS 狀態變成「已作廢」→ 更新那幾筆，不當成重複略過
+    const csv = await page.evaluate(
+      async ([d, no]) => {
+        const { store } = await import('/erp/js/store.js');
+        const ls = (await store.all('sales_lines')).filter((l) => l.date === d && l.order_no === no);
+        return ['結帳時間,訂單編號,品項名稱,規格,數量,單價,小計,付款方式,狀態', ...ls.map((l) => [`${l.date.replace(/-/g, '/')} ${l.time}:00`, l.order_no, l.item_raw, l.option_raw, l.qty, l.unit_price ?? '', l.amount, l.payment_raw, '已作廢'].join(','))].join('\r\n');
+      },
+      [pick.sep, pick.sepOrder],
+    );
+    await go('import');
+    {
+      const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="pick"]')]);
+      await chooser.setFiles([{ name: 'POS銷售明細-重新匯出.csv', mimeType: 'text/csv', buffer: Buffer.from(csv, 'utf8') }]);
+      await page.waitForSelector('#void-updates', { timeout: 15000 });
+      const label = await page.$eval('[data-act="commit"]', (el) => el.textContent.trim());
+      assert(/^匯入 0 筆、更新作廢 \d+ 筆$/.test(label), '重新匯入的按鈕：' + label);
+      await shot('import-void-update', false);
+      await page.click('[data-act="commit"]');
+      await page.waitForSelector('.toast >> text=更新作廢', { timeout: 20000 });
+    }
+    const reLines = await salesOf(pick.sep, [pick.sepOrder]);
+    assert(reLines.length && reLines.every((l) => l.void_reason === 'pos_void' && l.void_reimport && l.status_raw === '已作廢'), '重新匯入後那張單改成作廢');
+    assert(debitSum(await posEntry(pick.sep)) < debitSum(sepBefore), '重新匯入作廢：未鎖定那天的傳票重新產生');
+    // 還原：取消作廢（POS 狀態雖是已作廢，手動改回有效，重新套用規則也不會再改）
+    await go(`sales?from=${pick.sep}&to=${pick.sep}&q=${encodeURIComponent(pick.sepOrder)}`);
+    await clearToasts();
+    assert((await page.textContent('#tbl')).includes('重新匯入：POS 狀態「已作廢」'), '明細表註明是重新匯入改成作廢');
+    await page.click(`#tbl [data-act="unvoidLine"][data-id="${sepId}"]`);
+    await page.waitForSelector('dialog #vd-list tr[data-id]');
+    await page.click('dialog .modal-foot .btn.primary');
+    await page.waitForFunction(() => document.querySelector('#void-notice')?.textContent.includes('已取消作廢'));
+    assert(JSON.stringify(JSON.parse(await posEntry(pick.sep))[0].lines) === JSON.stringify(eb.lines), '還原後 9 月傳票回到原本內容');
+
+    // 8 月（還鎖著）也取消作廢：傳票一樣不動；再到結帳頁按「解除鎖定」
+    await go(`sales?from=${pick.aug}&to=${pick.aug}&void=1`);
+    for (const l of augLines) {
+      await clearToasts();
+      await page.click(`#tbl [data-act="unvoidLine"][data-id="${l.id}"]`);
+      await page.waitForSelector('dialog #vd-list tr[data-id]');
+      await page.click('dialog .modal-foot .btn.primary');
+      await page.waitForSelector('dialog', { state: 'detached' });
+      await page.waitForTimeout(300);
+    }
+    assert((await salesOf(pick.aug, pick.augOrders)).every((l) => !l.void_reason), '8 月兩筆取消作廢');
+    assert((await posEntry(pick.aug)) === augBefore, '鎖定月份取消作廢：傳票也不動');
+    await go('closing?ym=2026-08');
+    await page.click('[data-act="unlock"]');
+    await page.waitForSelector('dialog >> text=解除後這個月的傳票可以新增、修改、刪除');
+    await shot('closing-unlock', false);
+    await page.click('dialog .modal-foot .btn.danger');
+    await page.waitForSelector('[data-act="lock"]');
+    const lockedNow = await page.evaluate(async () => (await (await import('/erp/js/state.js')).getSettings()).locked_months || []);
+    assert(!lockedNow.includes('2026-08'), '結帳頁解除鎖定 ' + lockedNow.join(','));
+    assert((await posEntry(pick.aug)) === augBefore, '解除鎖定本身不改傳票');
+  }
   await go('cost?ym=2026-09');
   // 2026-11-10 老闆新增存貨科目 1217 果汁糖漿：啟動時自動補進科目表，存貨與成本頁要有這一列
   const acc1217 = await page.evaluate(async () => {
